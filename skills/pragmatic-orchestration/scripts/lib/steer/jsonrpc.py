@@ -131,6 +131,19 @@ class JsonRpcProcess:
                     pass
         rc = self.proc.wait() if self.proc else 1
         self._exit_code = rc
+        # A dead child will never answer; fail in-flight waiters immediately
+        # instead of letting them block for the full request timeout.
+        with self._lock:
+            pending = list(self._pending.items())
+            self._pending.clear()
+        for rid, q in pending:
+            try:
+                q.put_nowait(
+                    {"id": rid, "error": {"code": -32000,
+                                          "message": f"process exited rc={rc}"}}
+                )
+            except queue.Full:
+                pass
 
     def _read_stderr(self) -> None:
         assert self.proc and self.proc.stderr

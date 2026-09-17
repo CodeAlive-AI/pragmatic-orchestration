@@ -1,8 +1,8 @@
-# Native headless Windows desktop from macOS
+# Native headless Windows desktop from the dev machine
 
 ## Architecture
 
-One native `sfreerdp` process holds the interactive desktop through the SSM
+One native FreeRDP process holds the interactive desktop through the SSM
 loopback RDP tunnel (`desktop-tunnel` → `127.0.0.1:<localPort>` → host 3389).
 QA workers and the UI driver run inside Windows. There is no Docker, Xvfb,
 VNC, extra Windows account, RDS role, autologon, or lock-policy change. (This
@@ -10,7 +10,7 @@ is a technical description, not a licensing determination.)
 
 The optional read-only observer is a localhost HTTP server on Windows
 (`observer.py`, binds 127.0.0.1:`<viewerRemotePort>`), forwarded over SSH to
-Mac loopback `:<viewerLocalPort>`. It captures ~1 fps only while a page is
+dev-machine loopback `:<viewerLocalPort>`. It captures ~1 fps only while a page is
 open; page and frames require a fresh random token; it has no input or
 execution endpoints and expires after one hour. Use the QA driver's exact
 PNGs — not observer JPEGs — for pixel-level evidence. Do not open a competing
@@ -35,23 +35,24 @@ The dev machine needs a FreeRDP client and Python 3 — `sfreerdp` on macOS
 `wfreerdp` on Windows (see [local-platforms.md](local-platforms.md) for the
 per-OS matrix). Do not install XQuartz/x11vnc for this workflow.
 
-## Manual interactive session (Windows App)
+## Manual interactive session
 
 Secondary path — for when the operator wants to watch or drive the desktop
-personally, or sfreerdp is unsuitable for the task at hand:
+personally, or FreeRDP is unsuitable for the task at hand:
 
 ```bash
 scripts/host.sh desktop-tunnel   # SSM port-forward 127.0.0.1:<localPort> → host <remotePort>
-scripts/host.sh desktop-open     # opens the configured RDP client by bundle id
+scripts/host.sh desktop-open     # opens the dev OS's configured RDP client
 ```
 
-Wait for `Port <localPort> opened`, then open the configured bookmark
-(`desktop.rdpBookmark`) in the client. `desktop-open` launches the app via
+Wait for `Port <localPort> opened`, then connect the client to the
+loopback address. On macOS `desktop-open` launches Windows App via
 `desktop.rdpAppBundleId` (default `com.microsoft.rdc.macos` — the bundle id
-used by Microsoft Remote Desktop and its successor Windows App on macOS).
-The bookmark's saved Keychain credential is the same item the headless
-helper reads — create it once by connecting manually and letting the client
-save the password.
+used by Microsoft Remote Desktop and its successor); on Linux/Windows it
+opens the configured client (Remmina/mstsc) — see
+[local-platforms.md](local-platforms.md). On macOS the bookmark's saved
+Keychain credential is the same item the headless helper reads — create it
+once by connecting manually and letting the client save the password.
 
 Invariants:
 
@@ -91,6 +92,29 @@ credential. macOS may prompt to approve Keychain access.
 - No mouse jiggler or auto-unlock. A lock means stop UI work and consider a
   controlled reconnect. Viewer closed ≠ Windows locked ≠ RDP disconnected —
   each needs its own evidence.
+
+## Locked sessions
+
+Disconnecting an RDP session locks it; whether an NLA reconnect clears the
+lock is configuration-dependent — verified NOT to unlock on a default
+Windows Server session (probe still reports `Access is denied` after a
+fresh connect). Do not rely on reconnect-as-unlock. Real options, in order
+of preference:
+
+1. **Prevent locks on a host you own** — at provisioning, disable the
+   sources: secure screensaver (`HKCU\Control Panel\Desktop`
+   `ScreenSaverIsSecure`/`ScreenSaveActive`) and the machine inactivity
+   limit (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`
+   `InactivityTimeoutSecs`). A dedicated agent host behind SSM-only access
+   has no attacker to lock against; the lock only ever blocks the agent.
+2. **Operator unlocks once** — take the manual client path above, type the
+   credential, disconnect. The headless holder can then attach to the now
+   unlocked session; re-run `desktop-probe` to confirm.
+3. **Managed hosts where policy cannot change** — the RDP-client/Xvfb
+   pattern (see [local-platforms.md](local-platforms.md)) keeps a live
+   client whose synthetic input or reconnect behavior can work around some
+   lock policies. This skill deliberately ships no jiggler: evading a lock
+   policy is the host owner's call, not the tooling's.
 - Runtime state (pid+identity records, logs, captures) lives under
   `$TMPDIR/remote-agents-desktop-<host>/` (0700). Cleanup verifies pid, start
   time, and command before killing. Operations serialize on a file lock.

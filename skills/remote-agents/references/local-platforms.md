@@ -29,6 +29,20 @@ session for QA. Per-OS details:
   it; do not close it during UI runs. Set `desktop.clientBinary` if wfreerdp
   is not on PATH.
 
+### Alternative on Linux: shared view via Xvfb + VNC
+
+`SDL_VIDEODRIVER=dummy` gives no way to *see* what the holder renders — the
+observer stream ([windows-desktop.md](windows-desktop.md)) is the intended
+watch path. If a Linux dev machine instead needs a pixel-level live view of
+the holder's own session — with the option to inject input without stealing
+it (a second RDP client for the same user would steal it) — the known
+pattern is: run `xfreerdp` inside an `Xvfb` display, expose that display
+with `x11vnc` on loopback, and attach Remmina/any VNC viewer. The viewer
+can close and reopen freely; the RDP session is undisturbed. It costs extra
+moving parts (Xvfb + VNC server), and client-side synthetic input (XTEST)
+inherits clipboard-disabled and keyboard-layout limits that the in-session
+driver avoids — so treat it as an opt-in alternative, not the default flow.
+
 ## Saved RDP credential
 
 `desktop-start` reads the operator-authorized saved credential — never argv,

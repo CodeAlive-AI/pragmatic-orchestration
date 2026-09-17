@@ -2,6 +2,10 @@
 
 `pragmatic-orchestration` is a field-tested system for orchestrating coding agents across vendors. Its cross-agent skill turns any skill-capable harness into an orchestrator: Codex, Claude Code, Cursor, OpenCode, and others can call external agents through the `porch` CLI.
 
+[![Watch the demo in 1080p: delegate, steer, and verify](assets/pragmatic-orchestration-demo.gif)](https://github.com/CodeAlive-AI/pragmatic-orchestration/raw/refs/heads/main/assets/pragmatic-orchestration-demo.mp4)
+
+*Click the demo to watch the 1080p MP4. Illustrative scenario; Astra quota only, worker usage separate.*
+
 In field use, frontier models such as Astra and Fable cover roughly 2–10× more work with practically no loss of quality when they orchestrate and cheaper executors implement. The best fit is autonomous work lasting hours or days, producing tens to hundreds of thousands of lines of code.
 
 The repo ships two skills in the Agent Skills layout: `pragmatic-orchestration` and `remote-agents`. `porch` provides four modes:
@@ -16,12 +20,6 @@ Supported worker harnesses: Codex CLI, Claude Code, OpenCode, Grok Build, Devin 
 The repo also ships **`remote-agents`**: a companion skill for operating dedicated remote Linux/Windows hosts that run these agents — secure VM/OS provisioning, SSH-over-SSM access with no public ingress, the WireGuard/SMB work bridge, `porch` on the remote host, a headless Windows desktop, bounded visual QA, durable worker daemons, and Codex Remote threads. See [skills/remote-agents/SKILL.md](skills/remote-agents/SKILL.md).
 
 Full documentation: [skills/pragmatic-orchestration/README.md](skills/pragmatic-orchestration/README.md) and [SKILL.md](skills/pragmatic-orchestration/SKILL.md).
-
-## Demo
-
-![Astra delegates work, steers an active worker, and verifies the result](assets/pragmatic-orchestration-demo.gif)
-
-*Illustrative scenario. Usage figures show Astra quota only; worker usage is separate.*
 
 ## Recommended combinations
 

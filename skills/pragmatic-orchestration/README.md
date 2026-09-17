@@ -62,7 +62,7 @@ Need to find a past session?   sessions
 ## Install
 
 ```bash
-npx skills add CodeAlive-AI/ai-driven-development@pragmatic-orchestration -g -y
+npx skills add CodeAlive-AI/pragmatic-orchestration@pragmatic-orchestration -g -y
 ```
 
 You also need Python 3 and at least one supported coding-agent CLI:

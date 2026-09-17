@@ -355,6 +355,12 @@ def test_backend_e2e(agent: str, label: str, tmp: Path, extra_checks=None) -> No
     cwd = tmp / f"cwd-{agent}"
     cwd.mkdir()
     env = env_base(reg_root, art)
+    if agent == "devin":
+        # The merged-steer assertions need the turn to outlive steer delivery
+        # (CLI spawn + mailbox drain + ACP round-trip). 0.35s is marginal on a
+        # loaded runner; the steer then lands after end_turn and is honestly
+        # rejected "backend already completed".
+        env["PORCH_FAKE_STEER_SLOW"] = "1.0"
     log = tmp / f"argv-{agent}.jsonl"
     env["PORCH_FAKE_ARGV_LOG"] = str(log)
     if agent == "grok":

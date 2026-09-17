@@ -35,10 +35,17 @@ shared `~/.aws/config` carries a conflicting or obsolete stanza.
 
 ### `desktop` (windows)
 
+Per-dev-OS behavior is documented in [local-platforms.md](local-platforms.md).
+
 | Field | Meaning |
 |---|---|
 | `rdpBookmark` | Saved Windows App bookmark name; its credential is read from the macOS Keychain at start |
 | `rdpAppBundleId` | RDP client bundle id for `desktop-open` (default `com.microsoft.rdc.macos`, used by Microsoft Remote Desktop and Windows App on macOS) |
+| `clientBinary` | FreeRDP binary override for the headless session holder (auto-detected per dev OS) |
+| `passwordCommand` | Shell command printing the RDP password — the credential path on Linux, escape hatch elsewhere |
+| `passwordEnv` | Environment variable holding the RDP password (checked before passwordCommand) |
+| `credTarget` | Windows Credential Manager target override (default tries `TERMSRV/<addr>` with and without port) |
+| `openCommand` | Custom interactive-client launcher for `desktop-open`; `{addr}`/`{bookmark}` placeholders |
 | `windowsUser` | Interactive account (default `Administrator`) |
 | `localPort` / `remotePort` | SSM port-forward pair (default `13389`/`3389`) |
 | `viewerLocalPort` / `viewerRemotePort` | Observer tunnel pair (default `16080`/`16081`) |
@@ -54,8 +61,9 @@ shared `~/.aws/config` carries a conflicting or obsolete stanza.
 | `shareName` | SMB share exported by the host (e.g. `Work`) |
 | `subnetPrefix` | WireGuard /24 prefix; `.1` = Windows, `.2` = Mac |
 | `listenPort` | UDP port the security group allows (e.g. `51820`) |
-| `mountRoot` | Local mount root; mount lands at `<mountRoot>/<host-id>` |
-| `launchdLabel` | Optional system tunnel service label |
+| `mountRoot` | Local mount root; mount lands at `<mountRoot>/<host-id>` (ignored on Windows — UNC access) |
+| `launchdLabel` | Fixed tunnel service label (macOS launchd) |
+| `serviceName` | Linux systemd unit name (default `remote-agents-work-bridge-<id>`) |
 | `appSupportDir` | Service install dir (e.g. `/Library/Application Support/RemoteAgents-WorkBridge`) |
 | `sudoersFile` | `/etc/sudoers.d/<name>` for password-free kickstart/kill |
 | `logFile` | Service log path (default `/var/log/remote-agents-work-bridge.log`) |

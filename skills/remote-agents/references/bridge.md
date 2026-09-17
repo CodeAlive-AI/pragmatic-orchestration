@@ -45,8 +45,10 @@ Architecture (all values configurable via `bridge.*`):
   IP, served to a **dedicated local SMB account** (not Administrator), SMB2/3
   with encryption required. Admin shares stay unreachable — the firewall rule
   allows 445 only on the tunnel local address.
-- Mac mounts `//<account>@<subnetPrefix>.1/<shareName>` at
-  `<mountRoot>/<host-id>` (default `~/.remote-agents/<id>`).
+- The dev machine mounts `//<account>@<subnetPrefix>.1/<shareName>` —
+  `mount_smbfs` on macOS at `<mountRoot>/<host-id>` (default
+  `~/.remote-agents/<id>`), `mount -t cifs` on Linux at the same path,
+  UNC `\\<subnetPrefix>.1\<shareName>` on Windows (no mountpoint).
 
 ### State and secrets
 
@@ -67,24 +69,30 @@ scripts/work-bridge.py disconnect   # umount + tunnel down
 scripts/work-bridge.py path         # print the mount path
 ```
 
-`work-bridge.command` is a double-clickable wrapper for interactive use.
+`work-bridge.command` is a double-clickable wrapper for interactive use on
+macOS. Per-OS connect semantics (sudo `wg-quick`, systemd unit, or elevated
+`wireguard.exe` service) are in [local-platforms.md](local-platforms.md).
+
 `install-work-bridge-service.py` (run once with sudo) installs a fixed
-launchd service — pass host selection explicitly since plain `sudo` drops
-the user environment:
+service — launchd daemon on macOS, systemd oneshot unit on Linux; on Windows
+it is unnecessary and exits with an explanation (`connect` elevates the
+WireGuard tunnel service itself). Pass host selection explicitly since plain
+`sudo` drops the user environment:
 
 ```bash
 sudo REMOTE_AGENTS_HOST=<id> python3 scripts/install-work-bridge-service.py
 ```
 
-The service is fixed: pinned binaries copied into `appSupportDir`, a locked
-`wg.conf`, an `endpoint` file as the *only* user-writable input (validated as
-IPv4, never executed), and a sudoers rule allowing only
-`launchctl kickstart -k`/`kill SIGTERM` on the service label — so routine
-connect/disconnect never prompts for a password. It refuses unexpected tunnel
-configs and never touches other VPNs.
+The service is fixed: pinned binaries or config copied into `appSupportDir`,
+an `endpoint` file as the *only* user-writable input (validated as IPv4,
+never executed), and a sudoers rule allowing only the service restart/stop —
+so routine connect/disconnect never prompts for a password. It refuses
+unexpected tunnel configs and never touches other VPNs.
 
-The Mac mount must be a real empty local directory outside any repository;
-the helper refuses mounts over nonempty or symlinked paths.
+The mount point (macOS/Linux) must be a real empty local directory outside
+any repository; the helper refuses mounts over nonempty or symlinked paths.
+On Windows the share attaches as a UNC path; the `cmdkey` credential the
+bridge creates for the tunnel IP is removed again on `disconnect`.
 
 ### Rules
 

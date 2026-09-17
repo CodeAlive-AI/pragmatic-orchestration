@@ -30,6 +30,13 @@ EOF
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PY="$HERE/lib/config.py"
 
+# python3 on Unix; `python`/`py` on Windows (Git Bash).
+PYBIN=""
+for _p in python3 python py; do
+  if command -v "$_p" >/dev/null 2>&1; then PYBIN="$_p"; break; fi
+done
+[ -n "$PYBIN" ] || { echo "host.sh: python is required (python3 or python)" >&2; exit 2; }
+
 HOST_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,10 +48,10 @@ done
 CMD="$1"; shift
 
 export REMOTE_AGENTS_HOST="${HOST_ID:-${REMOTE_AGENTS_HOST:-}}"
-HOST_ID="$(python3 "$CONFIG_PY" resolve)" || exit 2
-HOST_JSON="$(python3 "$CONFIG_PY" host "$HOST_ID")" || exit 2
+HOST_ID="$("$PYBIN" "$CONFIG_PY" resolve)" || exit 2
+HOST_JSON="$("$PYBIN" "$CONFIG_PY" host "$HOST_ID")" || exit 2
 
-jfield() { python3 -c 'import json,sys
+jfield() { "$PYBIN" -c 'import json,sys
 node=json.loads(sys.argv[1])
 for p in sys.argv[2].split("."):
     node = node.get(p) if isinstance(node, dict) else None
@@ -60,8 +67,6 @@ INSTANCE="$(jfield aws.instanceId)"
 AWS_CFG="$(jfield aws.configFile)"
 RDP_LOCAL_PORT="$(jfield desktop.localPort)"; RDP_LOCAL_PORT="${RDP_LOCAL_PORT:-13389}"
 RDP_REMOTE_PORT="$(jfield desktop.remotePort)"; RDP_REMOTE_PORT="${RDP_REMOTE_PORT:-3389}"
-RDP_BOOKMARK="$(jfield desktop.rdpBookmark)"
-RDP_BUNDLE="$(jfield desktop.rdpAppBundleId)"; RDP_BUNDLE="${RDP_BUNDLE:-com.microsoft.rdc.macos}"
 
 if [ -n "$AWS_CFG" ]; then export AWS_CONFIG_FILE="${AWS_CFG/#\~/$HOME}"; fi
 AWS=(aws)
@@ -152,19 +157,10 @@ case "$CMD" in
       --document-name AWS-StartPortForwardingSession \
       --parameters "{\"portNumber\":[\"${RDP_REMOTE_PORT}\"],\"localPortNumber\":[\"${RDP_LOCAL_PORT}\"]}"
     ;;
-  desktop-open)
-    require_windows
-    if ! nc -z 127.0.0.1 "$RDP_LOCAL_PORT" >/dev/null 2>&1; then
-      echo "SSM desktop tunnel is not listening on 127.0.0.1:${RDP_LOCAL_PORT}. Start desktop-tunnel first." >&2
-      exit 1
-    fi
-    open -b "$RDP_BUNDLE"
-    echo "Open the saved device '${RDP_BOOKMARK}' in your RDP client."
-    ;;
-  desktop-start|desktop-status|desktop-probe|desktop-viewer|desktop-viewer-stop|desktop-stop|desktop-clear-auth)
+  desktop-start|desktop-status|desktop-probe|desktop-viewer|desktop-viewer-stop|desktop-open|desktop-stop|desktop-clear-auth)
     require_windows
     desktop_command="${CMD#desktop-}"
-    exec python3 "$HERE/desktop.py" "$desktop_command" "$@"
+    exec "$PYBIN" "$HERE/desktop.py" "$desktop_command" "$@"
     ;;
   *)
     echo "host.sh: unknown command '$CMD'" >&2; usage ;;

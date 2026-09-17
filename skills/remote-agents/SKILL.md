@@ -35,6 +35,11 @@ SSH travels inside AWS Systems Manager Session Manager; the only permitted
 inbound rule is the WireGuard UDP port for the work bridge. Never open TCP 22,
 3389, or 445 to the internet.
 
+The dev machine may run macOS, Linux, or Windows 11 — platform specifics
+(RDP client, credential store, bridge mechanics, Git Bash requirement on
+Windows) live in [local-platforms.md](references/local-platforms.md); all
+scripts auto-detect the OS via `scripts/lib/devlocal.py`.
+
 ## Route by task
 
 | Need | Path |
@@ -46,6 +51,7 @@ inbound rule is the WireGuard UDP port for the work bridge. Never open TCP 22,
 | Linux host operations | [linux-host.md](references/linux-host.md) |
 | Windows host inventory/recovery | [windows-host.md](references/windows-host.md) |
 | Headless interactive desktop | [windows-desktop.md](references/windows-desktop.md) |
+| Dev-machine OS support | [local-platforms.md](references/local-platforms.md) |
 | GUI/visual QA runs | [visual-qa.md](references/visual-qa.md) |
 | Work-root layout and audit | [work-storage.md](references/work-storage.md) |
 | Durable worker fleet | [managed-workers.md](references/managed-workers.md) |

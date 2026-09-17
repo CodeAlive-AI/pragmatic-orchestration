@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """Connect the dedicated WireGuard tunnel and mount the Windows Work share."""
 import argparse
-import fcntl
-import termios
 import json
 import os
 from pathlib import Path
-import pty
 import re
-import select
 import subprocess
 import sys
 import time
@@ -16,6 +12,7 @@ import time
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / 'lib'))
 import config as ra_config  # noqa: E402
+import devlocal  # noqa: E402
 
 _config, _ = ra_config.load_config()
 HOST_ID, HOST = ra_config.resolve_host(_config)
@@ -34,16 +31,18 @@ APP_SUPPORT = Path(BRIDGE.get('appSupportDir', '/Library/Application Support/Rem
 
 MOUNT = Path(os.path.expanduser(
     BRIDGE.get('mountRoot', '~/.remote-agents'))) / HOST_ID
-# Keep network filesystems outside repositories and skill discovery trees.
-_skill_root = Path(__file__).resolve().parents[1]
-try:
-    _repo_root = Path(subprocess.check_output(
-        ['git', '-C', str(_skill_root), 'rev-parse', '--show-toplevel'],
-        text=True, stderr=subprocess.DEVNULL).strip())
-except (subprocess.CalledProcessError, FileNotFoundError):
-    _repo_root = _skill_root
-if not MOUNT.is_absolute() or MOUNT.resolve().is_relative_to(_repo_root):
-    raise RuntimeError('Work mount must be an absolute path outside the repository')
+if devlocal.DEV_OS != 'windows':
+    # Keep network filesystems outside repositories and skill discovery trees.
+    # (Windows reaches the share by UNC path; there is no mount directory.)
+    _skill_root = Path(__file__).resolve().parents[1]
+    try:
+        _repo_root = Path(subprocess.check_output(
+            ['git', '-C', str(_skill_root), 'rev-parse', '--show-toplevel'],
+            text=True, stderr=subprocess.DEVNULL).strip())
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        _repo_root = _skill_root
+    if not MOUNT.is_absolute() or MOUNT.resolve().is_relative_to(_repo_root):
+        raise RuntimeError('Work mount must be an absolute path outside the repository')
 
 
 def run(*args, **kwargs):
@@ -78,49 +77,20 @@ def public_endpoint():
 
 
 def mount():
-    if os.path.ismount(MOUNT):
-        print(MOUNT)
+    if devlocal.smb_mounted(WINDOWS_IP, SHARE, MOUNT):
+        print(devlocal.smb_access_path(WINDOWS_IP, SHARE, MOUNT))
         return
-    run('nc', '-z', '-G', '5', '-w', '5', WINDOWS_IP, '445')
+    if not devlocal.tcp_open(WINDOWS_IP, 445, timeout=5):
+        raise RuntimeError(f'{WINDOWS_IP}:445 unreachable; is the tunnel up?')
     # Only this helper consumes its dedicated, locally generated credential.
     credential = json.loads((STATE / 'smb.json').read_text())
-    if not MOUNT.is_dir() or MOUNT.is_symlink():
-        raise RuntimeError(f'Provision a real local mount directory first: {MOUNT}')
-    if any(MOUNT.iterdir()):
-        raise RuntimeError('Refusing to mount over a nonempty directory')
-    master, slave = pty.openpty()
-    def controlling_terminal():
-        os.setsid()
-        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-
-    process = subprocess.Popen(['/sbin/mount_smbfs',
-        f'//{credential["username"]}@{WINDOWS_IP}/{SHARE}', str(MOUNT)],
-        stdin=slave, stdout=slave, stderr=slave, preexec_fn=controlling_terminal)
-    os.close(slave)
-    pending = b''
-    sent = False
-    deadline = time.monotonic() + 30
-    try:
-        while process.poll() is None and time.monotonic() < deadline:
-            if select.select([master], [], [], 0.2)[0]:
-                try:
-                    pending += os.read(master, 4096)
-                except OSError:
-                    break
-                if b'password' in pending.lower() and not sent:
-                    os.write(master, (credential['password'] + '\n').encode())
-                    sent = True
-        if process.poll() is None:
-            process.wait(timeout=2)
-        if process.returncode != 0 or not os.path.ismount(MOUNT):
-            detail = pending.decode(errors='replace').replace(credential['password'], '[redacted]')
-            raise RuntimeError(f'SMB mount failed (no retry): {detail}')
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-        os.close(master)
-    print(MOUNT)
+    if devlocal.DEV_OS != 'windows':
+        if not MOUNT.is_dir() or MOUNT.is_symlink():
+            raise RuntimeError(f'Provision a real local mount directory first: {MOUNT}')
+        if any(MOUNT.iterdir()):
+            raise RuntimeError('Refusing to mount over a nonempty directory')
+    path = devlocal.smb_mount(WINDOWS_IP, SHARE, MOUNT, credential, STATE)
+    print(path)
 
 
 def main():
@@ -138,32 +108,33 @@ def main():
         if (STATE / 'system-service.json').exists():
             request = APP_SUPPORT / 'endpoint'
             request.write_text(endpoint + '\n')
-            run('sudo', '-n', '/bin/launchctl', 'kickstart', '-k', f'system/{LABEL}')
+            devlocal.wg_service_restart(LABEL)
             for _ in range(30):
-                probe = subprocess.run(['nc', '-z', '-G', '1', '-w', '1', WINDOWS_IP, '445'], capture_output=True)
-                if probe.returncode == 0:
+                if devlocal.tcp_open(WINDOWS_IP, 445, timeout=1):
                     break
                 time.sleep(1)
             else:
                 raise RuntimeError('System Work tunnel did not become ready; inspect its service log.')
         else:
-            run('sudo', 'wg-quick', 'up', str(CONFIG))
+            devlocal.wg_up(CONFIG)
         mount()
     elif action == 'mount':
         mount()
     elif action in ('unmount', 'disconnect'):
-        if os.path.ismount(MOUNT):
-            run('/sbin/umount', str(MOUNT))
+        devlocal.smb_unmount(WINDOWS_IP, SHARE, MOUNT)
         if action == 'disconnect':
+            devlocal.smb_cred_cleanup(STATE, WINDOWS_IP)
             if (STATE / 'system-service.json').exists():
-                run('sudo', '-n', '/bin/launchctl', 'kill', 'SIGTERM', f'system/{LABEL}')
+                devlocal.wg_service_stop(LABEL)
             else:
-                run('sudo', 'wg-quick', 'down', str(CONFIG))
+                devlocal.wg_down(CONFIG)
     elif action == 'status':
-        reachable = subprocess.run(['nc', '-z', '-G', '3', '-w', '3', WINDOWS_IP, '445'], capture_output=True).returncode == 0
-        print(json.dumps({'smb_reachable': reachable, 'mounted': os.path.ismount(MOUNT), 'mount_path': str(MOUNT)}))
+        reachable = devlocal.tcp_open(WINDOWS_IP, 445, timeout=3)
+        print(json.dumps({'smb_reachable': reachable,
+                          'mounted': devlocal.smb_mounted(WINDOWS_IP, SHARE, MOUNT),
+                          'mount_path': devlocal.smb_access_path(WINDOWS_IP, SHARE, MOUNT)}))
     else:
-        print(MOUNT)
+        print(devlocal.smb_access_path(WINDOWS_IP, SHARE, MOUNT))
 
 
 if __name__ == '__main__':

@@ -30,8 +30,10 @@ scripts/host.sh desktop-stop          # disconnects; does NOT log off Windows
 scripts/host.sh stop                  # only when nobody else uses the host
 ```
 
-The Mac needs FreeRDP's `sfreerdp` (Homebrew `freerdp`) and Python 3. Do not
-install XQuartz/x11vnc for this workflow.
+The dev machine needs a FreeRDP client and Python 3 — `sfreerdp` on macOS
+(Homebrew `freerdp`), `sfreerdp3`/`sdl-freerdp`/`xfreerdp` on Linux,
+`wfreerdp` on Windows (see [local-platforms.md](local-platforms.md) for the
+per-OS matrix). Do not install XQuartz/x11vnc for this workflow.
 
 ## Manual interactive session (Windows App)
 
@@ -70,14 +72,15 @@ live RDP process does not prove an unlocked desktop.
 
 ## Credential handling
 
-`desktop.py` resolves only the configured Windows App bookmark
-(`desktop.rdpBookmark`) at `127.0.0.1:<localPort>` for `desktop.windowsUser`,
-reads its Keychain item once per start, and pipes it to sfreerdp through
-stdin in memory — never argv, env, logs, or a file. The RDP certificate
-SHA256 is fetched over authenticated SSH and pinned (`/cert:fingerprint:`);
-NLA stays on. If the exact item is missing or auth fails, report the error —
-do not switch to manual entry or another credential. macOS may prompt to
-approve Keychain access.
+`desktop.py` resolves the configured credential once per start and pipes it
+to the FreeRDP client through stdin in memory — never argv, env, logs, or a
+file. Per dev OS: the Windows App bookmark (`desktop.rdpBookmark`) → macOS
+Keychain; `TERMSRV/<addr>` → Windows Credential Manager;
+`desktop.passwordCommand`/`passwordEnv` on Linux or as an override. The RDP
+certificate SHA256 is fetched over authenticated SSH and pinned
+(`/cert:fingerprint:`); NLA stays on. If the exact item is missing or auth
+fails, report the error — do not switch to manual entry or another
+credential. macOS may prompt to approve Keychain access.
 
 ## Lifecycle and failure handling
 

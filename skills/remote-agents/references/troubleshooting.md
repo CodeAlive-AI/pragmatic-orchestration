@@ -43,9 +43,10 @@ internet as a fix.
 readiness. Sequence:
 
 1. `tunnel_listening` false → `host.sh desktop-tunnel` died; check the runtime
-   log in `$TMPDIR/remote-agents-desktop-<host>/`.
-2. `auth_error` set → credential rejected; verify the saved bookmark
-   credential, then `desktop-clear-auth` once verified.
+   log in the system temp dir (`remote-agents-desktop-<host>/`).
+2. `auth_error` set → credential rejected; verify the saved credential
+   (Keychain bookmark on macOS, `TERMSRV/<addr>` on Windows,
+   `passwordCommand` on Linux), then `desktop-clear-auth` once verified.
 3. `connection_failed` → inspect `rdp.log` before `stop`/`start`; no blind
    retry.
 4. Probe fails → no unlocked interactive session (locked, signed out, or
@@ -61,9 +62,24 @@ readiness. Sequence:
   share name, or the tunnel-scoped 445 rule.
 - Service mode: check `/var/log/<label>.log` and that the `endpoint` file
   holds a bare IPv4 address.
-- `wg-quick` up fails → another utun holds the name; `disconnect` first.
+- `wg-quick` up fails → another interface holds the name; `disconnect` first.
+- Windows: UAC prompt denied → re-run `connect`; the WireGuard tunnel service
+  is per-connect there. Linux: `mount -t cifs` needs sudo rights for mount/
+  umount.
 
-## 6. Workers (porch / daemon)
+## 6. Dev-machine OS issues
+
+- `host.sh: python is required` → install Python; on Windows run from Git
+  Bash (`python`/`py` are auto-detected).
+- `no FreeRDP client found` → install `sfreerdp`/`sdl-freerdp`/`xfreerdp`
+  (Linux), `wfreerdp` (Windows), `brew freerdp` (macOS) — or set
+  `desktop.clientBinary`.
+- `no saved RDP credential` on Windows → connect once via mstsc with
+  "remember me" to `127.0.0.1:<localPort>`; or set `desktop.passwordCommand`.
+- `bash is required` inside desktop.py on Windows → run under Git Bash, or
+  put Git's `bin` on PATH so `bash` resolves.
+
+## 7. Workers (porch / daemon)
 
 ```bash
 ssh <alias> 'porch delegate list --active'
@@ -79,7 +95,7 @@ ssh <alias> 'systemctl --user status <daemon> --no-pager'
 - Auth failures on the host → `ssh -t <alias> '<cli> login --device-auth'`
   as the same account that runs the workload.
 
-## 7. Storage audit
+## 8. Storage audit
 
 `host.sh audit` findings map to `work-storage.md`: unknown root entries,
 stale `runs/`, forbidden paths, orphan scheduled tasks. Clean the specific

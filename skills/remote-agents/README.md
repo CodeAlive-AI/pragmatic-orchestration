@@ -16,12 +16,14 @@ through **`porch`** (the sibling `pragmatic-orchestration` skill) on the host.
   Linux variant.
 - **Bridge** — SSH-over-SSM control channel; optional WireGuard + SMB mount of
   the remote work root with a dedicated credential and an optional
-  password-free launchd tunnel service.
+  password-free tunnel service (launchd on macOS, systemd on Linux; on
+  Windows the WireGuard tunnel service manages itself).
 - **porch on the host** — install, authenticate provider CLIs with device
   auth, `delegate --detach` over SSH, supervise via `events`/`wait`, `quota`.
-- **Windows desktop** — headless `sfreerdp` session through an SSM loopback
-  tunnel, Keychain-held credential, pinned RDP certificate, read-only token
-  observer, interactive-session probes.
+- **Windows desktop** — headless FreeRDP session through an SSM loopback
+  tunnel, saved OS credential (Keychain / Credential Manager /
+  `passwordCommand`), pinned RDP certificate, read-only token observer,
+  interactive-session probes.
 - **Visual QA** — bounded scheduled-task worker (`Start-VisualQa.ps1` +
   `run-visual-qa.py`), external pywinauto/UIA MCP driver, PNG evidence via
   `fetch-qa-screenshots.py`.
@@ -29,6 +31,9 @@ through **`porch`** (the sibling `pragmatic-orchestration` skill) on the host.
   disconnects (documented pattern; daemon package itself is separate).
 - **Codex Remote** — phone-visible TUI threads via `--remote unix://` with a
   registration gate before leaving one unattended.
+
+Runs from macOS, Linux, or Windows 11 (Git Bash) dev machines — see
+[references/local-platforms.md](references/local-platforms.md).
 
 ## Setup
 

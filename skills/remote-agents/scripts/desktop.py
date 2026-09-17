@@ -1,15 +1,10 @@
-"""One native headless RDP session on macOS, with optional read-only observation."""
+"""One native headless RDP session on the dev machine, with optional read-only observation."""
 import argparse
 import base64
-import fcntl
 import json
 import os
 from pathlib import Path
 import secrets
-import shutil
-import signal
-import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -19,6 +14,7 @@ import uuid
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / 'lib'))
 import config as ra_config  # noqa: E402
+import devlocal  # noqa: E402
 
 _config, _ = ra_config.load_config()
 HOST_ID, HOST = ra_config.resolve_host(_config)
@@ -64,15 +60,9 @@ def write_json(name, value):
     temp.replace(RUNTIME / name)
 
 
-def process_identity(pid):
-    result = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart=', '-o', 'command='],
-                            capture_output=True, text=True)
-    return result.stdout.strip()
-
-
 def alive(record):
     return bool(record and record.get('identity') and
-                process_identity(record['pid']) == record['identity'])
+                devlocal.process_identity(record['pid']) == record['identity'])
 
 
 def read_record(name):
@@ -80,17 +70,21 @@ def read_record(name):
     return json.loads(path.read_text()) if path.exists() else {}
 
 
-def launch(argv, name, stdin=None):
+def launch(argv, name, stdin=None, env_extra=None):
+    env = dict(os.environ)
+    if env_extra:
+        env.update(env_extra)
     with (RUNTIME / (name + '.log')).open('wb') as log:
         child = subprocess.Popen(list(map(str, argv)), stdin=subprocess.PIPE if stdin is not None
-                                 else subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+                                 else subprocess.DEVNULL, stdout=log, stderr=log, env=env,
+                                 **devlocal.popen_detached_kwargs())
     if stdin is not None:
         try:
             child.stdin.write(stdin)
             child.stdin.close()
         except BrokenPipeError:
             pass
-    record = dict(pid=child.pid, identity=process_identity(child.pid))
+    record = dict(pid=child.pid, identity=devlocal.process_identity(child.pid))
     write_json(name + '.json', record)
     return child, record
 
@@ -98,29 +92,19 @@ def launch(argv, name, stdin=None):
 def terminate(name):
     record = read_record(name + '.json')
     if alive(record):
-        os.killpg(record['pid'], signal.SIGTERM)
-        for _ in range(30):
-            if not alive(record):
-                break
-            time.sleep(.1)
-        else:
-            os.killpg(record['pid'], signal.SIGKILL)
+        devlocal.terminate_tree(record['pid'])
     (RUNTIME / (name + '.json')).unlink(missing_ok=True)
 
 
 def listening(port):
-    try:
-        with socket.create_connection(('127.0.0.1', port), timeout=.3):
-            return True
-    except OSError:
-        return False
+    return devlocal.tcp_open('127.0.0.1', port, timeout=.3)
 
 
 def tunnel():
     if listening(LOCAL_PORT):
         return  # An existing tunnel remains owned by its creator.
     terminate('tunnel')
-    child, _ = launch(['bash', HERE / 'host.sh', '--host', HOST_ID, 'desktop-tunnel'], 'tunnel')
+    child, _ = launch([devlocal.bash(), HERE / 'host.sh', '--host', HOST_ID, 'desktop-tunnel'], 'tunnel')
     for _ in range(60):
         if child.poll() is not None:
             raise RuntimeError('SSM tunnel exited; inspect the private runtime log')
@@ -147,25 +131,7 @@ $sha=[Security.Cryptography.SHA256]::Create()
 def windows_password():
     # The operator authorized this specific saved RDP credential. Do not switch
     # to manual password entry or another credential on failure — report it.
-    if not RDP_BOOKMARK:
-        raise RuntimeError('desktop.rdpBookmark is not configured for this host')
-    database = (Path.home() / 'Library/Containers/com.microsoft.rdc.macos/Data/Library/'
-                'Application Support/com.microsoft.rdc.macos/com.microsoft.rdc.application-data.sqlite')
-    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as conn:
-        rows = conn.execute('''select c.ZID,c.ZUSERNAME from ZBOOKMARKENTITY b
-          join ZCREDENTIALENTITY c on b.ZCREDENTIAL=c.Z_PK
-          where b.ZFRIENDLYNAME=? and b.ZHOSTNAME=?''',
-          (RDP_BOOKMARK, f'127.0.0.1:{LOCAL_PORT}')).fetchall()
-    if len(rows) != 1 or rows[0][1].lower() != WINDOWS_USER.lower():
-        raise RuntimeError(f'Expected exactly one saved {RDP_BOOKMARK} {WINDOWS_USER} credential')
-    result = subprocess.run(['security', 'find-generic-password', '-s', 'com.microsoft.rdc.macos',
-                             '-a', rows[0][0], '-w'], capture_output=True)
-    if result.returncode:
-        raise RuntimeError('Keychain did not release the authorized RDP credential')
-    password = result.stdout.removesuffix(b'\n')
-    if not password or b'\n' in password or b'\r' in password:
-        raise RuntimeError('Password cannot be passed through single-line stdin')
-    return password
+    return devlocal.rdp_password(DESKTOP, f'127.0.0.1:{LOCAL_PORT}', WINDOWS_USER)
 
 
 def status():
@@ -237,15 +203,14 @@ def start():
         return
     if read_record('rdp.json'):
         raise RuntimeError('Previous RDP connection exited. Inspect status, then explicitly stop/start; no blind retry.')
-    binary = shutil.which('sfreerdp')
-    if not binary:
-        raise RuntimeError('sfreerdp is missing; install the FreeRDP client first')
+    binary = devlocal.rdp_client_binary(DESKTOP)
     tunnel()
     cert = fingerprint()
     password = windows_password()
     child, _ = launch([binary, f'/v:127.0.0.1:{LOCAL_PORT}', f'/u:{WINDOWS_USER}', '/from-stdin:force',
                        '/cert:fingerprint:sha256:' + cert, '/sec:nla', f'/size:{SIZE}',
-                       '-clipboard', '-auto-reconnect', '/log-level:WARN'], 'rdp', stdin=password + b'\n')
+                       '-clipboard', '-auto-reconnect', '/log-level:WARN'], 'rdp',
+                    stdin=password + b'\n', env_extra=devlocal.rdp_environment())
     del password
     for _ in range(8):
         if child.poll() is not None:
@@ -322,14 +287,14 @@ def viewer_stop():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['start', 'status', 'probe', 'viewer', 'viewer-stop', 'stop', 'clear-auth'])
+    parser.add_argument('command', choices=['start', 'status', 'probe', 'viewer', 'viewer-stop',
+                                          'open', 'stop', 'clear-auth'])
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     os.umask(0o077)
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock = (RUNTIME / 'controller.lock').open('a')
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock = devlocal.acquire_lock(RUNTIME / 'controller.lock')
     except BlockingIOError:
         raise RuntimeError('Another desktop operation is in progress; do not start concurrent controllers')
     if args.command == 'start':
@@ -343,6 +308,14 @@ def main():
         viewer()
     elif args.command == 'viewer-stop':
         viewer_stop()
+    elif args.command == 'open':
+        if not listening(LOCAL_PORT):
+            raise RuntimeError(
+                f'SSM desktop tunnel is not listening on 127.0.0.1:{LOCAL_PORT}. '
+                'Start desktop-tunnel first.')
+        how = devlocal.open_rdp_client(DESKTOP, f'127.0.0.1:{LOCAL_PORT}', RDP_BOOKMARK)
+        print(f'Opened {how}. Connect to 127.0.0.1:{LOCAL_PORT}'
+              + (f" via saved device '{RDP_BOOKMARK}'." if RDP_BOOKMARK else '.'))
     elif args.command == 'stop':
         try:
             viewer_stop()

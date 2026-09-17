@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_steer_e2e import CONSILIUM, env_base, extract_run_id
+from test_steer_e2e import PORCH, env_base, extract_run_id
 from steer.adapters.opencode import OpenCodeAdapter
 from steer.adapters.codex import CodexAdapter
 from steer.control import _duration_seconds
@@ -25,15 +25,15 @@ from steer.waiter import wait_for_any, wait_for_terminal
 
 class OrchestrationTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="consilium-orchestration-")
+        self.tmp = tempfile.TemporaryDirectory(prefix="porch-orchestration-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         (self.root / "raw").mkdir()
         self.reg = Registry(self.root / "registry")
         self.env = env_base(self.reg.root, self.root / "artifacts")
-        self.env["CONSILIUM_FAKE_STEER_SLOW"] = "0.02"
-        self.env["CONSILIUM_SAVE_OUTPUTS"] = "0"
-        self.env["CONSILIUM_FAKE_RPC_LOG"] = str(self.root / "rpc.jsonl")
+        self.env["PORCH_FAKE_STEER_SLOW"] = "0.02"
+        self.env["PORCH_SAVE_OUTPUTS"] = "0"
+        self.env["PORCH_FAKE_RPC_LOG"] = str(self.root / "rpc.jsonl")
 
     def run_record(self, status="running", **extra):
         rid = self.reg.create_run(agent_id="codex", backend="codex-cli", model="test",
@@ -43,7 +43,7 @@ class OrchestrationTests(unittest.TestCase):
         return rid
 
     def cli(self, *args, **kwargs):
-        return subprocess.run([str(CONSILIUM), "delegate", *args], cwd=kwargs.pop("cwd", self.root),
+        return subprocess.run([str(PORCH), "delegate", *args], cwd=kwargs.pop("cwd", self.root),
                               env=kwargs.pop("env", self.env), text=True, input="", capture_output=True,
                               timeout=30, **kwargs)
 
@@ -73,7 +73,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_opencode_permission_wakes_parent_with_cause_and_command(self):
         p = self.cli("-a", "opencode", "--detach", "PERMISSION_TEST",
-                     env=dict(self.env, CONSILIUM_FAKE_OC_PERMISSION="1", CONSILIUM_FAKE_OC_PERMISSION_DELAY="2"))
+                     env=dict(self.env, PORCH_FAKE_OC_PERMISSION="1", PORCH_FAKE_OC_PERMISSION_DELAY="2"))
         self.assertEqual(p.returncode, 0, p.stderr)
         rid = p.stdout.strip()
         try:
@@ -344,9 +344,9 @@ class OrchestrationTests(unittest.TestCase):
     def test_backend_startup_failure_does_not_discard_healthy_peer(self):
         pending = []
         try:
-            for binary, delay in (("/bin/false", "0.02"), (self.env["CONSILIUM_BIN_CODEX"], "1")):
+            for binary, delay in (("/bin/false", "0.02"), (self.env["PORCH_BIN_CODEX"], "1")):
                 p = self.cli("-a", "codex", "--detach", "STARTUP_TEST", env=dict(
-                    self.env, CONSILIUM_BIN_CODEX=binary, CONSILIUM_FAKE_STEER_SLOW=delay))
+                    self.env, PORCH_BIN_CODEX=binary, PORCH_FAKE_STEER_SLOW=delay))
                 self.assertEqual(p.returncode, 0, p.stderr)
                 pending.append(p.stdout.strip())
             failed, healthy = pending
@@ -368,7 +368,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_codex_status_reports_active_turn_and_clears_it_on_completion(self):
         p = self.cli("-a", "codex", "--detach", "STATUS_TEST",
-                     env=dict(self.env, CONSILIUM_FAKE_STEER_SLOW="1"))
+                     env=dict(self.env, PORCH_FAKE_STEER_SLOW="1"))
         self.assertEqual(p.returncode, 0, p.stderr)
         rid = p.stdout.strip()
         try:
@@ -466,23 +466,23 @@ class OrchestrationTests(unittest.TestCase):
     def test_backend_does_not_inherit_parent_artifact_destination(self):
         log = self.root / "backend-env.json"
         p = self.cli("-a", "codex", "ENV_CHECK", env=dict(self.env,
-                     CONSILIUM_SAVE_OUTPUTS="1", CONSILIUM_ARTIFACT_KEY="parent",
-                     CONSILIUM_FAKE_ARTIFACT_ENV_LOG=str(log)))
+                     PORCH_SAVE_OUTPUTS="1", PORCH_ARTIFACT_KEY="parent",
+                     PORCH_FAKE_ARTIFACT_ENV_LOG=str(log)))
         self.assertEqual(p.returncode, 0, p.stderr)
         observed = json.loads(log.read_text())
-        self.assertIsNone(observed["CONSILIUM_RUN_DIR"])
-        self.assertIsNone(observed["CONSILIUM_ARTIFACT_KEY"])
-        self.assertEqual(observed["CONSILIUM_OUTPUT_DIR"], self.env["CONSILIUM_OUTPUT_DIR"])
-        self.assertEqual(observed["CONSILIUM_STEER_DIR"], self.env["CONSILIUM_STEER_DIR"])
+        self.assertIsNone(observed["PORCH_RUN_DIR"])
+        self.assertIsNone(observed["PORCH_ARTIFACT_KEY"])
+        self.assertEqual(observed["PORCH_OUTPUT_DIR"], self.env["PORCH_OUTPUT_DIR"])
+        self.assertEqual(observed["PORCH_STEER_DIR"], self.env["PORCH_STEER_DIR"])
         rid = extract_run_id(p.stderr)
-        self.assertEqual(self.reg.load_meta(rid)["artifacts_dir"], self.env["CONSILIUM_RUN_DIR"])
+        self.assertEqual(self.reg.load_meta(rid)["artifacts_dir"], self.env["PORCH_RUN_DIR"])
 
     def test_detached_wait_loop_timeout_then_collects_every_result(self):
         pending = []
         try:
             for delay in (2, .5):
                 started = self.cli("-a", "codex", "--detach", "WAIT_LOOP",
-                                   env=dict(self.env, CONSILIUM_FAKE_STEER_SLOW=str(delay)))
+                                   env=dict(self.env, PORCH_FAKE_STEER_SLOW=str(delay)))
                 self.assertEqual(started.returncode, 0, started.stderr)
                 pending.append(started.stdout.strip())
             expected = set(pending)
@@ -523,7 +523,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_observer_interrupt_does_not_cancel_worker(self):
         rid = self.run_record()
-        p = subprocess.Popen([str(CONSILIUM), "delegate", "wait-any", rid], cwd=self.root,
+        p = subprocess.Popen([str(PORCH), "delegate", "wait-any", rid], cwd=self.root,
                              env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             time.sleep(.4)
@@ -567,7 +567,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_resume_failure_never_falls_back_or_retries_old_source(self):
         rid = self.start_durable()
-        broken = dict(self.env, CONSILIUM_FAKE_CODEX_STEER_MODE="resume-error")
+        broken = dict(self.env, PORCH_FAKE_CODEX_STEER_MODE="resume-error")
         p = self.cli("-a", "codex", "--continue-run", rid, "DO_NOT_SEND", env=broken)
         self.assertNotEqual(p.returncode, 0)
         successor = extract_run_id(p.stderr)

@@ -1,29 +1,29 @@
 ---
-name: agents-consilium
+name: pragmatic-orchestration
 description: "Run external coding agents (Codex, Claude Code, OpenCode, native Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or single-agent implementers. Use for multi-model opinions and code review, steerable Grok research, full-access delegation, long-running work, or reattaching to delegated runs. Not for simple questions answerable directly from docs or the current codebase."
 ---
 
-# Agents Consilium
+# Pragmatic Orchestration
 
-Resolve the entrypoint below, then use only `"$CONSILIUM"`. Select the mode from the user's intent and load only the linked reference needed for that mode.
+Resolve the entrypoint below, then use only `"$PORCH"`. Select the mode from the user's intent and load only the linked reference needed for that mode.
 
 ## Platforms
 
 Linux/macOS use the full offline suite. Windows 11 + Git Bash/MSYS2 + native
 Python 3.11+ is experimental and community-supported; native supervisor and
 platform regressions run in CI. `sessions`/`quota` also run natively via the
-`consilium.cmd` sibling launcher — no bash needed for session history. Use Git Bash for
+`porch.cmd` sibling launcher — no bash needed for session history. Use Git Bash for
 the `review`/`delegate` shell entrypoint and a private per-user registry. See
 [README.md](README.md#platform-support) for the verified scope and launcher
 limitations.
 
 ## Entrypoint resolution
 
-Set `CONSILIUM` to the `consilium` executable in the `scripts` subdirectory of the exact
+Set `PORCH` to the `porch` executable in the `scripts` subdirectory of the exact
 `SKILL.md` loaded by skill discovery. Verify it before the first call:
 
 ```bash
-test -x "$CONSILIUM" || { echo "agents-consilium entrypoint not found: $CONSILIUM" >&2; exit 1; }
+test -x "$PORCH" || { echo "pragmatic-orchestration entrypoint not found: $PORCH" >&2; exit 1; }
 ```
 
 Resolve this from the loaded skill path, never from the caller's working directory, repository
@@ -262,16 +262,16 @@ Run research from the exact repository root the user placed in scope. Before lau
 - search beyond the caller's initial file hints and cite repository-relative paths;
 - report `Answer`, `Evidence`, `Context map`, and `Gaps`, distinguishing observed facts from inference.
 
-Keep the default steerable session. If the answer is incomplete, send one self-contained `auto` steer that names the missing evidence and tells the worker to continue; do not repeat the original task. Use `wait` for the final answer, then compare repository status with the pre-launch snapshot. For a remote repository, first check it out into a user-approved working directory; Consilium does not clone or clean it up.
+Keep the default steerable session. If the answer is incomplete, send one self-contained `auto` steer that names the missing evidence and tells the worker to continue; do not repeat the original task. Use `wait` for the final answer, then compare repository status with the pre-launch snapshot. For a remote repository, first check it out into a user-approved working directory; Porch does not clone or clean it up.
 
 ## Default launch commands
 
 ```bash
 # Independent opinions: all enabled profiles
-"$CONSILIUM" review ask --progress compact "Should we use Postgres or SQLite?"
+"$PORCH" review ask --progress compact "Should we use Postgres or SQLite?"
 
 # Generated multiline prompt: stdin must be attached in this same invocation
-"$CONSILIUM" review ask --progress compact -a claude-fable <<'PROMPT'
+"$PORCH" review ask --progress compact -a claude-fable <<'PROMPT'
 Review the proposed change and independently establish its full blast radius.
 <initial_relevant_files completeness="likely-partial">
   <file path="src/example.ts">primary implementation</file>
@@ -280,59 +280,59 @@ Review the proposed change and independently establish its full blast radius.
 PROMPT
 
 # Explicit profile selection only when requested
-"$CONSILIUM" review ask --progress compact \
+"$PORCH" review ask --progress compact \
   -a grok,claude-fable,opencode-go-kimi-k3 --prompt-file prompt.md
 
 # Routine code review
-"$CONSILIUM" review code --progress compact \
+"$PORCH" review code --progress compact \
   --related path/to/config.yaml --related tests/test_file.py path/to/file.py
-git diff HEAD | "$CONSILIUM" review code --progress compact --diff
+git diff HEAD | "$PORCH" review code --progress compact --diff
 
 # High-risk or release-blocking review
-"$CONSILIUM" review code --depth super --progress compact path/to/file.py
+"$PORCH" review code --depth super --progress compact path/to/file.py
 
 # Explicit tradeoffs: mid-cost without judge; maximum coverage
-"$CONSILIUM" review code --depth specialists --progress compact path/to/file.py
-"$CONSILIUM" review code --depth ultra --progress compact path/to/file.py
+"$PORCH" review code --depth specialists --progress compact path/to/file.py
+"$PORCH" review code --depth ultra --progress compact path/to/file.py
 
 # Stateful repository research; run from the target repository root
-"$CONSILIUM" delegate -a grok \
+"$PORCH" delegate -a grok \
   "Read-only investigation: trace authentication, cite repository-relative files, and report Answer/Evidence/Context map/Gaps. Do not edit files."
 
 # Explicit GPT-6 Astra second opinion for difficult work
-"$CONSILIUM" review ask --progress compact -a codex \
+"$PORCH" review ask --progress compact -a codex \
   "Verify SPEC.md against the implementation and identify mismatches."
 
 # Steerable delegate (default); run from the target project CWD
-"$CONSILIUM" delegate -a grok "Implement the caching layer and run tests."
-"$CONSILIUM" delegate steer run_<id> --mode auto "Keep the API compatible."
-"$CONSILIUM" delegate status run_<id> --json
-"$CONSILIUM" delegate events run_<id> --max-events 50
-"$CONSILIUM" delegate wait run_<id> --timeout 300 --json
+"$PORCH" delegate -a grok "Implement the caching layer and run tests."
+"$PORCH" delegate steer run_<id> --mode auto "Keep the API compatible."
+"$PORCH" delegate status run_<id> --json
+"$PORCH" delegate events run_<id> --max-events 50
+"$PORCH" delegate wait run_<id> --timeout 300 --json
 
 # Read both quotas as JSON (or select codex/grok)
-"$CONSILIUM" quota
-"$CONSILIUM" quota codex
-"$CONSILIUM" quota grok
+"$PORCH" quota
+"$PORCH" quota codex
+"$PORCH" quota grok
 
 # Session history: which stores exist, find sessions, search, read context
-"$CONSILIUM" sessions roots
-"$CONSILIUM" sessions list -a codex --since 2026-01-01 --cwd my-project
-"$CONSILIUM" sessions grep -i --scope prompts "rollback plan"
-"$CONSILIUM" sessions show codex:0194a1b2-… --around 42 --context 5
+"$PORCH" sessions roots
+"$PORCH" sessions list -a codex --since 2026-01-01 --cwd my-project
+"$PORCH" sessions grep -i --scope prompts "rollback plan"
+"$PORCH" sessions show codex:0194a1b2-… --around 42 --context 5
 # Layer-picking: codex state index vs Desktop catalog vs canonical rollouts;
 # claude-desktop cowork audit vs code-sessions (cliSessionId → claude transcript)
-"$CONSILIUM" sessions list -a codex --store catalog --limit 20
-"$CONSILIUM" sessions show claude-desktop:local_<id>
+"$PORCH" sessions list -a codex --store catalog --limit 20
+"$PORCH" sessions show claude-desktop:local_<id>
 
 # Explicit direct one-shot delegate
-"$CONSILIUM" delegate -a grok --one-shot "Implement a quick isolated task."
+"$PORCH" delegate -a grok --one-shot "Implement a quick isolated task."
 
 # Detached delegate and recovery
-RUN_ID=$("$CONSILIUM" delegate -a grok --detach "Implement SPEC.md.")
-"$CONSILIUM" delegate list --active
-"$CONSILIUM" delegate events "$RUN_ID" --max-events 50
-"$CONSILIUM" delegate wait "$RUN_ID" --timeout 300 --json  # return for supervision
+RUN_ID=$("$PORCH" delegate -a grok --detach "Implement SPEC.md.")
+"$PORCH" delegate list --active
+"$PORCH" delegate events "$RUN_ID" --max-events 50
+"$PORCH" delegate wait "$RUN_ID" --timeout 300 --json  # return for supervision
 ```
 
 `steerable` means the run accepts control commands. Use `events` for one bounded,
@@ -368,7 +368,7 @@ future parent turn. If the execution tool yields a running session/cell id,
 continue waiting on that same handle through its native wait tool; a yield is
 not completion. Use short tool waits within the longer CLI deadline so the
 parent can respond to new input. These tool-level yields are not supervision
-checkpoints: keep waiting on the same process instead of restarting Consilium
+checkpoints: keep waiting on the same process instead of restarting Porch
 every 55–60 seconds. The CLI deadline should match the next intended check
 (normally 5–15 minutes after the mandatory first-minute check). Do not end
 with a final "agents are running"

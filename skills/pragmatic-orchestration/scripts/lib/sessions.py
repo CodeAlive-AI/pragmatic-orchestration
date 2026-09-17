@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""consilium sessions — search and navigate local coding-agent session histories.
+"""porch sessions — search and navigate local coding-agent session histories.
 
 Read-only, index-free reader over the native on-disk session stores of CLI
 coding agents. Emits bounded JSONL fragments with source locators and honest
@@ -352,7 +352,7 @@ HARNESS_EVIDENCE = {
     "grok": "verified",
     "devin": "verified",
     "gemini": "verified",
-    "consilium": "verified",
+    "porch": "verified",
     "claude-desktop": "verified",
     "cursor": "spec",
     "qwen-code": "spec",
@@ -360,7 +360,7 @@ HARNESS_EVIDENCE = {
     "omp": "spec",
 }
 
-ENV_ROOT = "CONSILIUM_HISTORY_ROOT_"
+ENV_ROOT = "PORCH_HISTORY_ROOT_"
 
 
 def _root_override(slug: str) -> Path | None:
@@ -369,14 +369,14 @@ def _root_override(slug: str) -> Path | None:
 
 
 def _steer_root() -> Path:
-    env = os.environ.get("CONSILIUM_STEER_DIR")
+    env = os.environ.get("PORCH_STEER_DIR")
     if env:
         return Path(env).expanduser()
     if IS_MACOS:
-        return HOME / "Library" / "Caches" / "agents-consilium" / "steer"
+        return HOME / "Library" / "Caches" / "pragmatic-orchestration" / "steer"
     if IS_WINDOWS:
-        return _win_localapp() / "agents-consilium" / "steer"
-    return Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "agents-consilium" / "steer"
+        return _win_localapp() / "pragmatic-orchestration" / "steer"
+    return Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "pragmatic-orchestration" / "steer"
 
 
 class Store:
@@ -488,14 +488,14 @@ def stores_for(harness: str) -> list[Store]:
         return [Store(harness, "sessions", ov or Path(home or (HOME / ".kimi-code")) / "sessions", "session_dirs")]
     if harness == "omp":
         return [Store(harness, "sessions", ov or (HOME / ".omp" / "agent" / "sessions"), "jsonl_dir")]
-    if harness == "consilium":
+    if harness == "porch":
         return [Store(harness, "runs", _steer_root() / "runs", "run_registry")]
     return []
 
 
 ALL_HARNESSES = [
     "claude-code", "codex", "opencode", "grok", "devin", "gemini",
-    "claude-desktop", "cursor", "qwen-code", "kimi-code", "omp", "consilium",
+    "claude-desktop", "cursor", "qwen-code", "kimi-code", "omp", "porch",
 ]
 
 
@@ -2186,10 +2186,10 @@ def omp_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dic
 
 
 # ---------------------------------------------------------------------------
-# consilium's own delegate runs
+# porch's own delegate runs
 # ---------------------------------------------------------------------------
 
-def consilium_iter_sessions(store: Store) -> Iterator[SessionRef]:
+def porch_iter_sessions(store: Store) -> Iterator[SessionRef]:
     if not store.path.is_dir():
         store.status = "missing"
         return
@@ -2199,7 +2199,7 @@ def consilium_iter_sessions(store: Store) -> Iterator[SessionRef]:
             continue
         handle = meta.get("session_handle") or {}
         yield SessionRef(
-            "consilium", "runs", str(meta.get("run_id") or run_dir.name),
+            "porch", "runs", str(meta.get("run_id") or run_dir.name),
             locator={"dir": str(run_dir)},
             title=(meta.get("task") or "")[:120] or None,
             cwd=meta.get("cwd"), created=meta.get("launched_at") or meta.get("started_at"),
@@ -2213,7 +2213,7 @@ def consilium_iter_sessions(store: Store) -> Iterator[SessionRef]:
         )
 
 
-def consilium_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+def porch_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
     run_dir = Path(ref.locator["dir"])
     norm_dir = run_dir / "normalized"
     files = sorted(norm_dir.glob("*.jsonl")) if norm_dir.is_dir() else sorted(run_dir.glob("normalized/*.jsonl"))
@@ -2230,32 +2230,32 @@ def consilium_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stat
             t = rec.get("type")
             loc = {"file": str(npath), "line": line_no}
             if t in ("run_started",):
-                yield frag("consilium", "runs", ref.session_id, seq, "metadata", t, loc,
+                yield frag("porch", "runs", ref.session_id, seq, "metadata", t, loc,
                            text={k: rec.get(k) for k in ("agent", "backend", "model", "effort", "mode") if rec.get(k)},
                            ts=rec.get("ts") or rec.get("timestamp"), authorship="system", visible=False,
                            max_chars=max_chars)
             elif t in ("steer", "user", "prompt"):
-                yield frag("consilium", "runs", ref.session_id, seq, "prompt", t, loc,
+                yield frag("porch", "runs", ref.session_id, seq, "prompt", t, loc,
                            text=rec.get("text") or rec.get("prompt") or rec.get("data"),
                            ts=rec.get("ts") or rec.get("timestamp"), authorship="agent",
                            visible=False, basis="orchestrator steer/prompt", max_chars=max_chars)
             elif t in ("tool", "tool_call"):
-                yield frag("consilium", "runs", ref.session_id, seq, "tool_call", t, loc,
+                yield frag("porch", "runs", ref.session_id, seq, "tool_call", t, loc,
                            text=json.dumps({"name": rec.get("name"), "chunks": rec.get("chunks")}, ensure_ascii=False),
                            ts=rec.get("ts") or rec.get("timestamp"), authorship="agent", visible=False,
                            rel={"tool": rec.get("name")}, max_chars=max_chars)
             elif t in ("text", "answering", "answer", "message"):
-                yield frag("consilium", "runs", ref.session_id, seq, "assistant", t, loc,
+                yield frag("porch", "runs", ref.session_id, seq, "assistant", t, loc,
                            text=rec.get("text") or rec.get("data"), ts=rec.get("ts") or rec.get("timestamp"),
                            authorship="agent", visible=False, max_chars=max_chars)
             elif t in ("end", "run_finished", "completed"):
-                yield frag("consilium", "runs", ref.session_id, seq, "boundary", t, loc,
+                yield frag("porch", "runs", ref.session_id, seq, "boundary", t, loc,
                            text=rec.get("data"), ts=rec.get("ts") or rec.get("timestamp"),
                            authorship="system", status=rec.get("status"),
                            error=rec.get("status") in ("failed", "error"),
                            max_chars=max_chars)
             else:
-                yield frag("consilium", "runs", ref.session_id, seq, "metadata", str(t), loc,
+                yield frag("porch", "runs", ref.session_id, seq, "metadata", str(t), loc,
                            text=rec.get("data") or rec.get("text"), ts=rec.get("ts") or rec.get("timestamp"),
                            authorship="system", visible=False, max_chars=max_chars)
 
@@ -2276,7 +2276,7 @@ READERS = {
     "qwen-code": (qwen_iter_sessions, qwen_iter_fragments),
     "kimi-code": (kimi_iter_sessions, kimi_iter_fragments),
     "omp": (omp_iter_sessions, omp_iter_fragments),
-    "consilium": (consilium_iter_sessions, consilium_iter_fragments),
+    "porch": (porch_iter_sessions, porch_iter_fragments),
 }
 
 
@@ -2549,10 +2549,10 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
         hits = list(p.rglob(f"{query_id}.jsonl"))
         if len(hits) == 1:
             return SessionRef("omp", store.name, query_id, locator={"file": str(hits[0])})
-    elif store.harness == "consilium":
+    elif store.harness == "porch":
         d = p / query_id
         if d.is_dir():
-            return SessionRef("consilium", "runs", query_id, locator={"dir": str(d)})
+            return SessionRef("porch", "runs", query_id, locator={"dir": str(d)})
     return None
 
 
@@ -2780,7 +2780,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="consilium sessions",
+        prog="porch sessions",
         description="Search and navigate local coding-agent session histories (read-only).",
     )
     sub = parser.add_subparsers(dest="command", required=True)

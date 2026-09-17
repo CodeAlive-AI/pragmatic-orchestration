@@ -7,7 +7,7 @@ from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).parents[1] / "lib" / "quota.py"
-SPEC = importlib.util.spec_from_file_location("consilium_quota", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location("porch_quota", MODULE_PATH)
 quota = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(quota)

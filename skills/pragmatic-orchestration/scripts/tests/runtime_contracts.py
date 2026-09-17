@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline contract tests for the shared Consilium runtime."""
+"""Offline contract tests for the shared Porch runtime."""
 from __future__ import annotations
 
 import json
@@ -278,12 +278,12 @@ def main() -> int:
             )
 
     print("=== Workflow plans and concurrency ===")
-    os.environ.pop("CONSILIUM_MAX_PARALLEL", None)
+    os.environ.pop("PORCH_MAX_PARALLEL", None)
     ok("default unlimited concurrency", max_parallel() == 0)
-    os.environ["CONSILIUM_MAX_PARALLEL"] = "2"
+    os.environ["PORCH_MAX_PARALLEL"] = "2"
     # re-import value via function reads env live
     ok("override concurrency", max_parallel() == 2)
-    os.environ["CONSILIUM_MAX_PARALLEL"] = "0"
+    os.environ["PORCH_MAX_PARALLEL"] = "0"
     super_p = get_plan("super")
     ok("super has 9 discovery passes", len(super_p.all_passes()) == 9, str(len(super_p.all_passes())))
     ok("super stage order", [s.id for s in super_p.stages][:3] == [
@@ -351,7 +351,7 @@ def main() -> int:
     ok("review layer order", rev.provenance()["layer_order"][0] == "framework_policy")
     ok(
         "review recap follows untrusted input",
-        rev.text.rfind("CONSILIUM REVIEW CONTRACT") > rev.text.find("Should we use X?"),
+        rev.text.rfind("PORCH REVIEW CONTRACT") > rev.text.find("Should we use X?"),
     )
     ok(
         "review recap is final non-empty layer",
@@ -474,8 +474,8 @@ def main() -> int:
         raw.write_text('{"type":"text","data":"Z"}\n{"type":"end","stopReason":"x"}\n', encoding="utf-8")
         dpath = str(Path(td) / "norm-tape.jsonl")
         env = os.environ.copy()
-        env["CONSILIUM_DEBUG_EVENTS"] = "1"
-        env["CONSILIUM_DEBUG_EVENTS_PATH"] = dpath
+        env["PORCH_DEBUG_EVENTS"] = "1"
+        env["PORCH_DEBUG_EVENTS_PATH"] = dpath
         proc = subprocess.run(
             [
                 sys.executable,
@@ -506,7 +506,7 @@ def main() -> int:
         ok("tape has RAW", "RAW" in stages)
         ok("tape has NORMALIZED", "NORMALIZED" in stages)
         # disabled by default: no tape path pollution when env unset
-        env2 = {k: v for k, v in os.environ.items() if not k.startswith("CONSILIUM_DEBUG")}
+        env2 = {k: v for k, v in os.environ.items() if not k.startswith("PORCH_DEBUG")}
         raw2 = Path(td) / "r2.jsonl"
         raw2.write_text('{"type":"text","data":"Z"}\n{"type":"end"}\n', encoding="utf-8")
         dpath2 = str(Path(td) / "should-not.jsonl")
@@ -860,7 +860,7 @@ def main() -> int:
         raw3 = td / "d3.jsonl"
         raw3.write_text('{"type":"text","data":"Z"}\n{"type":"end"}\n', encoding="utf-8")
         d3 = str(td / "bare-tape.jsonl")
-        env3 = {k: v for k, v in os.environ.items() if not k.startswith("CONSILIUM_DEBUG")}
+        env3 = {k: v for k, v in os.environ.items() if not k.startswith("PORCH_DEBUG")}
         proc = subprocess.run(
             [
                 sys.executable,
@@ -888,10 +888,10 @@ def main() -> int:
         td2 = Path(td2)
         dump_path = td2 / "grok-argv.json"
         env = os.environ.copy()
-        env["CONSILIUM_CONFIG"] = str(LIB.parent / "tests" / "fixtures" / "test-config.json")
-        env["CONSILIUM_BIN_GROK"] = str(LIB.parent / "tests" / "fakes" / "fake-grok")
-        env["CONSILIUM_DUMP_ARGV"] = str(dump_path)
-        env.pop("CONSILIUM_RAW_PROMPT", None)
+        env["PORCH_CONFIG"] = str(LIB.parent / "tests" / "fixtures" / "test-config.json")
+        env["PORCH_BIN_GROK"] = str(LIB.parent / "tests" / "fakes" / "fake-grok")
+        env["PORCH_DUMP_ARGV"] = str(dump_path)
+        env.pop("PORCH_RAW_PROMPT", None)
         proc = subprocess.run(
             [
                 "bash",
@@ -924,8 +924,8 @@ def main() -> int:
             ok("review grok keeps terminal", False, "no dump")
 
         dump_c = td2 / "claude-argv.json"
-        env["CONSILIUM_DUMP_ARGV"] = str(dump_c)
-        env["CONSILIUM_BIN_CLAUDE"] = str(LIB.parent / "tests" / "fakes" / "fake-claude")
+        env["PORCH_DUMP_ARGV"] = str(dump_c)
+        env["PORCH_BIN_CLAUDE"] = str(LIB.parent / "tests" / "fakes" / "fake-claude")
         proc = subprocess.run(
             [
                 "bash",

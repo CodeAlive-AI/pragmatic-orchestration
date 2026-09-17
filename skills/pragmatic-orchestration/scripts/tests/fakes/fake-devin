@@ -16,8 +16,8 @@ DevinAdapter path. Behavior modeled on verified devin 3000.10.27 wire facts:
 - session/cancel resolves in-flight prompts with stopReason cancelled plus
   agent_stopped cause cancelled; the session stays alive.
 
-Modes (CONSILIUM_FAKE_DEVIN_MODE): ok | empty | fail | crash | slow
-Turn duration: CONSILIUM_FAKE_STEER_SLOW seconds (default 0.45).
+Modes (PORCH_FAKE_DEVIN_MODE): ok | empty | fail | crash | slow
+Turn duration: PORCH_FAKE_STEER_SLOW seconds (default 0.45).
 """
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-LOG = os.environ.get("CONSILIUM_FAKE_ARGV_LOG")
-MODE = os.environ.get("CONSILIUM_FAKE_DEVIN_MODE", "ok")
-SLOW = float(os.environ.get("CONSILIUM_FAKE_STEER_SLOW", "0.45"))
+LOG = os.environ.get("PORCH_FAKE_ARGV_LOG")
+MODE = os.environ.get("PORCH_FAKE_DEVIN_MODE", "ok")
+SLOW = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.45"))
 
 _send_lock = threading.Lock()
 

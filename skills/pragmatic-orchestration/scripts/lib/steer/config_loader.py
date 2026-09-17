@@ -1,4 +1,4 @@
-"""Load consilium config.json via shared backend_contract (one-shot + steerable)."""
+"""Load porch config.json via shared backend_contract (one-shot + steerable)."""
 from __future__ import annotations
 
 import sys

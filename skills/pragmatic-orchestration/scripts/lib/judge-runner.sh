@@ -75,13 +75,13 @@ done
 [[ -f "$PROMPT"   ]] || { echo -e "${RED}Error: judge prompt not found: $PROMPT${NC}" >&2; exit 4; }
 
 # Resolve backend script via skill's config.json — same pattern as code-review.sh
-CONSILIUM_CONFIG="${CONSILIUM_CONFIG:-$SKILL_DIR/config.json}"
-[[ -f "$CONSILIUM_CONFIG" ]] || { echo -e "${RED}Error: config not found: $CONSILIUM_CONFIG${NC}" >&2; exit 4; }
+PORCH_CONFIG="${PORCH_CONFIG:-$SKILL_DIR/config.json}"
+[[ -f "$PORCH_CONFIG" ]] || { echo -e "${RED}Error: config not found: $PORCH_CONFIG${NC}" >&2; exit 4; }
 
-BACKEND="$(CONSILIUM_CONFIG_PATH="$CONSILIUM_CONFIG" AGENT_ID="$AGENT" python3 -c '
+BACKEND="$(PORCH_CONFIG_PATH="$PORCH_CONFIG" AGENT_ID="$AGENT" python3 -c '
 import json, os, sys
 sys.stdout.reconfigure(newline="\n")
-path = os.environ["CONSILIUM_CONFIG_PATH"]
+path = os.environ["PORCH_CONFIG_PATH"]
 agent = os.environ["AGENT_ID"]
 d = json.load(open(path, encoding="utf-8"))["agents"]
 if agent not in d:
@@ -94,7 +94,7 @@ BACKEND_SCRIPT="$LIB_DIR/backend_run.sh"
 chmod +x "$BACKEND_SCRIPT" 2>/dev/null || true
 
 # --- Temp artifacts (backend still runs from caller's CWD) -----------------
-TMP_DIR="$(mktemp -d -t "agents-consilium-judge-XXXXXX")"
+TMP_DIR="$(mktemp -d -t "pragmatic-orchestration-judge-XXXXXX")"
 cleanup() { [[ -z "$KEEP_TMP" ]] && rm -rf "$TMP_DIR" || echo -e "${YELLOW}[debug] keeping tmp: $TMP_DIR${NC}" >&2; }
 trap cleanup EXIT
 
@@ -154,7 +154,7 @@ PYEOF
 unset JR_INPUT_KIND JR_INPUT_LABEL JR_INPUT_BODY_FILE JR_FINDINGS_BODY_FILE
 
 # Explicit key from fan-out (primary vs fallback), or invocation-unique default.
-# Never rely solely on ambient inherited CONSILIUM_ARTIFACT_KEY.
+# Never rely solely on ambient inherited PORCH_ARTIFACT_KEY.
 if [[ -n "$ARTIFACT_KEY_ARG" ]]; then
     ARTIFACT_KEY="$ARTIFACT_KEY_ARG"
 else
@@ -171,9 +171,9 @@ RAW_ERR="$TMP_DIR/raw-err.txt"
 set +e
 set +o pipefail
 (
-    export CONSILIUM_SKIP_OUTPUT_TEMPLATE=1
-    export CONSILIUM_RUN_DIR="${CONSILIUM_RUN_DIR:-}"
-    export CONSILIUM_ARTIFACT_KEY="$ARTIFACT_KEY"
+    export PORCH_SKIP_OUTPUT_TEMPLATE=1
+    export PORCH_RUN_DIR="${PORCH_RUN_DIR:-}"
+    export PORCH_ARTIFACT_KEY="$ARTIFACT_KEY"
     "$BACKEND_SCRIPT" \
         --mode review --agent-id "$AGENT" --role analyst \
         < "$RENDERED_PROMPT_FILE" 2>&1 1>"$RAW_OUT" | tee "$RAW_ERR" >&2

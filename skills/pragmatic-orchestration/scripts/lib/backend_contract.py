@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared backend contract for one-shot and steerable Consilium paths.
+"""Shared backend contract for one-shot and steerable Porch paths.
 
 Centralizes:
   - backend identity and binary resolution
@@ -48,12 +48,12 @@ BACKEND_BINS = {
 }
 
 BIN_ENV = {
-    "codex-cli": "CONSILIUM_BIN_CODEX",
-    "claude-code": "CONSILIUM_BIN_CLAUDE",
-    "opencode": "CONSILIUM_BIN_OPENCODE",
-    "grok-build": "CONSILIUM_BIN_GROK",
-    "gemini-cli": "CONSILIUM_BIN_GEMINI",
-    "devin-cli": "CONSILIUM_BIN_DEVIN",
+    "codex-cli": "PORCH_BIN_CODEX",
+    "claude-code": "PORCH_BIN_CLAUDE",
+    "opencode": "PORCH_BIN_OPENCODE",
+    "grok-build": "PORCH_BIN_GROK",
+    "gemini-cli": "PORCH_BIN_GEMINI",
+    "devin-cli": "PORCH_BIN_DEVIN",
 }
 
 MODEL_ENV = {
@@ -264,7 +264,7 @@ def skill_root() -> Path:
 
 
 def config_path() -> Path:
-    env = os.environ.get("CONSILIUM_CONFIG")
+    env = os.environ.get("PORCH_CONFIG")
     if env:
         return Path(env)
     return skill_root() / "config.json"
@@ -273,7 +273,7 @@ def config_path() -> Path:
 def load_config() -> Dict[str, Any]:
     path = config_path()
     if not path.is_file():
-        raise FileNotFoundError(f"consilium config not found: {path}")
+        raise FileNotFoundError(f"porch config not found: {path}")
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -431,7 +431,7 @@ def _main() -> int:
     import argparse
     import sys
 
-    ap = argparse.ArgumentParser(description="Consilium shared backend contract")
+    ap = argparse.ArgumentParser(description="Porch shared backend contract")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p_res = sub.add_parser("resolve", help="Resolve agent settings")

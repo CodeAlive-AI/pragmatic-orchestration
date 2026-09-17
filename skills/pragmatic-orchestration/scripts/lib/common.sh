@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Shared utilities for consilium multi-agent scripts
+# Shared utilities for porch multi-agent scripts
 #
 
 export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
@@ -15,9 +15,9 @@ NC='\033[0m'
 
 # Full stdout archive for every backend call. This protects expensive long-form
 # answers from being lost when a terminal, parent agent, or UI truncates displayed
-# output. Override the directory with CONSILIUM_OUTPUT_DIR, or set
-# CONSILIUM_SAVE_OUTPUTS=0 to disable archival for a one-off run.
-CONSILIUM_OUTPUT_DIR="${CONSILIUM_OUTPUT_DIR:-${TMPDIR:-/tmp}/agents-consilium-outputs}"
+# output. Override the directory with PORCH_OUTPUT_DIR, or set
+# PORCH_SAVE_OUTPUTS=0 to disable archival for a one-off run.
+PORCH_OUTPUT_DIR="${PORCH_OUTPUT_DIR:-${TMPDIR:-/tmp}/pragmatic-orchestration-outputs}"
 
 # Shared exit codes — agent-consumers can branch on these.
 EXIT_OK=0                  # everything succeeded (or agent was disabled/skipped cleanly)
@@ -53,9 +53,9 @@ cdata_wrap() {
 
 # Canonical review policy assets are shared with prompt_pipeline.py so the
 # normal Python path and the shell fallback cannot drift.
-_CONSILIUM_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONSILIUM_PRINCIPLES="$(cat "$_CONSILIUM_COMMON_DIR/../../prompts/review-framework.txt")"
-CONSILIUM_RECAP="$(cat "$_CONSILIUM_COMMON_DIR/../../prompts/review-recap.txt")"
+_PORCH_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PORCH_PRINCIPLES="$(cat "$_PORCH_COMMON_DIR/../../prompts/review-framework.txt")"
+PORCH_RECAP="$(cat "$_PORCH_COMMON_DIR/../../prompts/review-recap.txt")"
 
 # Render the caller's known file paths as a deliberately non-exhaustive review
 # seed. Paths are source material, so keep them inside CDATA and split any CDATA
@@ -104,7 +104,7 @@ Your top recommendation with reasoning. Include confidence level (high/medium/lo
 '
 
 # Role prompts — each goes BETWEEN principles and the user question.
-# To add a new role: define *_ROLE_PROMPT below and add it to CONSILIUM_ROLE_MAP.
+# To add a new role: define *_ROLE_PROMPT below and add it to PORCH_ROLE_MAP.
 
 ANALYST_ROLE_PROMPT="YOUR ROLE: Rigorous Analyst.
 You excel at precision: code correctness, edge cases, implementation depth, performance implications, security surface.
@@ -196,7 +196,7 @@ MANDATORY workflow per candidate finding (hypothesis → validation → fix-cons
 "
 
 # Data-driven role table: "<role-id>|<prompt-var-name>" per line.
-CONSILIUM_ROLE_MAP="analyst|ANALYST_ROLE_PROMPT
+PORCH_ROLE_MAP="analyst|ANALYST_ROLE_PROMPT
 lateral|LATERAL_ROLE_PROMPT
 security|SECURITY_ROLE_PROMPT
 correctness|CORRECTNESS_ROLE_PROMPT
@@ -221,7 +221,7 @@ get_role_prompt() {
             printf '%s' "${!var}"
             return 0
         fi
-    done <<< "$CONSILIUM_ROLE_MAP"
+    done <<< "$PORCH_ROLE_MAP"
     return 1
 }
 
@@ -231,14 +231,14 @@ list_roles() {
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         echo "${line%%|*}"
-    done <<< "$CONSILIUM_ROLE_MAP"
+    done <<< "$PORCH_ROLE_MAP"
 }
 
 # Build prompt: principles + role + output template + user prompt + optional context.
 # Usage: build_prompt "role_text" "$PROMPT" "$CONTEXT_FILE"
-# Set CONSILIUM_SKIP_OUTPUT_TEMPLATE=1 to omit the default Assessment/Findings
+# Set PORCH_SKIP_OUTPUT_TEMPLATE=1 to omit the default Assessment/Findings
 # template — used by code-review mode which provides its own XML schema.
-# Set CONSILIUM_RAW_PROMPT=1 to send the user prompt verbatim — no principles,
+# Set PORCH_RAW_PROMPT=1 to send the user prompt verbatim — no principles,
 # no role, no template. This is an internal/delegate capability; public
 # `review ask`, including --prompt-file, always retains the review policy.
 build_prompt() {
@@ -246,7 +246,7 @@ build_prompt() {
     local prompt="$2"
     local context_file="${3:-}"
 
-    if [[ -n "${CONSILIUM_RAW_PROMPT:-}" ]]; then
+    if [[ -n "${PORCH_RAW_PROMPT:-}" ]]; then
         local full="$prompt"
         if [[ -n "$context_file" && -f "$context_file" ]]; then
             full+=$'\n\n--- Context ---\n'"$(cat "$context_file")"
@@ -263,9 +263,9 @@ build_prompt() {
     fi
 
     local template="$OUTPUT_TEMPLATE"
-    [[ -n "${CONSILIUM_SKIP_OUTPUT_TEMPLATE:-}" ]] && template=""
+    [[ -n "${PORCH_SKIP_OUTPUT_TEMPLATE:-}" ]] && template=""
 
-    local full="${CONSILIUM_PRINCIPLES}
+    local full="${PORCH_PRINCIPLES}
 ${role}
 ${template}
 ---
@@ -284,7 +284,7 @@ ${prompt}"
         fi
     fi
 
-    full+=$'\n\n---\n\n'"$CONSILIUM_RECAP"
+    full+=$'\n\n---\n\n'"$PORCH_RECAP"
 
     printf '%s' "$full"
 }
@@ -303,12 +303,12 @@ ${prompt}"
 warn_shell_special_in_prompt() {
     local p="${1:-}"
     [[ -z "$p" ]] && return 0
-    [[ -n "${CONSILIUM_SUPPRESS_SHELL_WARN:-}" ]] && return 0
+    [[ -n "${PORCH_SUPPRESS_SHELL_WARN:-}" ]] && return 0
     if printf '%s' "$p" | LC_ALL=C grep -qE '`|\$\(' ; then
-        echo -e "${YELLOW}[consilium] WARNING: prompt contains literal backticks or \$(...).${NC}" >&2
+        echo -e "${YELLOW}[porch] WARNING: prompt contains literal backticks or \$(...).${NC}" >&2
         echo -e "${YELLOW}  If you passed the prompt as a double-quoted positional argument,${NC}" >&2
         echo -e "${YELLOW}  the shell already ran the substitution and your prompt is mangled.${NC}" >&2
         echo -e "${YELLOW}  Use --prompt-file, stdin, or a single-quoted heredoc instead.${NC}" >&2
-        echo -e "${YELLOW}  See SKILL.md § Shell escaping. Set CONSILIUM_SUPPRESS_SHELL_WARN=1 to silence.${NC}" >&2
+        echo -e "${YELLOW}  See SKILL.md § Shell escaping. Set PORCH_SUPPRESS_SHELL_WARN=1 to silence.${NC}" >&2
     fi
 }

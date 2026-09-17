@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Declarative workflow plans for Consilium review fan-out.
+"""Declarative workflow plans for Porch review fan-out.
 
 Plans are data consumed by workflow_runner.sh / Python helpers rather than
 duplicated background-job blocks. Stage order is deterministic. Concurrency is
-bounded via CONSILIUM_MAX_PARALLEL (default 0 = unlimited, matching historical
+bounded via PORCH_MAX_PARALLEL (default 0 = unlimited, matching historical
 behavior).
 
 Plan ids:
@@ -108,7 +108,7 @@ def skill_root() -> Path:
 
 def max_parallel() -> int:
     """Concurrency limit. 0 or unset = unlimited (historical default)."""
-    raw = os.environ.get("CONSILIUM_MAX_PARALLEL", "0").strip()
+    raw = os.environ.get("PORCH_MAX_PARALLEL", "0").strip()
     try:
         n = int(raw)
         return max(0, n)
@@ -421,7 +421,7 @@ def _main() -> int:
     import argparse
     import sys
 
-    ap = argparse.ArgumentParser(description="Consilium declarative workflow plans")
+    ap = argparse.ArgumentParser(description="Porch declarative workflow plans")
     ap.add_argument("plan", help="ask|basic|specialists|super|ultra")
     ap.add_argument("--agents", default="", help="comma-separated agents for ask/basic")
     ap.add_argument("--judge", default="claude-sonnet")

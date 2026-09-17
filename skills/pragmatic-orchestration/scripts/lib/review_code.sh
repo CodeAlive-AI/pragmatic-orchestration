@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Code Review Mode for Consilium
+# Code Review Mode for Porch
 #
 # Runs N specialist passes across the enabled agents and returns findings with
 # line anchors and a quoted-code check. There is no coordinator pass: the caller
@@ -13,7 +13,7 @@
 #                            architecture, consistency. Broader mid-cost coverage
 #                            with no synthesizer or LLM judge. For high-risk or
 #                            release-blocking work, prefer --depth super through
-#                            `consilium review code`.
+#                            `porch review code`.
 #
 # Usage:
 #   code-review.sh <file>                  # review a single file on disk (basic mode: 2 specialists)
@@ -41,7 +41,7 @@
 #                        performance + architecture + consistency). Specialists
 #                        mode is ~2.5× the basic cost and has no judge. Use it
 #                        for broader mid-cost coverage; prefer --depth super via
-#                        `consilium review code` for high-risk or release-blocking
+#                        `porch review code` for high-risk or release-blocking
 #                        reviews. Default is unchanged so existing callers are
 #                        not affected.
 #   -a, --agents <ID|GLOB>
@@ -56,16 +56,16 @@
 #                        caller can follow each specialist pass separately.
 #                        full (default) = thinking / answer previews,
 #                        compact = content-free liveness counters,
-#                        none = silent. Env fallback: CONSILIUM_PROGRESS.
+#                        none = silent. Env fallback: PORCH_PROGRESS.
 #   --related <path>     Add a caller-identified file to the initial relevance
 #                        seed. Repeatable. The primary target is added
 #                        automatically; the seed is explicitly non-exhaustive.
 #   -h, --help           Show this help.
 #
 # Environment overrides:
-#   CONSILIUM_AGENTS         Comma-separated --agents fallback when no -a is passed.
-#   CONSILIUM_EXCLUDE        Comma-separated --exclude fallback when no -x is passed.
-#   CONSILIUM_REVIEW_MODE    Default review mode (basic|specialists) when no --mode is passed.
+#   PORCH_AGENTS         Comma-separated --agents fallback when no -a is passed.
+#   PORCH_EXCLUDE        Comma-separated --exclude fallback when no -x is passed.
+#   PORCH_REVIEW_MODE    Default review mode (basic|specialists) when no --mode is passed.
 #
 # Behaviour:
 #   - Mode "basic" (default): 2 specializations — security, correctness (the
@@ -109,8 +109,8 @@ INPUT_PATH=""
 INCLUDE_PATTERNS=()
 EXCLUDE_PATTERNS=()
 RELATED_FILES=()
-REVIEW_MODE="${CONSILIUM_REVIEW_MODE:-basic}"   # basic | specialists
-PROGRESS="${CONSILIUM_PROGRESS:-full}"
+REVIEW_MODE="${PORCH_REVIEW_MODE:-basic}"   # basic | specialists
+PROGRESS="${PORCH_PROGRESS:-full}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -167,14 +167,14 @@ case "$REVIEW_MODE" in
         ;;
 esac
 
-export CONSILIUM_MODE="review-code-$REVIEW_MODE"
+export PORCH_MODE="review-code-$REVIEW_MODE"
 artifacts_init_run "code-$REVIEW_MODE"
 
-if [[ ${#INCLUDE_PATTERNS[@]} -eq 0 && -n "${CONSILIUM_AGENTS:-}" ]]; then
-    IFS=',' read -ra INCLUDE_PATTERNS <<< "$CONSILIUM_AGENTS"
+if [[ ${#INCLUDE_PATTERNS[@]} -eq 0 && -n "${PORCH_AGENTS:-}" ]]; then
+    IFS=',' read -ra INCLUDE_PATTERNS <<< "$PORCH_AGENTS"
 fi
-if [[ ${#EXCLUDE_PATTERNS[@]} -eq 0 && -n "${CONSILIUM_EXCLUDE:-}" ]]; then
-    IFS=',' read -ra EXCLUDE_PATTERNS <<< "$CONSILIUM_EXCLUDE"
+if [[ ${#EXCLUDE_PATTERNS[@]} -eq 0 && -n "${PORCH_EXCLUDE:-}" ]]; then
+    IFS=',' read -ra EXCLUDE_PATTERNS <<< "$PORCH_EXCLUDE"
 fi
 
 config_validate || exit $EXIT_CONFIG_ERROR
@@ -236,7 +236,7 @@ if [[ ${#ENABLED_AGENTS[@]} -eq 0 ]]; then
     if [[ ${#INCLUDE_PATTERNS[@]} -gt 0 || ${#EXCLUDE_PATTERNS[@]} -gt 0 ]]; then
         echo -e "${RED}Error: no agents remain after include/exclude filters${NC}" >&2
     else
-        echo -e "${RED}Error: no agents enabled in $CONSILIUM_CONFIG${NC}" >&2
+        echo -e "${RED}Error: no agents enabled in $PORCH_CONFIG${NC}" >&2
     fi
     exit $EXIT_CONFIG_ERROR
 fi
@@ -339,9 +339,9 @@ PROMPT
 
 # --- Dispatch in parallel ---
 RESP_DIR=$(mktemp -d)
-# Debug knob: set CONSILIUM_KEEP_TEMP=1 to retain raw per-agent responses
+# Debug knob: set PORCH_KEEP_TEMP=1 to retain raw per-agent responses
 # under $RESP_DIR. Useful when debugging why a review returned zero findings.
-if [[ -z "${CONSILIUM_KEEP_TEMP:-}" ]]; then
+if [[ -z "${PORCH_KEEP_TEMP:-}" ]]; then
     trap "rm -rf '$RESP_DIR'" EXIT
 else
     echo -e "${YELLOW}[debug] keeping temp dir: $RESP_DIR${NC}" >&2
@@ -359,8 +359,8 @@ total=${#ASSIGN_AGENTS[@]}
 progress_stage "code-review" "depth=$REVIEW_MODE passes=$total agents=${ASSIGN_AGENTS[*]} roles=${ASSIGN_ROLES[*]}"
 
 # Declarative plan for roles (agents already assigned via round-robin above).
-# CONSILIUM_MAX_PARALLEL bounds concurrent specialist passes (0 = unlimited).
-_CODE_LIMIT="${CONSILIUM_MAX_PARALLEL:-0}"
+# PORCH_MAX_PARALLEL bounds concurrent specialist passes (0 = unlimited).
+_CODE_LIMIT="${PORCH_MAX_PARALLEL:-0}"
 if ! [[ "$_CODE_LIMIT" =~ ^[0-9]+$ ]]; then _CODE_LIMIT=0; fi
 
 for i in "${!ASSIGN_AGENTS[@]}"; do
@@ -389,10 +389,10 @@ for i in "${!ASSIGN_AGENTS[@]}"; do
     (
         set +e
         set +o pipefail
-        export CONSILIUM_RUN_DIR
-        export CONSILIUM_SAVE_OUTPUTS
-        export CONSILIUM_SKIP_OUTPUT_TEMPLATE=1
-        export CONSILIUM_ARTIFACT_KEY="$key"
+        export PORCH_RUN_DIR
+        export PORCH_SAVE_OUTPUTS
+        export PORCH_SKIP_OUTPUT_TEMPLATE=1
+        export PORCH_ARTIFACT_KEY="$key"
         # stdin prompt (not --prompt-file): preserves role/principles wrap.
         "$LIB_DIR/backend_run.sh" \
             --mode review --agent-id "$agent" --role "$role" \

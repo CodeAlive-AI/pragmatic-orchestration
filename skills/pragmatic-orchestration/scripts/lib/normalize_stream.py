@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Normalize backend CLI streams into consilium event JSONL.
+"""Normalize backend CLI streams into porch event JSONL.
 
 Reads newline-delimited JSON (or plain text) from stdin or a file.
-Writes validated ConsiliumEvent records to stdout (one JSON object per line).
+Writes validated PorchEvent records to stdout (one JSON object per line).
 
 When used mid-flight (stdin from a live backend pipe):
   - each raw line is persisted immediately via --raw-out (flushed)
@@ -10,7 +10,7 @@ When used mid-flight (stdin from a live backend pipe):
   - with --progress, compact semantic progress is written to stderr immediately
   - unknown stream types are rejected for normalized artifacts (protocol drift)
 
-Normalized event schema (closed ConsiliumEvent types — see events.py):
+Normalized event schema (closed PorchEvent types — see events.py):
   {"ts": ISO8601, "backend": str, "agent_id": str, "type": str, "data": str|null, "raw": object|null}
 
   type ∈ {run_started, thinking_delta, answer_delta, tool_started, tool_completed,
@@ -52,7 +52,7 @@ def utc_now() -> str:
 
 
 def emit_event(out: TextIO, evt) -> None:
-    """Persist a validated ConsiliumEvent; never write unknown types."""
+    """Persist a validated PorchEvent; never write unknown types."""
     out.write(evt.to_json() + "\n")
     out.flush()
     tape_record(
@@ -70,9 +70,9 @@ def progress_event(agent_id: str, typ: str, data: Any = None) -> None:
         if len(preview) > 80:
             preview = preview[:77] + "..."
     if preview:
-        sys.stderr.write(f"[consilium] event agent={agent_id} type={typ} data={preview}\n")
+        sys.stderr.write(f"[porch] event agent={agent_id} type={typ} data={preview}\n")
     else:
-        sys.stderr.write(f"[consilium] event agent={agent_id} type={typ}\n")
+        sys.stderr.write(f"[porch] event agent={agent_id} type={typ}\n")
     sys.stderr.flush()
     tape_record(
         "RENDERED",
@@ -148,7 +148,7 @@ class CompactProgressReporter:
         self.emitted_in_phase = True
         elapsed = int(self.last_emit - self.started)
         line = (
-            f"[consilium] event agent={self.agent_id} type={self.phase} "
+            f"[porch] event agent={self.agent_id} type={self.phase} "
             f"chunks={self.chunks} chars={self.chars} elapsed={elapsed}s\n"
         )
         sys.stderr.write(line)
@@ -597,7 +597,7 @@ def stream_to_progress_type(stream_type: str) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Normalize backend streams to consilium JSONL")
+    ap = argparse.ArgumentParser(description="Normalize backend streams to porch JSONL")
     ap.add_argument("--backend", required=True, choices=[
         "codex-cli", "claude-code", "opencode", "gemini-cli", "grok-build",
         "devin-cli", "plain"
@@ -632,7 +632,7 @@ def main() -> int:
         debug_path = "" if args.debug_events == "__default__" else args.debug_events
         init_global_tape(debug_path)
     else:
-        # Env fallback consistent with project (CONSILIUM_DEBUG_EVENTS=1)
+        # Env fallback consistent with project (PORCH_DEBUG_EVENTS=1)
         init_global_tape("")
 
     tape_record(
@@ -669,7 +669,7 @@ def main() -> int:
     saw_error = False
     error_msg = ""
     final_result_text: Optional[str] = None  # non-empty authoritative only
-    collected_for_final = []  # ConsiliumEvent-like for assembly
+    collected_for_final = []  # PorchEvent-like for assembly
     rejected_count = 0
     rejected_types: Dict[str, int] = {}
     # OpenCode message.part.updated: part-id last-write-wins (not H+He+Hello).
@@ -913,7 +913,7 @@ def main() -> int:
         # Honest report on stderr only when debug tape is active — still not
         # event content, only gap/overflow counters.
         sys.stderr.write(
-            f"[consilium] debug-events "
+            f"[porch] debug-events "
             f"dropped={stats.get('dropped', 0)} "
             f"overflow={str(stats.get('overflow', False)).lower()} "
             f"gaps={stats.get('sequence_gaps', 0)} "
@@ -933,7 +933,7 @@ def main() -> int:
         if extra > 0:
             summary += f",+{extra}_more"
         sys.stderr.write(
-            f"[consilium] protocol-drift rejected_unknown={rejected_count} "
+            f"[porch] protocol-drift rejected_unknown={rejected_count} "
             f"types={summary}\n"
         )
         sys.stderr.flush()

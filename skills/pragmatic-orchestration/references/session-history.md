@@ -8,18 +8,18 @@ raw source.
 
 Supported harnesses: `claude-code`, `codex` (CLI + Desktop), `opencode`,
 `grok`, `devin` (CLI/Desktop), `gemini`, `cursor`, `claude-desktop`,
-`qwen-code`, `kimi-code`, `omp`, plus `consilium` for this skill's own
+`qwen-code`, `kimi-code`, `omp`, plus `porch` for this skill's own
 delegate/review runs.
 
 ## Command surface
 
 ```bash
-consilium sessions roots  [-a h1,h2] [--store SUBSTR]
-consilium sessions list   [-a h1,h2] [--store S] [--cwd S] [--since T] [--until T] [--limit N]
-consilium sessions grep   [-a h1,h2] [--scope S] [-i] [--regex] [--limit N] PATTERN
-consilium sessions show   <harness:session-id> [--scope S] [--limit N]
-consilium sessions show   <harness:session-id> --around SEQ [--context N]
-consilium sessions show   --file PATH          # sniff a single file/db
+porch sessions roots  [-a h1,h2] [--store SUBSTR]
+porch sessions list   [-a h1,h2] [--store S] [--cwd S] [--since T] [--until T] [--limit N]
+porch sessions grep   [-a h1,h2] [--scope S] [-i] [--regex] [--limit N] PATTERN
+porch sessions show   <harness:session-id> [--scope S] [--limit N]
+porch sessions show   <harness:session-id> --around SEQ [--context N]
+porch sessions show   --file PATH          # sniff a single file/db
 ```
 
 `history` is an alias of `sessions`. All output is JSONL on stdout: session
@@ -30,7 +30,7 @@ failure.
 ## Platform defaults
 
 All commands run on macOS, Linux, and Windows. On Windows use the sibling
-`consilium.cmd` launcher (sessions/quota run on native Python; review/delegate
+`porch.cmd` launcher (sessions/quota run on native Python; review/delegate
 forward to bash — Git Bash, MSYS2, or WSL required for those). The reader
 itself is platform-neutral; only the *default store roots* differ:
 
@@ -47,10 +47,10 @@ itself is platform-neutral; only the *default store roots* differ:
 | `qwen-code` | `~/.qwen/projects` | `%USERPROFILE%\.qwen\projects` |
 | `kimi-code` | `~/.kimi-code` (or `$KIMI_CODE_HOME`) | `%USERPROFILE%\.kimi-code` (or `%KIMI_CODE_HOME%`) |
 | `omp` | `~/.omp/agent/sessions` | `%USERPROFILE%\.omp\agent\sessions` |
-| `consilium` | `~/Library/Caches/agents-consilium/steer` (macOS), `$XDG_CACHE_HOME/agents-consilium/steer` (Linux) | `%LOCALAPPDATA%\agents-consilium\steer` |
+| `porch` | `~/Library/Caches/pragmatic-orchestration/steer` (macOS), `$XDG_CACHE_HOME/pragmatic-orchestration/steer` (Linux) | `%LOCALAPPDATA%\pragmatic-orchestration\steer` |
 
-`CONSILIUM_HISTORY_ROOT_<HARNESS>` overrides any default (uppercase, `-`→`_`),
-`CONSILIUM_STEER_DIR` overrides the consilium root. On Linux `claude-desktop`
+`PORCH_HISTORY_ROOT_<HARNESS>` overrides any default (uppercase, `-`→`_`),
+`PORCH_STEER_DIR` overrides the porch root. On Linux `claude-desktop`
 and `cursor` fall back to `~/.config/…`. SQLite stores open read-only via a
 `file:` URI with `mode=ro` + `PRAGMA query_only=ON`; drive-letter paths
 (`C:\…`) are URI-escaped internally — pass them as normal paths.
@@ -93,7 +93,7 @@ data — do not grep before you know which sessions exist.
 ### Finding "what the human actually asked"
 
 ```bash
-consilium sessions grep --scope prompts --since 2026-01-01 "deploy"
+porch sessions grep --scope prompts --since 2026-01-01 "deploy"
 ```
 
 `--scope prompts` emits only `kind=prompt` fragments. Within that set,
@@ -309,7 +309,7 @@ Codex stores the same threads in several layers with different authority.
 
 - Generic JSONL transcripts; conservative fallback classification applies.
 
-### consilium — `$CONSILIUM_STEER_DIR/runs/<run-id>/` (default `~/Library/Caches/agents-consilium/steer/runs/`)
+### porch — `$PORCH_STEER_DIR/runs/<run-id>/` (default `~/Library/Caches/pragmatic-orchestration/steer/runs/`)
 
 - `meta.json`: agent_id, backend, model, effort, cwd, status, timestamps,
   `native_session` linkage (e.g. codex thread id for `--persist-session`
@@ -329,9 +329,9 @@ store-internal mirrors like codex `event_msg.user_message` ↔
 `response_item.user`).
 
 ```bash
-consilium sessions turns -a codex --since 2026-02-01   # one row per turn
-consilium sessions flags -a claude-code --kind retry_loop
-consilium sessions stats --by model                    # grouped aggregates
+porch sessions turns -a codex --since 2026-02-01   # one row per turn
+porch sessions flags -a claude-code --kind retry_loop
+porch sessions stats --by model                    # grouped aggregates
 ```
 
 Each turn row carries: `ts_start/ts_end/duration_s`, `models`, `user_msgs`,
@@ -353,7 +353,7 @@ Each turn row carries: `ts_start/ts_end/duration_s`, `models`, `user_msgs`,
 | `context_pressure` | ≥1 compaction event |
 | `interrupted` | ≥1 interrupt/abort record (`turn_aborted`, `[Request interrupted…]`) |
 | `error_burst` | ≥3 error fragments within a 10-fragment window |
-| `failed_run` | terminal boundary `status=failed/error` (consilium runs) |
+| `failed_run` | terminal boundary `status=failed/error` (porch runs) |
 
 Every flag carries `evidence: [{seq, locator}, …]` + `basis` describing the
 rule — feed `seq` straight to `sessions show <harness:id> --around SEQ` to
@@ -371,7 +371,7 @@ Grok `tool_result` carries no error field — `tool_errors=0` there means
 
 **Dedup rule** (stated in every `_summary`): layered stores of one
 conversation collapse — first canonical layer wins (rollout/transcript over
-index/catalog), claude-desktop code-sessions key on `cliSessionId`, consilium
+index/catalog), claude-desktop code-sessions key on `cliSessionId`, porch
 runs dedupe by `native_session`.
 
 **Synthesis recipe**: `stats` → find outlier groups → `flags` → collect

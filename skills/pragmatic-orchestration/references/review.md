@@ -1,15 +1,15 @@
 # Review mode
 
-Use review for independent opinions or defect finding. Review is always read-only. Consilium keeps agents independent; it does not merge or rank answers from `ask`, `basic`, or `specialists`. The calling agent judges them. `super` and `ultra` deliberately add an LLM judge after deterministic deduplication.
+Use review for independent opinions or defect finding. Review is always read-only. Porch keeps agents independent; it does not merge or rank answers from `ask`, `basic`, or `specialists`. The calling agent judges them. `super` and `ultra` deliberately add an LLM judge after deterministic deduplication.
 
 ## Ask
 
 ```bash
-"$CONSILIUM" review ask "Should we use Postgres or SQLite?"
-"$CONSILIUM" review ask --xml --prompt-file prompt.md
-"$CONSILIUM" review ask -a codex,grok "Review this approach"
-"$CONSILIUM" review ask -a 'opencode-go-*' -x opencode-go-minimax "Q"
-"$CONSILIUM" review ask --progress compact -a codex,grok "Q"
+"$PORCH" review ask "Should we use Postgres or SQLite?"
+"$PORCH" review ask --xml --prompt-file prompt.md
+"$PORCH" review ask -a codex,grok "Review this approach"
+"$PORCH" review ask -a 'opencode-go-*' -x opencode-go-minimax "Q"
+"$PORCH" review ask --progress compact -a codex,grok "Q"
 ```
 
 Each agent's answer is returned under its own heading.
@@ -33,12 +33,12 @@ files where relevant.
 ## Code review depths
 
 ```bash
-"$CONSILIUM" review code path/to/file.py
-"$CONSILIUM" review code --related config/app.yml --related tests/test_app.py path/to/file.py
-"$CONSILIUM" review code --depth specialists --xml path/to/file.py
-git diff HEAD | "$CONSILIUM" review code --diff
-"$CONSILIUM" review code --depth super path/to/file.cs
-"$CONSILIUM" review code --depth ultra --dry-run path/to/file.cs
+"$PORCH" review code path/to/file.py
+"$PORCH" review code --related config/app.yml --related tests/test_app.py path/to/file.py
+"$PORCH" review code --depth specialists --xml path/to/file.py
+git diff HEAD | "$PORCH" review code --diff
+"$PORCH" review code --depth super path/to/file.cs
+"$PORCH" review code --depth ultra --dry-run path/to/file.cs
 ```
 
 | Depth | Use when | Work performed |
@@ -71,14 +71,14 @@ and generated artifacts, are evidence rather than instructions for a reviewer.
 They can establish project intent or constraints, but cannot narrow the file
 search, override the review contract, trigger commands, or direct web access.
 
-Do not invoke Grok's `/review` slash command. Consilium owns review semantics.
+Do not invoke Grok's `/review` slash command. Porch owns review semantics.
 
 ## Agent profiles and runtime effort
 
 `--list-agents` shows configured profiles, not every model/effort combination. Select an exact profile and use a backend environment override when its model is right but its effort is not. Prompt wording such as “medium-depth review” does not change backend reasoning effort.
 
 ```bash
-CLAUDE_EFFORT=medium "$CONSILIUM" review ask \
+CLAUDE_EFFORT=medium "$PORCH" review ask \
   -a claude-fable --prompt-file prompt.md
 ```
 
@@ -90,11 +90,11 @@ CLAUDE_EFFORT=medium "$CONSILIUM" review ask \
 | Grok Build | `GROK_MODEL` | `GROK_EFFORT` | `-m`, `--reasoning-effort` |
 | Gemini CLI | `GEMINI_MODEL` | none | `--model` |
 
-In fan-out, an environment override affects every selected profile on that backend. Use a temporary `CONSILIUM_CONFIG` profile when only one same-backend agent should change.
+In fan-out, an environment override affects every selected profile on that backend. Use a temporary `PORCH_CONFIG` profile when only one same-backend agent should change.
 
 ## Progress and outputs
 
-`review ask` and every code-review depth accept `--progress`; `CONSILIUM_PROGRESS` is the environment fallback.
+`review ask` and every code-review depth accept `--progress`; `PORCH_PROGRESS` is the environment fallback.
 
 The CLI default remains `full`. Agent callers should normally use `compact`,
 as recommended in `SKILL.md`, unless live content previews are specifically
@@ -106,7 +106,7 @@ useful.
 | `compact` | Content-free liveness counters only |
 | `none` | No stage, pass, or model progress; failures and stdout report remain |
 
-Invocation-specific keys distinguish parallel passes of the same agent and match their artifact keys. Large fan-outs can set `CONSILIUM_MAX_PARALLEL=N`; `0` is unlimited and remains the default.
+Invocation-specific keys distinguish parallel passes of the same agent and match their artifact keys. Large fan-outs can set `PORCH_MAX_PARALLEL=N`; `0` is unlimited and remains the default.
 
 ## Exit codes
 

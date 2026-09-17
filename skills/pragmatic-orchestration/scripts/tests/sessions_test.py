@@ -35,7 +35,7 @@ def write_json(path: Path, obj) -> Path:
 
 class FixtureMixin:
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix="consilium sessions ")
+        temp = tempfile.TemporaryDirectory(prefix="porch sessions ")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
 
@@ -593,7 +593,7 @@ class ClaudeDesktopTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(refs["local_x1"].extra["cli_session_id"], cli_sid)
         self.assertEqual(refs["local_x1"].extra["surface"], "code-tab")
 
-        env = {"CONSILIUM_HISTORY_ROOT_CLAUDE_CODE": str(claude_root)}
+        env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(claude_root)}
         with patch.dict(os.environ, env):
             stats: dict[str, int] = {}
             out = list(sessions.claude_desktop_iter_fragments(store, refs["local_x1"], 400, stats))
@@ -713,7 +713,7 @@ class OmpTests(FixtureMixin, unittest.TestCase):
         self.assertTrue(any(f["kind"] == "tool_call" for f in out))
 
 
-class ConsiliumRunTests(FixtureMixin, unittest.TestCase):
+class PorchRunTests(FixtureMixin, unittest.TestCase):
     def test_runs(self):
         run = self.root / "runs" / "run_test-1"
         write_json(run / "meta.json",
@@ -728,11 +728,11 @@ class ConsiliumRunTests(FixtureMixin, unittest.TestCase):
             {"type": "text", "ts": "2026-01-10T00:00:03Z", "text": "working…"},
             {"type": "end", "ts": "2026-01-10T00:00:04Z", "status": "completed"},
         ])
-        store = sessions.Store("consilium", "runs", self.root / "runs", "run_registry")
-        refs = list(sessions.consilium_iter_sessions(store))
+        store = sessions.Store("porch", "runs", self.root / "runs", "run_registry")
+        refs = list(sessions.porch_iter_sessions(store))
         self.assertEqual(refs[0].extra["native_session"], "native-1")
         stats: dict[str, int] = {}
-        out = list(sessions.consilium_iter_fragments(store, refs[0], 400, stats))
+        out = list(sessions.porch_iter_fragments(store, refs[0], 400, stats))
         self.assertTrue(any(f["kind"] == "prompt" and f["authorship"] == "agent" for f in out))
         self.assertTrue(any(f["kind"] == "boundary" and f["status"] == "completed" for f in out))
 
@@ -1006,7 +1006,7 @@ class CliAnalyticsTests(FixtureMixin, unittest.TestCase):
              "origin": {"kind": "human"},
              "message": {"role": "user", "content": "that's not right, undo it"}},
         ])
-        env = {"CONSILIUM_HISTORY_ROOT_CLAUDE_CODE": str(self.root / "claude")}
+        env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(self.root / "claude")}
 
         proc = self.run_cli("turns", "-a", "claude-code", env_extra=env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -1034,7 +1034,7 @@ class WindowsPathTests(FixtureMixin, unittest.TestCase):
 
     def _stores(self, harness, env):
         env = dict(env)
-        env.pop("CONSILIUM_STEER_DIR", None)  # keep the host env out of steer-root resolution
+        env.pop("PORCH_STEER_DIR", None)  # keep the host env out of steer-root resolution
         with patch.object(sessions, "IS_WINDOWS", True), \
              patch.object(sessions, "IS_MACOS", False), \
              patch.object(sessions, "HOME", self.root), \
@@ -1060,7 +1060,7 @@ class WindowsPathTests(FixtureMixin, unittest.TestCase):
         with patch.object(sessions, "IS_WINDOWS", True), \
              patch.object(sessions, "IS_MACOS", False), \
              patch.object(sessions, "HOME", self.root), \
-             patch.dict(os.environ, {**env, "CONSILIUM_STEER_DIR": ""}, clear=False):
+             patch.dict(os.environ, {**env, "PORCH_STEER_DIR": ""}, clear=False):
             self.assertTrue(str(sessions._steer_root()).startswith(localapp))
 
     def test_sqlite_uri_windows_path(self):
@@ -1076,7 +1076,7 @@ class WindowsPathTests(FixtureMixin, unittest.TestCase):
 
 
 class CliTests(FixtureMixin, unittest.TestCase):
-    """End-to-end through argv parsing using CONSILIUM_HISTORY_ROOT_* overrides."""
+    """End-to-end through argv parsing using PORCH_HISTORY_ROOT_* overrides."""
 
     def setUp(self):
         super().setUp()
@@ -1109,7 +1109,7 @@ class CliTests(FixtureMixin, unittest.TestCase):
 
     def test_list_grep_show_around(self):
         root, sid = self.make_claude()
-        env = {"CONSILIUM_HISTORY_ROOT_CLAUDE_CODE": str(root)}
+        env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)}
 
         proc = self.run_cli("list", "-a", "claude-code", env_extra=env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -1138,7 +1138,7 @@ class CliTests(FixtureMixin, unittest.TestCase):
 
     def test_missing_store_reports_not_crash(self):
         proc = self.run_cli("list", "-a", "qwen-code",
-                            env_extra={"CONSILIUM_HISTORY_ROOT_QWEN_CODE": str(self.root / "nope")})
+                            env_extra={"PORCH_HISTORY_ROOT_QWEN_CODE": str(self.root / "nope")})
         self.assertEqual(proc.returncode, 0, proc.stderr)
         summary = self.lines(proc)[-1]
         self.assertEqual(summary["stores"][0]["status"], "missing")
@@ -1146,7 +1146,7 @@ class CliTests(FixtureMixin, unittest.TestCase):
 
     def test_no_db_or_index_created(self):
         root, sid = self.make_claude()
-        env = {"CONSILIUM_HISTORY_ROOT_CLAUDE_CODE": str(root)}
+        env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)}
         before = {str(p) for p in self.root.rglob("*")}
         proc = self.run_cli("grep", "-a", "claude-code", "needle", env_extra=env)
         self.assertEqual(proc.returncode, 0, proc.stderr)

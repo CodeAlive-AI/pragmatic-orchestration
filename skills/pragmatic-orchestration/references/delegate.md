@@ -14,8 +14,8 @@ Delegate hands one task to exactly one explicitly selected coding-agent profile 
 - Backend delivery differences
 
 ```bash
-"$CONSILIUM" delegate -a grok "Implement the caching layer described in DESIGN.md"
-"$CONSILIUM" delegate -a grok --prompt-file task.md
+"$PORCH" delegate -a grok "Implement the caching layer described in DESIGN.md"
+"$PORCH" delegate -a grok --prompt-file task.md
 ```
 
 - Exact `-a <agent-id>` is mandatory: no default, globs, or multi-select.
@@ -29,20 +29,20 @@ Delegate hands one task to exactly one explicitly selected coding-agent profile 
 Delegate starts a long-lived single-agent session with a private filesystem mailbox by default. It prints `run_id=…` early on stderr. The final answer goes to stdout and is also served later by `delegate wait`. `--steerable` remains as an explicit compatibility alias.
 
 ```bash
-"$CONSILIUM" delegate -a grok "Implement the caching layer"
-"$CONSILIUM" delegate steer run_<id> --mode auto "Prefer Redis"
-"$CONSILIUM" delegate status run_<id> --json
-"$CONSILIUM" delegate events run_<id> --max-events 50
-"$CONSILIUM" delegate wait run_<id> --timeout 300 --json
-"$CONSILIUM" delegate cancel run_<id>
+"$PORCH" delegate -a grok "Implement the caching layer"
+"$PORCH" delegate steer run_<id> --mode auto "Prefer Redis"
+"$PORCH" delegate status run_<id> --json
+"$PORCH" delegate events run_<id> --max-events 50
+"$PORCH" delegate wait run_<id> --timeout 300 --json
+"$PORCH" delegate cancel run_<id>
 ```
 
 Use `--detach` when the run must outlive the calling process or be reattached from another session:
 
 ```bash
-RUN_ID=$("$CONSILIUM" delegate -a grok --detach "Implement the task")
-"$CONSILIUM" delegate list --active
-"$CONSILIUM" delegate wait "$RUN_ID"
+RUN_ID=$("$PORCH" delegate -a grok --detach "Implement the task")
+"$PORCH" delegate list --active
+"$PORCH" delegate wait "$RUN_ID"
 ```
 
 `--detach` uses the default steerable path, creates the registry entry required for reattachment, prints the run id on stdout, and returns immediately. The supervisor becomes its own session leader; caller `SIGINT`/`SIGHUP` cannot reach it. Supervisor stdio is stored in a private `supervisor.log`, but `wait` is the authoritative result interface. `--detach` and `--one-shot` are mutually exclusive.
@@ -50,8 +50,8 @@ RUN_ID=$("$CONSILIUM" delegate -a grok --detach "Implement the task")
 ## Bounded and group waiting
 
 ```bash
-"$CONSILIUM" delegate wait "$RUN_ID" --timeout 300 --json
-"$CONSILIUM" delegate wait-any "$RUN_A" "$RUN_B" --timeout 300
+"$PORCH" delegate wait "$RUN_ID" --timeout 300 --json
+"$PORCH" delegate wait-any "$RUN_A" "$RUN_B" --timeout 300
 ```
 
 `--timeout` is an observation deadline in seconds (finite, >= 0); `0` takes a
@@ -76,7 +76,7 @@ this caller's session group in subsequent calls, including collected runs:
 
 ```bash
 # A has been collected; return on B while still reporting both statuses/times.
-"$CONSILIUM" delegate wait-any "$RUN_A" "$RUN_B" --acknowledged "$RUN_A" --timeout 900
+"$PORCH" delegate wait-any "$RUN_A" "$RUN_B" --acknowledged "$RUN_A" --timeout 900
 ```
 
 Repeat `--acknowledged` for each collected terminal id. Acknowledged runs remain
@@ -105,7 +105,7 @@ running cell, resume it with `functions.wait` first, then inspect the returned
 command result for a shell session id. Use tool waits of at most 60 seconds
 within the longer CLI deadline; a tool yield does not end the CLI wait and is
 not a supervision checkpoint. Resume the same process instead of launching a
-new Consilium wait every 55–60 seconds.
+new Porch wait every 55–60 seconds.
 Other harnesses should use their equivalent process-wait tool.
 
 When the CLI returns:
@@ -127,11 +127,11 @@ avoids ending that turn in the first place.
 ## Durable Codex follow-ups
 
 ```bash
-RUN_ID=$("$CONSILIUM" delegate -a codex --persist-session --detach "Implement the task")
-"$CONSILIUM" delegate wait "$RUN_ID"
+RUN_ID=$("$PORCH" delegate -a codex --persist-session --detach "Implement the task")
+"$PORCH" delegate wait "$RUN_ID"
 # Review the code and deviation journal, then send only the follow-up:
-NEXT_ID=$("$CONSILIUM" delegate -a codex --continue-run "$RUN_ID" --detach "Fix the reviewed edge case; keep the original constraints and journal path")
-"$CONSILIUM" delegate wait "$NEXT_ID"
+NEXT_ID=$("$PORCH" delegate -a codex --continue-run "$RUN_ID" --detach "Fix the reviewed edge case; keep the original constraints and journal path")
+"$PORCH" delegate wait "$NEXT_ID"
 ```
 
 Persistence is opt-in, steerable Codex only. `--continue-run` implies persistence,
@@ -161,7 +161,7 @@ below when delegating to a less capable model. This applies to default steerable
 one-shot, and detached runs alike.
 
 1. Start from the target project CWD. The default run is steerable and remains in the current session; use `--detach` when it may outlive the session. Recover a lost id with `delegate list --active`.
-2. If `CONSILIUM_STEER_DIR` was overridden at start, pass the same value to `steer`, `status`, `events`, `cancel`, `wait`, `wait-any`, `watch`, and `list`.
+2. If `PORCH_STEER_DIR` was overridden at start, pass the same value to `steer`, `status`, `events`, `cancel`, `wait`, `wait-any`, `watch`, and `list`.
 3. Steer only with new information or a genuine course correction. Do not repeat the original task. Prefer `--prompt-file` or stdin for long guidance and default to `--mode auto`.
 4. The immediate `accepted` response proves only mailbox persistence. Query `status --json` once and inspect the matching `client_id` fields: `mailbox_status`, `delivery_class`, `backend_ack`, and `error`.
 5. Use `events RUN_ID --max-events N` whenever the calling agent needs a bounded, non-blocking page of normalized progress. Save `next_cursor` and pass it back as `--cursor` on the next observation to avoid duplicates.
@@ -437,8 +437,8 @@ VCS evidence with task events, findings, and known ongoing commands.
 `events` always returns one JSON object and never blocks:
 
 ```bash
-"$CONSILIUM" delegate events run_<id> --max-events 50
-"$CONSILIUM" delegate events run_<id> --cursor 1290 --max-events 50
+"$PORCH" delegate events run_<id> --max-events 50
+"$PORCH" delegate events run_<id> --cursor 1290 --max-events 50
 ```
 
 Without `--cursor`, it returns the latest page and positions `next_cursor` at
@@ -543,7 +543,7 @@ Never interpret `accepted`, `request_sent`, `queued`, or `running` as proof that
 ## Retry-safe steering
 
 ```bash
-"$CONSILIUM" delegate steer run_<id> \
+"$PORCH" delegate steer run_<id> \
   --client-id requirement-cache-backend-v1 \
   --mode auto \
   --prompt-file steer.md
@@ -557,7 +557,7 @@ Do not put secrets in tasks or steering guidance unless persistence in private r
 
 The registry defaults below the user cache. Registry/run directories are `0700`, state files are `0600`, and symlink run directories are rejected. An active supervisor validates and can safely reconstruct missing or malformed owned registry metadata; unsafe ownership/symlink failures remain degraded instead of being overwritten.
 
-Steerable runs always retain the private service registry and protocol artifacts required for steer/status/cancel, even when `CONSILIUM_SAVE_OUTPUTS=0` disables ordinary archival. Terminal transition serializes with enqueue so no accepted/delivering mailbox entry remains without a terminal outcome.
+Steerable runs always retain the private service registry and protocol artifacts required for steer/status/cancel, even when `PORCH_SAVE_OUTPUTS=0` disables ordinary archival. Terminal transition serializes with enqueue so no accepted/delivering mailbox entry remains without a terminal outcome.
 
 ## Backend delivery matrix
 

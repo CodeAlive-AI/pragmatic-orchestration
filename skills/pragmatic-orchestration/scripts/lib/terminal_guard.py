@@ -156,7 +156,7 @@ def main() -> int:
             return
         forced_shutdown.set()
         print(
-            f"[consilium] {args.backend} emitted a terminal event but did not exit; "
+            f"[porch] {args.backend} emitted a terminal event but did not exit; "
             "terminating the completed CLI process",
             file=sys.stderr,
         )

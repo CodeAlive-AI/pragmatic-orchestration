@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Closed ConsiliumEvent schema for one-shot and steerable paths.
+"""Closed PorchEvent schema for one-shot and steerable paths.
 
 Normalized artifacts must only persist event types from KNOWN_EVENT_TYPES.
 Unknown types are rejected (protocol drift), not silently written.
@@ -54,7 +54,7 @@ KNOWN_EVENT_TYPES = frozenset(
     }
 )
 
-# Backend / adapter stream names → closed ConsiliumEvent types.
+# Backend / adapter stream names → closed PorchEvent types.
 STREAM_TO_EVENT: Dict[str, str] = {
     "text": "answer_delta",
     "thought": "thinking_delta",
@@ -108,7 +108,7 @@ def utc_now() -> str:
 
 
 def map_stream_type(stream_type: str, *, steer_status: str = "") -> Optional[str]:
-    """Map a backend/adapter stream name to a closed ConsiliumEvent type.
+    """Map a backend/adapter stream name to a closed PorchEvent type.
 
     Returns None for unknown names (callers must not persist them).
     """
@@ -131,7 +131,7 @@ def is_known_event_type(typ: str) -> bool:
 
 
 @dataclass
-class ConsiliumEvent:
+class PorchEvent:
     """Validated internal event shared by one-shot normalization and steerable adapters."""
 
     type: str
@@ -154,7 +154,7 @@ class ConsiliumEvent:
             self.ts = utc_now()
         if self.type not in KNOWN_EVENT_TYPES:
             raise EventValidationError(
-                f"unknown ConsiliumEvent type {self.type!r}; "
+                f"unknown PorchEvent type {self.type!r}; "
                 f"refusing to construct (protocol drift)"
             )
 
@@ -187,7 +187,7 @@ class ConsiliumEvent:
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
     @classmethod
-    def from_dict(cls, obj: Dict[str, Any]) -> "ConsiliumEvent":
+    def from_dict(cls, obj: Dict[str, Any]) -> "PorchEvent":
         typ = obj.get("type")
         if not isinstance(typ, str) or typ not in KNOWN_EVENT_TYPES:
             raise EventValidationError(
@@ -241,15 +241,15 @@ def make_event(
     raw: Any = None,
     steer_status: str = "",
     **kwargs: Any,
-) -> Optional[ConsiliumEvent]:
-    """Build a ConsiliumEvent from a backend stream name, or None if unknown."""
+) -> Optional[PorchEvent]:
+    """Build a PorchEvent from a backend stream name, or None if unknown."""
     typ = map_stream_type(stream_type, steer_status=steer_status)
     if typ is None:
         return None
     if steer_status and typ.startswith("steer_"):
         kwargs.setdefault("steer_status", steer_status)
     try:
-        return ConsiliumEvent(
+        return PorchEvent(
             type=typ,
             backend=backend,
             agent_id=agent_id,
@@ -261,9 +261,9 @@ def make_event(
         return None
 
 
-def validate_normalized_record(obj: Dict[str, Any]) -> ConsiliumEvent:
+def validate_normalized_record(obj: Dict[str, Any]) -> PorchEvent:
     """Validate a JSON object before writing to normalized artifacts."""
-    return ConsiliumEvent.from_dict(obj)
+    return PorchEvent.from_dict(obj)
 
 
 def filter_persistable(
@@ -294,7 +294,7 @@ def _nonempty_text(data: Any) -> Optional[str]:
     return s
 
 
-def assemble_final_text(events: Sequence[ConsiliumEvent | Dict[str, Any]]) -> str:
+def assemble_final_text(events: Sequence[PorchEvent | Dict[str, Any]]) -> str:
     """Assemble final answer text using backend-agnostic completeness rules.
 
     Preference order:
@@ -306,7 +306,7 @@ def assemble_final_text(events: Sequence[ConsiliumEvent | Dict[str, Any]]) -> st
     deltas: List[str] = []
     result_text: Optional[str] = None
     for item in events:
-        if isinstance(item, ConsiliumEvent):
+        if isinstance(item, PorchEvent):
             typ = item.type
             data = item.data
         else:
@@ -333,8 +333,8 @@ def adapter_kind_to_event(
     agent_id: str = "",
     data: str = "",
     raw: Any = None,
-) -> Optional[ConsiliumEvent]:
-    """Map steerable AdapterEvent.kind into a ConsiliumEvent."""
+) -> Optional[PorchEvent]:
+    """Map steerable AdapterEvent.kind into a PorchEvent."""
     steer_status = ""
     if isinstance(raw, dict):
         steer_status = str(raw.get("status") or raw.get("mailbox_status") or "")
@@ -353,7 +353,7 @@ def _main() -> int:
     import argparse
     import sys
 
-    ap = argparse.ArgumentParser(description="ConsiliumEvent validation helpers")
+    ap = argparse.ArgumentParser(description="PorchEvent validation helpers")
     ap.add_argument(
         "command",
         choices=["validate-line", "known-types", "map", "assemble"],

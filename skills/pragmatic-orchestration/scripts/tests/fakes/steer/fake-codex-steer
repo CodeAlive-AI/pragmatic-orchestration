@@ -25,18 +25,18 @@ def notify(method, params):
 
 
 def main() -> int:
-    log = os.environ.get("CONSILIUM_FAKE_ARGV_LOG")
+    log = os.environ.get("PORCH_FAKE_ARGV_LOG")
     if log:
         with open(log, "a", encoding="utf-8") as f:
             f.write(json.dumps({"bin": "codex-steer", "argv": sys.argv[1:]}) + "\n")
 
-    mode = os.environ.get("CONSILIUM_FAKE_CODEX_STEER_MODE", "ok")
-    env_log = os.environ.get("CONSILIUM_FAKE_ARTIFACT_ENV_LOG")
+    mode = os.environ.get("PORCH_FAKE_CODEX_STEER_MODE", "ok")
+    env_log = os.environ.get("PORCH_FAKE_ARTIFACT_ENV_LOG")
     if env_log:
         with open(env_log, "w", encoding="utf-8") as f:
             json.dump({key: os.environ.get(key) for key in
-                       ("CONSILIUM_RUN_DIR", "CONSILIUM_ARTIFACT_KEY", "CONSILIUM_OUTPUT_DIR", "CONSILIUM_STEER_DIR")}, f)
-    slow = float(os.environ.get("CONSILIUM_FAKE_STEER_SLOW", "0.4"))
+                       ("PORCH_RUN_DIR", "PORCH_ARTIFACT_KEY", "PORCH_OUTPUT_DIR", "PORCH_STEER_DIR")}, f)
+    slow = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.4"))
     thread_id = "thread_" + uuid.uuid4().hex[:8]
     turn_counter = 0
     active_turn = None
@@ -112,7 +112,7 @@ def main() -> int:
         method = msg.get("method")
         params = msg.get("params") or {}
 
-        rpc_log = os.environ.get("CONSILIUM_FAKE_RPC_LOG")
+        rpc_log = os.environ.get("PORCH_FAKE_RPC_LOG")
         if rpc_log:
             with open(rpc_log, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"method": method, "params": params}) + "\n")

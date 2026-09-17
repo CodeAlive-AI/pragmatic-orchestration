@@ -1,5 +1,5 @@
 @echo off
-rem consilium.cmd — Windows-native entry point for agents-consilium.
+rem porch.cmd — Windows-native entry point for pragmatic-orchestration.
 rem
 rem Pure-Python subcommands (sessions, quota) run directly on Windows.
 rem review/delegate are bash pipelines and require Git Bash, MSYS2, or WSL;
@@ -35,19 +35,19 @@ exit /b %ERRORLEVEL%
 
 :bash_passthrough
 where bash >nul 2>nul || (
-    echo Error: 'consilium %CMD%' needs bash. Install Git for Windows ^(Git Bash^) 1>&2
-    echo or use WSL, then run: bash "%SCRIPT_DIR%consilium" %CMD% ... 1>&2
+    echo Error: 'porch %CMD%' needs bash. Install Git for Windows ^(Git Bash^) 1>&2
+    echo or use WSL, then run: bash "%SCRIPT_DIR%porch" %CMD% ... 1>&2
     exit /b 5
 )
-bash "%SCRIPT_DIR%consilium" %CMD% %*
+bash "%SCRIPT_DIR%porch" %CMD% %*
 exit /b %ERRORLEVEL%
 
 :usage
-echo consilium — multi-agent review and session-history CLI (Windows shim)
+echo porch — multi-agent review and session-history CLI (Windows shim)
 echo.
-echo   consilium sessions roots^|list^|grep^|show^|turns^|flags^|stats [...]
-echo   consilium quota [all^|codex^|grok]
-echo   consilium review^|delegate ...   (runs through bash: Git Bash / MSYS2 / WSL)
+echo   porch sessions roots^|list^|grep^|show^|turns^|flags^|stats [...]
+echo   porch quota [all^|codex^|grok]
+echo   porch review^|delegate ...   (runs through bash: Git Bash / MSYS2 / WSL)
 echo.
-echo Full help: bash "%SCRIPT_DIR%consilium" --help
+echo Full help: bash "%SCRIPT_DIR%porch" --help
 exit /b 0

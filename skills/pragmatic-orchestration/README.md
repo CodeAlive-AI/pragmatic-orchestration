@@ -1,10 +1,10 @@
-# agents-consilium
+# pragmatic-orchestration
 
-![agents-consilium — other coding agents, as subagents](assets/agents-consilium-cover.png)
+![pragmatic-orchestration — other coding agents, as subagents](assets/pragmatic-orchestration-cover.png)
 
 Use other coding agents as subagents — even when your primary agent does not support their models.
 
-Most coding agents can only spawn copies of themselves or a small built-in model set. `agents-consilium` removes that boundary. Any coding agent that can run the skill can call a different coding-agent CLI to research, review, or implement work.
+Most coding agents can only spawn copies of themselves or a small built-in model set. `pragmatic-orchestration` removes that boundary. Any coding agent that can run the skill can call a different coding-agent CLI to research, review, or implement work.
 
 For example:
 
@@ -21,7 +21,7 @@ Each worker runs through its real coding-agent harness, with access to the tools
 
 Linux and macOS are covered by the full offline regression suite. Windows 11
 with Git Bash/MSYS2 and native Python 3.11+ has experimental, community-supported
-compatibility. `consilium.cmd` runs `sessions` and `quota` natively (cmd,
+compatibility. `porch.cmd` runs `sessions` and `quota` natively (cmd,
 PowerShell, or Git Bash all work — store roots resolve to `%APPDATA%` /
 `%LOCALAPPDATA%` / `%USERPROFILE%` automatically, see
 [references/session-history.md](references/session-history.md#platform-defaults)).
@@ -62,7 +62,7 @@ Need to find a past session?   sessions
 ## Install
 
 ```bash
-npx skills add CodeAlive-AI/ai-driven-development@agents-consilium -g -y
+npx skills add CodeAlive-AI/ai-driven-development@pragmatic-orchestration -g -y
 ```
 
 You also need Python 3 and at least one supported coding-agent CLI:
@@ -76,22 +76,22 @@ You also need Python 3 and at least one supported coding-agent CLI:
 | [Devin CLI](https://devin.ai) | `devin` | review, delegate |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini` | review only |
 
-Authentication stays with each CLI. If it already works in your terminal, Consilium can use it.
+Authentication stays with each CLI. If it already works in your terminal, Porch can use it.
 
-The examples below abbreviate the entrypoint as `scripts/consilium`. When running it manually, use the installed script's absolute path and keep your shell in the repository you want the worker to inspect or change.
+The examples below abbreviate the entrypoint as `scripts/porch`. When running it manually, use the installed script's absolute path and keep your shell in the repository you want the worker to inspect or change.
 
 ## Quick start
 
 List the configured workers:
 
 ```bash
-scripts/consilium --list-agents
+scripts/porch --list-agents
 ```
 
 ### Ask several model families
 
 ```bash
-scripts/consilium review ask -a grok,claude-fable,opencode-go-kimi-k3 \
+scripts/porch review ask -a grok,claude-fable,opencode-go-kimi-k3 \
   "Propose a migration plan from REST to event-driven processing."
 ```
 
@@ -100,34 +100,34 @@ The agents work independently. Their answers are returned under separate heading
 ### Use Grok as a stateful repository researcher
 
 ```bash
-scripts/consilium delegate -a grok \
+scripts/porch delegate -a grok \
   "Read-only investigation: trace authentication from the HTTP entry point to authorization checks. Cite repository-relative files and do not edit anything."
 ```
 
 Run the command from the repository Grok should inspect. The worker keeps a real session, so an incomplete investigation can continue through `delegate steer` and its final answer can be collected with `delegate wait`. Delegation is still a full-access runtime: a read-only research task is an instruction to the worker, not a sandbox guarantee, so the caller must verify that no files changed.
 
-For a remote repository, check it out into a user-approved working directory first and run Consilium there. Consilium no longer owns a separate clone-and-cleanup path.
+For a remote repository, check it out into a user-approved working directory first and run Porch there. Porch no longer owns a separate clone-and-cleanup path.
 
 ### Ask GPT-6 Astra for a difficult second opinion
 
 GPT-6 Astra is disabled in the default review pool. Select it explicitly when a difficult specification or optimization plan benefits from an independent second view:
 
 ```bash
-scripts/consilium review ask --progress compact -a codex \
+scripts/porch review ask --progress compact -a codex \
   "Verify SPEC.md against the implementation and identify mismatches."
 ```
 
 ### Ask Claude Fable 5.1 for a plan
 
 ```bash
-scripts/consilium review ask -a claude-fable \
+scripts/porch review ask -a claude-fable \
   "Create a step-by-step implementation plan for DESIGN.md. Do not edit files."
 ```
 
 ### Delegate real work to another agent
 
 ```bash
-scripts/consilium delegate -a grok \
+scripts/porch delegate -a grok \
   "Implement the caching layer described in DESIGN.md and run the relevant tests."
 ```
 
@@ -146,13 +146,13 @@ including the reporting rule for strictly read-only investigations.
 
 ```bash
 # Security + correctness
-scripts/consilium review code path/to/file.py
+scripts/porch review code path/to/file.py
 
 # Security, correctness, performance, architecture, and consistency
-scripts/consilium review code --depth specialists path/to/file.py
+scripts/porch review code --depth specialists path/to/file.py
 
 # Review a diff
-git diff HEAD | scripts/consilium review code --diff
+git diff HEAD | scripts/porch review code --diff
 ```
 
 For deeper, multi-stage reviews with a final judge, use `--depth super` or `--depth ultra`.
@@ -179,11 +179,11 @@ The CLI does not schedule supervision automatically.
 Use `--detach` when work should continue after the calling session exits:
 
 ```bash
-RUN_ID=$(scripts/consilium delegate -a grok --detach \
+RUN_ID=$(scripts/porch delegate -a grok --detach \
   "Implement the task in SPEC.md and run the test suite.")
 
-scripts/consilium delegate events "$RUN_ID" --max-events 50
-scripts/consilium delegate wait "$RUN_ID" --timeout 300 --json
+scripts/porch delegate events "$RUN_ID" --max-events 50
+scripts/porch delegate wait "$RUN_ID" --timeout 300 --json
 ```
 
 `watch` is a lifecycle monitor, not a live tool or model-text stream. It reports
@@ -195,14 +195,14 @@ registry files and `audit.jsonl` are diagnostic internals, not monitoring APIs.
 Every normal delegate is steerable, so the caller can add guidance or change direction while the worker is running:
 
 ```bash
-scripts/consilium delegate -a grok \
+scripts/porch delegate -a grok \
   "Refactor the storage layer."
 
 # From another process, using the run_id printed at startup
-scripts/consilium delegate steer run_<id> --mode auto \
+scripts/porch delegate steer run_<id> --mode auto \
   "Keep the public API backward compatible."
-scripts/consilium delegate status run_<id> --json
-scripts/consilium delegate cancel run_<id>
+scripts/porch delegate status run_<id> --json
+scripts/porch delegate cancel run_<id>
 ```
 
 `list --active` recovers a lost run id. `wait` returns the full final answer and never cancels the worker.
@@ -210,8 +210,8 @@ scripts/consilium delegate cancel run_<id>
 You can bound observation or wait for any of several workers:
 
 ```bash
-scripts/consilium delegate wait "$RUN_ID" --timeout 300 --json
-scripts/consilium delegate wait-any "$RUN_A" "$RUN_B" --timeout 300
+scripts/porch delegate wait "$RUN_ID" --timeout 300 --json
+scripts/porch delegate wait-any "$RUN_A" "$RUN_B" --timeout 300
 ```
 
 Exit 124 means the wait expired while workers continue. `wait-any` returns JSON
@@ -229,7 +229,7 @@ unavailable resume does not silently start over. Ordinary runs remain ephemeral.
 
 `sessions` reads the session stores your coding agents already write —
 Claude Code, Codex CLI/Desktop, OpenCode, Grok, Devin CLI, Gemini, Cursor,
-Qwen Code, Kimi Code, OMP, Claude Desktop, and Consilium's own runs. It
+Qwen Code, Kimi Code, OMP, Claude Desktop, and Porch's own runs. It
 creates no index or database; every record carries a native locator
 (file:line or db table:key) back to the raw source.
 
@@ -245,21 +245,21 @@ canonical Claude Code transcript.
 
 ```bash
 # Which history stores exist on this machine?
-scripts/consilium sessions roots
+scripts/porch sessions roots
 
 # Recent Codex sessions in a project
-scripts/consilium sessions list -a codex --since 2026-01-01 --cwd my-project
+scripts/porch sessions list -a codex --since 2026-01-01 --cwd my-project
 
 # What did the human actually ask? (prompts only, all harnesses)
-scripts/consilium sessions grep --scope prompts -i "rollback"
+scripts/porch sessions grep --scope prompts -i "rollback"
 
 # Read around a hit: 5 fragments on each side of seq 42
-scripts/consilium sessions show codex:0194a1b2-... --around 42 --context 5
+scripts/porch sessions show codex:0194a1b2-... --around 42 --context 5
 
 # Reflection: per-turn metrics, anti-pattern flags, grouped stats
-scripts/consilium sessions stats -a claude-code --by model --since 2026-02-01
-scripts/consilium sessions flags --kind retry_loop --limit 20
-scripts/consilium sessions turns -a grok --cwd my-project
+scripts/porch sessions stats -a claude-code --by model --since 2026-02-01
+scripts/porch sessions flags --kind retry_loop --limit 20
+scripts/porch sessions turns -a grok --cwd my-project
 ```
 
 Fragments are classified by `kind` (`prompt`/`assistant`/`reasoning`/
@@ -275,7 +275,7 @@ per-harness format recipes live in
 After installing the skill, ask your agent naturally:
 
 ```text
-Use agents-consilium to delegate a read-only repository investigation to Grok.
+Use pragmatic-orchestration to delegate a read-only repository investigation to Grok.
 Explain how background jobs are retried, cite the relevant files, and do not edit anything.
 ```
 
@@ -318,10 +318,10 @@ Agent profiles live in `config.json`. A profile chooses the harness, model, reas
 }
 ```
 
-Edit `config.json` or point `CONSILIUM_CONFIG` to another file. Model and effort can also be overridden for one invocation:
+Edit `config.json` or point `PORCH_CONFIG` to another file. Model and effort can also be overridden for one invocation:
 
 ```bash
-CLAUDE_EFFORT=medium scripts/consilium review ask \
+CLAUDE_EFFORT=medium scripts/porch review ask \
   -a claude-fable --prompt-file prompt.md
 ```
 
@@ -332,20 +332,20 @@ Available overrides: `CODEX_MODEL` / `CODEX_EFFORT`, `CLAUDE_MODEL` / `CLAUDE_EF
 - `review` is read-only and uses each harness's sandbox or tool restrictions (mode capability matrix → `readonly`; unknown modes fail closed).
 - `delegate` is intentionally full-access and requires an exact agent id; its execution mode defaults to steerable, while the agent id has no default and there is no multi-agent fan-out.
 - A delegate asked to research read-only still runs with full access. The caller must scope the working directory, state the no-edit constraint, and verify the tree afterwards.
-- Live progress goes to stderr; the final answer goes to stdout. Normalized events use a closed ConsiliumEvent schema; unknown types are not persisted.
-- Complete run artifacts are saved under `CONSILIUM_OUTPUT_DIR` unless `CONSILIUM_SAVE_OUTPUTS=0`.
-- There is no Consilium execution timeout, token budget, or fan-out concurrency limit. Set `CONSILIUM_MAX_PARALLEL=N` to bound review fan-out. Opt-in `CONSILIUM_DEBUG_EVENTS=1` writes a bounded RAW→FINAL event tape.
+- Live progress goes to stderr; the final answer goes to stdout. Normalized events use a closed PorchEvent schema; unknown types are not persisted.
+- Complete run artifacts are saved under `PORCH_OUTPUT_DIR` unless `PORCH_SAVE_OUTPUTS=0`.
+- There is no Porch execution timeout, token budget, or fan-out concurrency limit. Set `PORCH_MAX_PARALLEL=N` to bound review fan-out. Opt-in `PORCH_DEBUG_EVENTS=1` writes a bounded RAW→FINAL event tape.
 
 ## Command map
 
 ```bash
-scripts/consilium review ask [...]
-scripts/consilium review code --depth basic|specialists|super|ultra [...]
-scripts/consilium delegate -a <exact-agent-id> [...]
-scripts/consilium delegate -a <exact-agent-id> --steerable|--one-shot|--detach [...]
-scripts/consilium delegate steer|status|cancel|wait|wait-any|watch|events|list [...]
-scripts/consilium sessions roots|list|grep|show [...]
-scripts/consilium --list-agents
+scripts/porch review ask [...]
+scripts/porch review code --depth basic|specialists|super|ultra [...]
+scripts/porch delegate -a <exact-agent-id> [...]
+scripts/porch delegate -a <exact-agent-id> --steerable|--one-shot|--detach [...]
+scripts/porch delegate steer|status|cancel|wait|wait-any|watch|events|list [...]
+scripts/porch sessions roots|list|grep|show [...]
+scripts/porch --list-agents
 ```
 
 The full operational contract, backend flags, exit codes, progress formats, and steering semantics are documented in [`SKILL.md`](SKILL.md).

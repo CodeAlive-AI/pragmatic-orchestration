@@ -207,9 +207,9 @@ def progress(scope: str, *parts: str) -> None:
     """Live progress on stderr only. Callers must pass previews, not full bodies."""
     msg = " ".join(str(p) for p in parts if p is not None and p != "")
     if msg:
-        sys.stderr.write(f"[consilium] {scope} {msg}\n")
+        sys.stderr.write(f"[porch] {scope} {msg}\n")
     else:
-        sys.stderr.write(f"[consilium] {scope}\n")
+        sys.stderr.write(f"[porch] {scope}\n")
     sys.stderr.flush()
 
 

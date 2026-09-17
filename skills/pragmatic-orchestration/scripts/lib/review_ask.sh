@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # review ask — multi-agent independent opinions (was consensus-query).
-# Invoked by: scripts/consilium review ask ...
+# Invoked by: scripts/porch review ask ...
 #
 set -euo pipefail
 
@@ -18,7 +18,7 @@ source "$LIB_DIR/artifacts.sh"
 # Public review is always layered with the read-only/work-alone framework.
 # Raw prompting remains an internal backend/delegate capability, not a way to
 # strip the review contract through an inherited environment variable.
-unset CONSILIUM_RAW_PROMPT 2>/dev/null || true
+unset PORCH_RAW_PROMPT 2>/dev/null || true
 
 OUTPUT_FORMAT="markdown"
 LIST_ONLY=false
@@ -27,7 +27,7 @@ PROMPT_FILE=""
 PROMPT_SOURCE=""   # positional | file | stdin
 INCLUDE_PATTERNS=()
 EXCLUDE_PATTERNS=()
-PROGRESS="${CONSILIUM_PROGRESS:-full}"
+PROGRESS="${PORCH_PROGRESS:-full}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,10 +49,10 @@ while [[ $# -gt 0 ]]; do
                         ;;
         -h|--help)
             cat <<'EOF'
-Usage: consilium review ask [options] ["question"]
+Usage: porch review ask [options] ["question"]
 
 Options:
-  --xml                 Emit <consilium-report> XML
+  --xml                 Emit <porch-report> XML
   --progress full|compact|none
                         Live per-agent progress on stderr (default: full).
                         full = thinking/answer previews per agent,
@@ -94,11 +94,11 @@ if [[ -n "$PROMPT_FILE" ]]; then
     PROMPT_SOURCE="file"
 fi
 
-if [[ ${#INCLUDE_PATTERNS[@]} -eq 0 && -n "${CONSILIUM_AGENTS:-}" ]]; then
-    IFS=',' read -ra INCLUDE_PATTERNS <<< "$CONSILIUM_AGENTS"
+if [[ ${#INCLUDE_PATTERNS[@]} -eq 0 && -n "${PORCH_AGENTS:-}" ]]; then
+    IFS=',' read -ra INCLUDE_PATTERNS <<< "$PORCH_AGENTS"
 fi
-if [[ ${#EXCLUDE_PATTERNS[@]} -eq 0 && -n "${CONSILIUM_EXCLUDE:-}" ]]; then
-    IFS=',' read -ra EXCLUDE_PATTERNS <<< "$CONSILIUM_EXCLUDE"
+if [[ ${#EXCLUDE_PATTERNS[@]} -eq 0 && -n "${PORCH_EXCLUDE:-}" ]]; then
+    IFS=',' read -ra EXCLUDE_PATTERNS <<< "$PORCH_EXCLUDE"
 fi
 
 config_validate || exit $EXIT_CONFIG_ERROR
@@ -128,7 +128,7 @@ if [[ "$PROMPT_SOURCE" == "positional" ]]; then
     warn_shell_special_in_prompt "$PROMPT"
 fi
 
-export CONSILIUM_MODE="review-ask"
+export PORCH_MODE="review-ask"
 artifacts_init_run "ask"
 
 ALL_AGENTS=()
@@ -166,7 +166,7 @@ if [[ ${#ENABLED_AGENTS[@]} -eq 0 ]]; then
 fi
 
 progress_stage "ask" "agents=${ENABLED_AGENTS[*]}"
-export CONSILIUM_SUPPRESS_SHELL_WARN=1
+export PORCH_SUPPRESS_SHELL_WARN=1
 
 # Initialize arrays before append / ${#arr[@]}. Bash 3.2 + set -u treats an
 # empty "${arr[@]}" as unbound (even after arr=()); use ${arr[@]+"${arr[@]}"}
@@ -184,8 +184,8 @@ BACKENDS=()
 STATUSES=()
 EXITS=()
 
-# Bounded fan-out: CONSILIUM_MAX_PARALLEL=0 (default) = unlimited.
-_ASK_LIMIT="${CONSILIUM_MAX_PARALLEL:-0}"
+# Bounded fan-out: PORCH_MAX_PARALLEL=0 (default) = unlimited.
+_ASK_LIMIT="${PORCH_MAX_PARALLEL:-0}"
 if ! [[ "$_ASK_LIMIT" =~ ^[0-9]+$ ]]; then _ASK_LIMIT=0; fi
 
 for agent in "${ENABLED_AGENTS[@]}"; do
@@ -245,7 +245,7 @@ PY
     # Render prompt to a file first so the backend is never fed via a hanging pipe
     # and so redirect failures cannot deadlock a named FIFO.
     printf '%s' "$agent_prompt" > "$prompt_file"
-    # Backpressure when CONSILIUM_MAX_PARALLEL > 0.
+    # Backpressure when PORCH_MAX_PARALLEL > 0.
     if [[ "$_ASK_LIMIT" -gt 0 ]]; then
         while true; do
             alive=0
@@ -262,9 +262,9 @@ PY
     (
         set +e
         set +o pipefail
-        export CONSILIUM_RUN_DIR
-        export CONSILIUM_SAVE_OUTPUTS
-        unset CONSILIUM_ARTIFACT_KEY
+        export PORCH_RUN_DIR
+        export PORCH_SAVE_OUTPUTS
+        unset PORCH_ARTIFACT_KEY
         # Bash 3.2 + set -u: empty EXTRA_ARGS must not use "${EXTRA_ARGS[@]}".
         "$LIB_DIR/backend_run.sh" \
             --mode review --agent-id "$agent" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
@@ -320,7 +320,7 @@ done
 REPORT=$(mktemp)
 {
 if [[ "$OUTPUT_FORMAT" == "xml" ]]; then
-    echo "<consilium-report prompt-length=\"${#PROMPT}\">"
+    echo "<porch-report prompt-length=\"${#PROMPT}\">"
     for i in "${!AGENT_IDS[@]}"; do
         agent="${AGENT_IDS[$i]}"
         label="${LABELS[$i]}"
@@ -371,7 +371,7 @@ if [[ "$OUTPUT_FORMAT" == "xml" ]]; then
             "$(printf '%s' "$role"    | xml_escape)" \
             "$status_attr"
     done
-    echo "</consilium-report>"
+    echo "</porch-report>"
 else
     for i in "${!AGENT_IDS[@]}"; do
         label="${LABELS[$i]}"

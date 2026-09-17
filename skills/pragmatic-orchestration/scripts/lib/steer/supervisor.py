@@ -194,8 +194,8 @@ class Supervisor:
         try:
             from debug_tape import close_global_tape, env_enabled, init_global_tape
 
-            if env_enabled() or os.environ.get("CONSILIUM_DEBUG_EVENTS_PATH"):
-                tape_path = os.environ.get("CONSILIUM_DEBUG_EVENTS_PATH", "").strip()
+            if env_enabled() or os.environ.get("PORCH_DEBUG_EVENTS_PATH"):
+                tape_path = os.environ.get("PORCH_DEBUG_EVENTS_PATH", "").strip()
                 if not tape_path:
                     tape_path = str(Path(self.artifacts_dir) / "debug-events.jsonl")
                 # Isolate per run when path is a directory-ish default.
@@ -245,10 +245,10 @@ class Supervisor:
 
                 self.adapter.on_session_ready = save_handle
             # This supervisor already owns explicit artifact paths. Do not let
-            # a backend's nested consilium invocation reuse and overwrite them.
+            # a backend's nested porch invocation reuse and overwrite them.
             # Keep OUTPUT_DIR and registry/config routing for nested launches.
-            os.environ.pop("CONSILIUM_RUN_DIR", None)
-            os.environ.pop("CONSILIUM_ARTIFACT_KEY", None)
+            os.environ.pop("PORCH_RUN_DIR", None)
+            os.environ.pop("PORCH_ARTIFACT_KEY", None)
             self.adapter.start(self.task)
             child = self.adapter.child_pid()
             if child:
@@ -399,7 +399,7 @@ class Supervisor:
     def _handle_event(self, ev) -> None:
         assert self.run_id
         run_dir = self.registry.run_path(self.run_id)
-        # Persist via closed ConsiliumEvent schema when mappable; retain adapter
+        # Persist via closed PorchEvent schema when mappable; retain adapter
         # kind for progress/audit. Unknown kinds are not silently written to
         # normalized artifacts (protocol drift).
         backend = getattr(self.adapter, "backend_name", "") if self.adapter else ""
@@ -1039,7 +1039,7 @@ class Supervisor:
 
     def _artifacts_need_private_home(self, path: str) -> bool:
         """True when protocol artifacts must not land in project cwd."""
-        if os.environ.get("CONSILIUM_SAVE_OUTPUTS", "1") == "0":
+        if os.environ.get("PORCH_SAVE_OUTPUTS", "1") == "0":
             return True
         p = (path or "").strip()
         if not p or p == ".":

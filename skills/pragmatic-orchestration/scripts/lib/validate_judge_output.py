@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract and strictly validate a Consilium judge verdict document."""
+"""Extract and strictly validate a Porch judge verdict document."""
 
 from __future__ import annotations
 

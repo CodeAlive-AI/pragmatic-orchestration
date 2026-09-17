@@ -11,7 +11,7 @@ Authentication stays with each harness.
 
 ## Agent profiles
 
-Profiles live in `config.json`; set `CONSILIUM_CONFIG` to use another file.
+Profiles live in `config.json`; set `PORCH_CONFIG` to use another file.
 
 | Field | Purpose |
 |---|---|
@@ -27,7 +27,7 @@ Profiles live in `config.json`; set `CONSILIUM_CONFIG` to use another file.
 List effective profiles with:
 
 ```bash
-"$CONSILIUM" --list-agents
+"$PORCH" --list-agents
 ```
 
 Non-empty environment values override profile model/effort for one invocation:
@@ -37,7 +37,7 @@ Non-empty environment values override profile model/effort for one invocation:
 - `OPENCODE_MODEL`, `OPENCODE_EFFORT` (`none` omits the variant)
 - `GROK_MODEL`, `GROK_EFFORT`
 - `GEMINI_MODEL`
-- `DEVIN_MODEL`; `CONSILIUM_BIN_DEVIN` overrides the `devin` binary
+- `DEVIN_MODEL`; `PORCH_BIN_DEVIN` overrides the `devin` binary
 
 The built-in `codex` profile uses `gpt-6-astra` at `high` effort. Astra accepts
 `low`, `medium`, `high`, `xhigh`, and `max`; it does not accept `none`. The
@@ -69,8 +69,8 @@ bypass`. The helper strips inherited `ACP_BACKEND` from the child environment.
 Prefer `--prompt-file`, stdin, or a single-quoted heredoc for prompts containing backticks, `$`, `!`, or quotes. Double-quoted positional prompts are shell-expanded and may accidentally execute substitutions or leave a backend waiting on stdin.
 
 ```bash
-"$CONSILIUM" review ask --prompt-file prompt.md
-"$CONSILIUM" review ask "$(cat <<'EOF'
+"$PORCH" review ask --prompt-file prompt.md
+"$PORCH" review ask "$(cat <<'EOF'
 Explain `foo` and $PATH handling.
 EOF
 )"
@@ -82,17 +82,17 @@ The shell-interpolation warning applies only to positional prompts that still co
 
 | Variable | Purpose |
 |---|---|
-| `CONSILIUM_CONFIG` | Alternate profile configuration |
-| `CONSILIUM_AGENTS`, `CONSILIUM_EXCLUDE` | Default inclusion/exclusion selection |
-| `CONSILIUM_PROGRESS` | Review progress: `full`, `compact`, or `none` |
-| `CONSILIUM_OUTPUT_DIR`, `CONSILIUM_RUN_DIR` | Artifact locations |
-| `CONSILIUM_SAVE_OUTPUTS` | Disable ordinary archival with `0`; steerable service artifacts remain |
-| `CONSILIUM_STEER_DIR` | Steerable registry; reuse the same value for every control command |
-| `CONSILIUM_MAX_PARALLEL` | Fan-out concurrency; `0` means unlimited/default |
-| `CONSILIUM_DEBUG_EVENTS*` | Opt-in bounded event tape and its path/record/byte limits |
+| `PORCH_CONFIG` | Alternate profile configuration |
+| `PORCH_AGENTS`, `PORCH_EXCLUDE` | Default inclusion/exclusion selection |
+| `PORCH_PROGRESS` | Review progress: `full`, `compact`, or `none` |
+| `PORCH_OUTPUT_DIR`, `PORCH_RUN_DIR` | Artifact locations |
+| `PORCH_SAVE_OUTPUTS` | Disable ordinary archival with `0`; steerable service artifacts remain |
+| `PORCH_STEER_DIR` | Steerable registry; reuse the same value for every control command |
+| `PORCH_MAX_PARALLEL` | Fan-out concurrency; `0` means unlimited/default |
+| `PORCH_DEBUG_EVENTS*` | Opt-in bounded event tape and its path/record/byte limits |
 | `GEMINI_API_KEY` | Gemini CLI authentication when required |
 
-Consilium imposes no execution deadline in any mode. Provider context/output
+Porch imposes no execution deadline in any mode. Provider context/output
 limits and managed harness settings still apply.
 
 # Quota inspection
@@ -101,15 +101,15 @@ Use the read-only quota command to make scheduling decisions without starting a
 review or delegate turn:
 
 ```bash
-"$CONSILIUM" quota [all|codex|grok]
+"$PORCH" quota [all|codex|grok]
 ```
 
 The output is a versioned JSON envelope. Codex is queried through
 `account/rateLimits/read` on `codex app-server`; this does not consume an
 available reset credit. Grok is queried through the official `/usage` command
 in a temporary tmux session on `grok-aws`. Override the safe SSH alias with
-`CONSILIUM_GROK_QUOTA_SSH_HOST` and the absolute remote working directory with
-`CONSILIUM_GROK_QUOTA_CWD`.
+`PORCH_GROK_QUOTA_SSH_HOST` and the absolute remote working directory with
+`PORCH_GROK_QUOTA_CWD`.
 
 When both providers are requested, one failure does not discard the successful
 result. Exit `0` means all requested providers succeeded, `2` means partial

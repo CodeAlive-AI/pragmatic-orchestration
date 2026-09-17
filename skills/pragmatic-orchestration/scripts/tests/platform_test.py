@@ -24,7 +24,7 @@ from steer.waiter import wait_for_any
 
 class PlatformTests(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix="consilium platform ü ")
+        temp = tempfile.TemporaryDirectory(prefix="porch platform ü ")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.env = dict(os.environ, PYTHONPATH=str(LIB), PYTHONIOENCODING="utf-8",
@@ -192,7 +192,7 @@ else:
 
     @unittest.skipIf(os.name == "nt", "POSIX E2E harness cleanup")
     def test_e2e_timeout_does_not_kill_harness(self):
-        launcher = self.root / "fake-consilium"
+        launcher = self.root / "fake-porch"
         launcher.write_text("#!/bin/sh\nprintf 'run_id=run_test\\n' >&2\nsleep 60\n", encoding="utf-8")
         launcher.chmod(0o755)
         # Isolate the driver from this test runner: the old harness killed
@@ -202,7 +202,7 @@ import os,sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import test_steer_e2e as harness
-harness.CONSILIUM = Path(sys.argv[2])
+harness.PORCH = Path(sys.argv[2])
 proc, _, _ = harness.start_steerable('fake', 'task', os.environ.copy(), Path(sys.argv[3]))
 code, _, _ = harness.wait_proc(proc, timeout=0.1)
 assert code == 99
@@ -297,10 +297,10 @@ guard.main()
 
     def test_native_supervisor_durable_codex_followup(self):
         tests = Path(__file__).resolve().parent
-        env = dict(self.env, CONSILIUM_CONFIG=str(tests / "fixtures/test-config.json"),
-                   CONSILIUM_BIN_CODEX=str(tests / "fakes/steer/fake-codex-steer"),
-                   CONSILIUM_FAKE_STEER_SLOW="0.01",
-                   CONSILIUM_FAKE_RPC_LOG=str(self.root / "rpc.jsonl"))
+        env = dict(self.env, PORCH_CONFIG=str(tests / "fixtures/test-config.json"),
+                   PORCH_BIN_CODEX=str(tests / "fakes/steer/fake-codex-steer"),
+                   PORCH_FAKE_STEER_SLOW="0.01",
+                   PORCH_FAKE_RPC_LOG=str(self.root / "rpc.jsonl"))
         root = self.root / "registry"
         previous = None
         for index, prompt in enumerate(("INITIAL_ONLY", "FOLLOWUP_ONLY")):

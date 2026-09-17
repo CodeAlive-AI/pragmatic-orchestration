@@ -1,12 +1,12 @@
 #!/bin/bash
 set -euo pipefail
-LOG="${CONSILIUM_FAKE_ARGV_LOG:-/dev/null}"
+LOG="${PORCH_FAKE_ARGV_LOG:-/dev/null}"
 
 # Force line-buffered stdout so concurrent streaming tests observe events mid-flight.
 if command -v stdbuf >/dev/null 2>&1; then
   # Re-exec under stdbuf only once
-  if [[ -z "${CONSILIUM_FAKE_GROK_STDBUF:-}" ]]; then
-    export CONSILIUM_FAKE_GROK_STDBUF=1
+  if [[ -z "${PORCH_FAKE_GROK_STDBUF:-}" ]]; then
+    export PORCH_FAKE_GROK_STDBUF=1
     exec stdbuf -oL -eL "$0" "$@"
   fi
 fi
@@ -48,7 +48,7 @@ print(json.dumps({
     "prompt_len": len(body),
     "prompt_startswith": body[:32] if body else "",
     "prompt_endswith": body[-32:] if body else "",
-    "prompt_body": body if os.environ.get("CONSILIUM_FAKE_CAPTURE_PROMPT") else "",
+    "prompt_body": body if os.environ.get("PORCH_FAKE_CAPTURE_PROMPT") else "",
     "has_FULL_PROMPT": "FULL_PROMPT" in os.environ,
     "has_JUDGE_INPUT_BODY": "JUDGE_INPUT_BODY" in os.environ,
     "cwd": os.getcwd(),
@@ -56,7 +56,7 @@ print(json.dumps({
 ' "$prompt_file" >> "$LOG"
 fi
 
-MODE="${CONSILIUM_FAKE_GROK_MODE:-ok}"
+MODE="${PORCH_FAKE_GROK_MODE:-ok}"
 
 case "$MODE" in
   ok)
@@ -70,10 +70,10 @@ case "$MODE" in
     # Emit an early event, signal the test harness, sleep, then final/end.
     # Proves progress is observable before the backend exits.
     echo '{"type":"thought","data":"early-progress"}'
-    if [[ -n "${CONSILIUM_FAKE_SLOW_MARKER:-}" ]]; then
-      printf 'early\n' > "$CONSILIUM_FAKE_SLOW_MARKER"
+    if [[ -n "${PORCH_FAKE_SLOW_MARKER:-}" ]]; then
+      printf 'early\n' > "$PORCH_FAKE_SLOW_MARKER"
     fi
-    sleep "${CONSILIUM_FAKE_SLOW_SLEEP:-0.8}"
+    sleep "${PORCH_FAKE_SLOW_SLEEP:-0.8}"
     echo '{"type":"text","data":"FAKE_GROK_OK"}'
     echo '{"type":"end","stopReason":"EndTurn","sessionId":"test"}'
     exit 0

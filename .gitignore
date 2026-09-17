@@ -1,0 +1,61 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+# allow skill helper scripts named lib/ (shell, not Python venv)
+!skills/*/scripts/lib/
+!skills/*/scripts/lib/**
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code
+.claude/
+
+# Logs
+*.log
+
+# Generated skill snapshots
+.skill_snapshots/
+.snapshots/
+.skill_edit_log.jsonl
+
+# .NET
+**/bin/
+**/obj/
+
+# Python caches under skill script dirs (the !skills/*/scripts/lib/** negation above re-includes them)
+skills/*/scripts/**/__pycache__/
+
+# Per-user agent config (ships config.example.json instead)
+skills/*/config.json

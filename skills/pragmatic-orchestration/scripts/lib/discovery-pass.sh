@@ -17,14 +17,14 @@
 #   - Renders {{INPUT_KIND}}, {{INPUT_LABEL}}, {{INPUT_BODY}},
 #     {{INITIAL_RELEVANT_FILES}}, {{ROLE}}, and {{CAP_DIRECTIVE}} into the
 #     chosen prompt.
-#   - Resolves backend via $CONSILIUM_CONFIG (default: skill's config.json).
+#   - Resolves backend via $PORCH_CONFIG (default: skill's config.json).
 #   - Keeps temp artifacts under an isolated /tmp dir but runs the backend
 #     from the caller's original CWD (so project files remain readable).
 #   - Writes the agent's raw stdout (which should contain <finding> XML
 #     elements per the prompt schema) directly to --out.
 #   - Artifact keys are set explicitly via --artifact-key (fan-out callers
 #     pass stage/index). Without it, an invocation-unique default is chosen —
-#     ambient CONSILIUM_ARTIFACT_KEY is never trusted alone.
+#     ambient PORCH_ARTIFACT_KEY is never trusted alone.
 #
 # Exit codes:
 #   0 — backend ok, output written
@@ -80,13 +80,13 @@ if [[ -n "$INITIAL_RELEVANT_FILES_FILE" && ! -f "$INITIAL_RELEVANT_FILES_FILE" ]
     exit 4
 fi
 
-CONSILIUM_CONFIG="${CONSILIUM_CONFIG:-$SKILL_DIR/config.json}"
-[[ -f "$CONSILIUM_CONFIG" ]] || { echo -e "${RED}Error: config not found: $CONSILIUM_CONFIG${NC}" >&2; exit 4; }
+PORCH_CONFIG="${PORCH_CONFIG:-$SKILL_DIR/config.json}"
+[[ -f "$PORCH_CONFIG" ]] || { echo -e "${RED}Error: config not found: $PORCH_CONFIG${NC}" >&2; exit 4; }
 
-BACKEND="$(CONSILIUM_CONFIG_PATH="$CONSILIUM_CONFIG" AGENT_ID="$AGENT" python3 -c '
+BACKEND="$(PORCH_CONFIG_PATH="$PORCH_CONFIG" AGENT_ID="$AGENT" python3 -c '
 import json, os, sys
 sys.stdout.reconfigure(newline="\n")
-path = os.environ["CONSILIUM_CONFIG_PATH"]
+path = os.environ["PORCH_CONFIG_PATH"]
 agent = os.environ["AGENT_ID"]
 d = json.load(open(path, encoding="utf-8"))["agents"]
 if agent not in d:
@@ -108,7 +108,7 @@ else
     CAP_DIRECTIVE="OUTPUT CAP: emit at most $CAP findings. If more candidates survive the gates, keep the top $CAP by (severity, confidence)."
 fi
 
-TMP_DIR="$(mktemp -d -t "agents-consilium-pass-XXXXXX")"
+TMP_DIR="$(mktemp -d -t "pragmatic-orchestration-pass-XXXXXX")"
 cleanup() { [[ -z "$KEEP_TMP" ]] && rm -rf "$TMP_DIR" || echo -e "${YELLOW}[debug] keeping tmp: $TMP_DIR${NC}" >&2; }
 trap cleanup EXIT
 
@@ -144,7 +144,7 @@ PYEOF
 unset DP_INPUT_KIND DP_INPUT_LABEL DP_INPUT_BODY_FILE DP_INITIAL_RELEVANT_FILES_FILE DP_ROLE DP_CAP_DIRECTIVE
 
 # Explicit key from fan-out, or an invocation-unique safe default. Never rely
-# solely on an ambient inherited CONSILIUM_ARTIFACT_KEY (would collide).
+# solely on an ambient inherited PORCH_ARTIFACT_KEY (would collide).
 if [[ -n "$ARTIFACT_KEY_ARG" ]]; then
     ARTIFACT_KEY="$ARTIFACT_KEY_ARG"
 else
@@ -162,9 +162,9 @@ RAW_ERR="$TMP_DIR/raw-err.txt"
 set +e
 set +o pipefail
 (
-    export CONSILIUM_SKIP_OUTPUT_TEMPLATE=1
-    export CONSILIUM_RUN_DIR="${CONSILIUM_RUN_DIR:-}"
-    export CONSILIUM_ARTIFACT_KEY="$ARTIFACT_KEY"
+    export PORCH_SKIP_OUTPUT_TEMPLATE=1
+    export PORCH_RUN_DIR="${PORCH_RUN_DIR:-}"
+    export PORCH_ARTIFACT_KEY="$ARTIFACT_KEY"
     "$BACKEND_SCRIPT" \
         --mode review --agent-id "$AGENT" --role "$ROLE" \
         < "$RENDERED_PROMPT_FILE" 2>&1 1>"$OUT" | tee "$RAW_ERR" >&2

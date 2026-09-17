@@ -1,19 +1,19 @@
 #!/bin/bash
 #
-# consilium — single public CLI for agents-consilium v5
+# porch — single public CLI for pragmatic-orchestration v5
 #
 # Modes:
-#   consilium review ask  [...]
-#   consilium review code --depth basic|specialists|super|ultra [...]
-#   consilium delegate -a <exact-agent-id> [...]
-#   consilium delegate wait|watch|events|list [...]
-#   consilium quota [all|codex|grok]
-#   consilium sessions roots|list|grep|show [...]
+#   porch review ask  [...]
+#   porch review code --depth basic|specialists|super|ultra [...]
+#   porch delegate -a <exact-agent-id> [...]
+#   porch delegate wait|watch|events|list [...]
+#   porch quota [all|codex|grok]
+#   porch sessions roots|list|grep|show [...]
 #
 # Observability contract:
 #   compact semantic live progress → stderr
 #   clean final answer → stdout
-#   per-run artifacts under CONSILIUM_RUN_DIR / CONSILIUM_OUTPUT_DIR
+#   per-run artifacts under PORCH_RUN_DIR / PORCH_OUTPUT_DIR
 #
 set -euo pipefail
 
@@ -27,35 +27,35 @@ source "$LIB_DIR/progress.sh"
 
 usage() {
     cat <<'EOF'
-consilium — multi-agent review and single-agent YOLO delegation
+porch — multi-agent review and single-agent YOLO delegation
 
 Usage:
-  consilium review ask [options] ["question"]
-  consilium review code --depth basic|specialists|super|ultra [options] <file|--diff>
-  consilium delegate -a <exact-agent-id> ["task"]
-  consilium delegate -a <exact-agent-id> --one-shot ["task"]
-  consilium delegate -a <exact-agent-id> --detach ["task"]
-  consilium delegate -a <codex-profile> --persist-session [--detach] "task"
-  consilium delegate -a <codex-profile> --continue-run RUN_ID [--detach] "follow-up"
-  consilium delegate steer RUN_ID [--mode auto|queue|interrupt] [--prompt-file FILE] "guidance"
-  consilium delegate status RUN_ID [--json]
-  consilium delegate cancel RUN_ID
-  consilium delegate wait RUN_ID [--timeout SEC] [--json] [--quiet]
-  consilium delegate wait-any RUN_ID [RUN_ID ...] [--timeout SEC]
-  consilium delegate watch RUN_ID [--heartbeat SEC] [--json]
-  consilium delegate events RUN_ID [--cursor N] [--max-events N]
-  consilium delegate list [--active|--all] [--reap] [--json]
-  consilium quota [all|codex|grok]
-  consilium sessions roots [-a harness[,harness...]] [--store SUBSTR]
-  consilium sessions list [-a ...] [--store S] [--cwd S] [--since T] [--until T] [--limit N]
-  consilium sessions grep [-a ...] [--scope SCOPE] [-i] [--regex] [--limit N] PATTERN
-  consilium sessions show <harness:session-id|--file PATH> [--around SEQ] [--context N]
+  porch review ask [options] ["question"]
+  porch review code --depth basic|specialists|super|ultra [options] <file|--diff>
+  porch delegate -a <exact-agent-id> ["task"]
+  porch delegate -a <exact-agent-id> --one-shot ["task"]
+  porch delegate -a <exact-agent-id> --detach ["task"]
+  porch delegate -a <codex-profile> --persist-session [--detach] "task"
+  porch delegate -a <codex-profile> --continue-run RUN_ID [--detach] "follow-up"
+  porch delegate steer RUN_ID [--mode auto|queue|interrupt] [--prompt-file FILE] "guidance"
+  porch delegate status RUN_ID [--json]
+  porch delegate cancel RUN_ID
+  porch delegate wait RUN_ID [--timeout SEC] [--json] [--quiet]
+  porch delegate wait-any RUN_ID [RUN_ID ...] [--timeout SEC]
+  porch delegate watch RUN_ID [--heartbeat SEC] [--json]
+  porch delegate events RUN_ID [--cursor N] [--max-events N]
+  porch delegate list [--active|--all] [--reap] [--json]
+  porch quota [all|codex|grok]
+  porch sessions roots [-a harness[,harness...]] [--store SUBSTR]
+  porch sessions list [-a ...] [--store S] [--cwd S] [--since T] [--until T] [--limit N]
+  porch sessions grep [-a ...] [--scope SCOPE] [-i] [--regex] [--limit N] PATTERN
+  porch sessions show <harness:session-id|--file PATH> [--around SEQ] [--context N]
                           [--scope SCOPE] [--max-chars N]
-  consilium sessions turns [-a ...] [--since T] [--until T] [--limit N]
-  consilium sessions flags [-a ...] [--kind PATTERN] [--since T] [--limit N]
-  consilium sessions stats [-a ...] [--by model|harness|cwd|day] [--since T]
-  consilium --list-agents
-  consilium -h | --help
+  porch sessions turns [-a ...] [--since T] [--until T] [--limit N]
+  porch sessions flags [-a ...] [--kind PATTERN] [--since T] [--limit N]
+  porch sessions stats [-a ...] [--by model|harness|cwd|day] [--since T]
+  porch --list-agents
+  porch -h | --help
 
 review ask
   Fan-out independent opinions across enabled (or selected) agents. Read-only.
@@ -80,7 +80,7 @@ Live progress (all review depths)
                   parallel passes of the same agent stay distinguishable
   compact         content-free liveness counters (chunks/chars/elapsed)
   none            silence — stdout still carries the report
-  Env fallback: CONSILIUM_PROGRESS.
+  Env fallback: PORCH_PROGRESS.
 
 delegate
   Full-YOLO: run exactly one agent in the current directory with no sandbox
@@ -109,7 +109,7 @@ quota
 sessions
   Read-only search and navigation over local coding-agent session histories
   (claude-code, codex, opencode, grok, devin, gemini, cursor, qwen-code,
-  kimi-code, omp, claude-desktop, plus consilium's own runs). No index or
+  kimi-code, omp, claude-desktop, plus porch's own runs). No index or
   database is created — every command streams decoded JSONL records with
   native locators (file:line / db table:key) and a coverage summary.
     roots  detected stores, availability, evidence level
@@ -131,8 +131,8 @@ sessions
   recipes: references/session-history.md.
 
 Environment:
-  CONSILIUM_CONFIG, CONSILIUM_PROGRESS, CONSILIUM_OUTPUT_DIR, CONSILIUM_RUN_DIR, CONSILIUM_SAVE_OUTPUTS,
-  CONSILIUM_STEER_DIR and per-backend
+  PORCH_CONFIG, PORCH_PROGRESS, PORCH_OUTPUT_DIR, PORCH_RUN_DIR, PORCH_SAVE_OUTPUTS,
+  PORCH_STEER_DIR and per-backend
   model/effort overrides — see SKILL.md.
 EOF
 }
@@ -165,7 +165,7 @@ case "$1" in
                 ;;
             code)
                 # Parse --depth early to route super/ultra pipelines
-                DEPTH="${CONSILIUM_REVIEW_MODE:-basic}"
+                DEPTH="${PORCH_REVIEW_MODE:-basic}"
                 FORWARD=()
                 while [[ $# -gt 0 ]]; do
                     case "$1" in

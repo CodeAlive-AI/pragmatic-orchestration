@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded debug event tape for Consilium observability.
+"""Bounded debug event tape for Porch observability.
 
 Opt-in only (disabled by default). Records a sequence-numbered JSONL tape
 across pipeline stages:
@@ -11,10 +11,10 @@ and configurable for long runs; overflow is reported honestly.
 
 Activation:
   --debug-events [PATH]          (CLI; path optional)
-  CONSILIUM_DEBUG_EVENTS=1       (enable, default path under run dir / tmp)
-  CONSILIUM_DEBUG_EVENTS_PATH=   (explicit path)
-  CONSILIUM_DEBUG_EVENTS_MAX=    (max records; default 10000)
-  CONSILIUM_DEBUG_EVENTS_MAX_BYTES= (max file bytes; default 32 MiB)
+  PORCH_DEBUG_EVENTS=1       (enable, default path under run dir / tmp)
+  PORCH_DEBUG_EVENTS_PATH=   (explicit path)
+  PORCH_DEBUG_EVENTS_MAX=    (max records; default 10000)
+  PORCH_DEBUG_EVENTS_MAX_BYTES= (max file bytes; default 32 MiB)
 
 Coverage (implementation truth):
   - one-shot: normalize_stream.py records RAW/PARSED/NORMALIZED/RENDERED/FINAL
@@ -44,25 +44,25 @@ def utc_now() -> str:
 
 
 def env_enabled() -> bool:
-    v = os.environ.get("CONSILIUM_DEBUG_EVENTS", "").strip().lower()
+    v = os.environ.get("PORCH_DEBUG_EVENTS", "").strip().lower()
     return v in ("1", "true", "yes", "on")
 
 
 def default_path() -> str:
-    explicit = os.environ.get("CONSILIUM_DEBUG_EVENTS_PATH", "").strip()
+    explicit = os.environ.get("PORCH_DEBUG_EVENTS_PATH", "").strip()
     if explicit:
         return explicit
-    run_dir = os.environ.get("CONSILIUM_RUN_DIR", "").strip()
+    run_dir = os.environ.get("PORCH_RUN_DIR", "").strip()
     if run_dir:
         return str(Path(run_dir) / "debug-events.jsonl")
     return str(
         Path(os.environ.get("TMPDIR", "/tmp"))
-        / f"consilium-debug-events-{os.getpid()}.jsonl"
+        / f"porch-debug-events-{os.getpid()}.jsonl"
     )
 
 
 def max_records() -> int:
-    raw = os.environ.get("CONSILIUM_DEBUG_EVENTS_MAX", "").strip()
+    raw = os.environ.get("PORCH_DEBUG_EVENTS_MAX", "").strip()
     if not raw:
         return DEFAULT_MAX_RECORDS
     try:
@@ -73,7 +73,7 @@ def max_records() -> int:
 
 
 def max_bytes() -> int:
-    raw = os.environ.get("CONSILIUM_DEBUG_EVENTS_MAX_BYTES", "").strip()
+    raw = os.environ.get("PORCH_DEBUG_EVENTS_MAX_BYTES", "").strip()
     if not raw:
         return DEFAULT_MAX_BYTES
     try:
@@ -313,7 +313,7 @@ def _main() -> int:
     import argparse
     import sys
 
-    ap = argparse.ArgumentParser(description="Consilium debug event tape")
+    ap = argparse.ArgumentParser(description="Porch debug event tape")
     ap.add_argument("--path", default="")
     ap.add_argument("--stats", action="store_true")
     ap.add_argument("stage", nargs="?", default="")

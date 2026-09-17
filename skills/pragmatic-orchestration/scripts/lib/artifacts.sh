@@ -1,8 +1,8 @@
 #!/bin/bash
-# Per-run artifact layout for agents-consilium.
+# Per-run artifact layout for pragmatic-orchestration.
 #
 # Layout:
-#   $CONSILIUM_RUN_DIR/
+#   $PORCH_RUN_DIR/
 #     meta.json
 #     raw/<key>.jsonl          # backend raw stdout (structured when available)
 #     normalized/<key>.jsonl   # normalized semantic events
@@ -16,56 +16,56 @@
 #     "<stage>.<index>.<agent>.<role>" passed via --artifact-key
 #   - judge attempts: "judge.primary.<agent>" / "judge.fallback.<agent>"
 # Fan-out layers always pass an explicit key. discovery-pass / judge-runner
-# never rely on an ambient inherited CONSILIUM_ARTIFACT_KEY alone — if called
+# never rely on an ambient inherited PORCH_ARTIFACT_KEY alone — if called
 # without --artifact-key they choose an invocation-unique default.
-# backend_run uses CONSILIUM_ARTIFACT_KEY when set, else agent id.
+# backend_run uses PORCH_ARTIFACT_KEY when set, else agent id.
 #
 # Env:
-#   CONSILIUM_OUTPUT_DIR  — parent for auto run dirs (default: ${TMPDIR}/agents-consilium-outputs)
-#   CONSILIUM_RUN_DIR     — if set, use this directory (created if missing)
-#   CONSILIUM_SAVE_OUTPUTS — set 0 to disable (no-op helpers)
-#   CONSILIUM_ARTIFACT_KEY — per-invocation key set by fan-out callers (see backend_run.sh)
+#   PORCH_OUTPUT_DIR  — parent for auto run dirs (default: ${TMPDIR}/pragmatic-orchestration-outputs)
+#   PORCH_RUN_DIR     — if set, use this directory (created if missing)
+#   PORCH_SAVE_OUTPUTS — set 0 to disable (no-op helpers)
+#   PORCH_ARTIFACT_KEY — per-invocation key set by fan-out callers (see backend_run.sh)
 
 artifacts_init_run() {
     local mode="${1:-unknown}"
-    if [[ "${CONSILIUM_SAVE_OUTPUTS:-1}" == "0" ]]; then
-        CONSILIUM_RUN_DIR=""
-        export CONSILIUM_RUN_DIR
+    if [[ "${PORCH_SAVE_OUTPUTS:-1}" == "0" ]]; then
+        PORCH_RUN_DIR=""
+        export PORCH_RUN_DIR
         return 0
     fi
-    if [[ -z "${CONSILIUM_RUN_DIR:-}" ]]; then
-        local parent="${CONSILIUM_OUTPUT_DIR:-${TMPDIR:-/tmp}/agents-consilium-outputs}"
+    if [[ -z "${PORCH_RUN_DIR:-}" ]]; then
+        local parent="${PORCH_OUTPUT_DIR:-${TMPDIR:-/tmp}/pragmatic-orchestration-outputs}"
         mkdir -p "$parent"
         # Human-readable run dir (run-ask-amber-otter-4f21): the path is quoted
         # back to the caller in progress output and referenced later by hand, so
         # word pairs beat mktemp's random suffix. mkdir (not mktemp) is the
         # collision check — it fails if the name is taken, and we retry.
-        CONSILIUM_RUN_DIR=""
+        PORCH_RUN_DIR=""
         local _lib_dir _candidate _try
         _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         for _try in 1 2 3; do
             _candidate="$(python3 "$_lib_dir/human_id.py" "${parent%/}/run-${mode}-" 2>/dev/null)" || _candidate=""
             [[ -n "$_candidate" ]] || break
             if mkdir -m 700 "$_candidate" 2>/dev/null; then
-                CONSILIUM_RUN_DIR="$_candidate"
+                PORCH_RUN_DIR="$_candidate"
                 break
             fi
         done
-        if [[ -z "$CONSILIUM_RUN_DIR" ]]; then
+        if [[ -z "$PORCH_RUN_DIR" ]]; then
             # Word list unavailable or three collisions in a row — never fail a
             # review over a directory name.
-            CONSILIUM_RUN_DIR="$(mktemp -d "${parent%/}/run-${mode}.XXXXXX")"
+            PORCH_RUN_DIR="$(mktemp -d "${parent%/}/run-${mode}.XXXXXX")"
         fi
     else
-        mkdir -p "$CONSILIUM_RUN_DIR"
+        mkdir -p "$PORCH_RUN_DIR"
     fi
-    mkdir -p "$CONSILIUM_RUN_DIR/raw" "$CONSILIUM_RUN_DIR/normalized" "$CONSILIUM_RUN_DIR/final"
-    export CONSILIUM_RUN_DIR
+    mkdir -p "$PORCH_RUN_DIR/raw" "$PORCH_RUN_DIR/normalized" "$PORCH_RUN_DIR/final"
+    export PORCH_RUN_DIR
     python3 -c '
 import json, os, time
-path = os.path.join(os.environ["CONSILIUM_RUN_DIR"], "meta.json")
+path = os.path.join(os.environ["PORCH_RUN_DIR"], "meta.json")
 meta = {
-    "mode": os.environ.get("CONSILIUM_MODE", ""),
+    "mode": os.environ.get("PORCH_MODE", ""),
     "cwd": os.getcwd(),
     "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "pid": os.getpid(),
@@ -75,7 +75,7 @@ with open(path, "w") as f:
     f.write("\n")
 ' 2>/dev/null || true
     if declare -F progress_info >/dev/null 2>&1; then
-        progress_info "artifacts" "run_dir=$CONSILIUM_RUN_DIR"
+        progress_info "artifacts" "run_dir=$PORCH_RUN_DIR"
     fi
 }
 
@@ -85,16 +85,16 @@ artifacts_paths_for() {
     local key="$1"
     local safe
     safe="$(printf '%s' "$key" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_')"
-    if [[ -z "${CONSILIUM_RUN_DIR:-}" || "${CONSILIUM_SAVE_OUTPUTS:-1}" == "0" ]]; then
+    if [[ -z "${PORCH_RUN_DIR:-}" || "${PORCH_SAVE_OUTPUTS:-1}" == "0" ]]; then
         ART_RAW=""
         ART_NORM=""
         ART_FINAL=""
         return 0
     fi
-    mkdir -p "$CONSILIUM_RUN_DIR/raw" "$CONSILIUM_RUN_DIR/normalized" "$CONSILIUM_RUN_DIR/final"
-    ART_RAW="$CONSILIUM_RUN_DIR/raw/${safe}.jsonl"
-    ART_NORM="$CONSILIUM_RUN_DIR/normalized/${safe}.jsonl"
-    ART_FINAL="$CONSILIUM_RUN_DIR/final/${safe}.txt"
+    mkdir -p "$PORCH_RUN_DIR/raw" "$PORCH_RUN_DIR/normalized" "$PORCH_RUN_DIR/final"
+    ART_RAW="$PORCH_RUN_DIR/raw/${safe}.jsonl"
+    ART_NORM="$PORCH_RUN_DIR/normalized/${safe}.jsonl"
+    ART_FINAL="$PORCH_RUN_DIR/final/${safe}.txt"
 }
 
 artifacts_write_final() {
@@ -104,12 +104,12 @@ artifacts_write_final() {
     if [[ -n "$ART_FINAL" && -f "$text_file" ]]; then
         cp "$text_file" "$ART_FINAL"
         # Primary final.txt = last successful single-agent answer, or first write
-        if [[ ! -f "$CONSILIUM_RUN_DIR/final.txt" ]]; then
-            cp "$text_file" "$CONSILIUM_RUN_DIR/final.txt"
+        if [[ ! -f "$PORCH_RUN_DIR/final.txt" ]]; then
+            cp "$text_file" "$PORCH_RUN_DIR/final.txt"
         else
             # For multi-agent, overwrite with combined marker only if single-agent mode
-            if [[ "${CONSILIUM_SINGLE_AGENT:-}" == "1" ]]; then
-                cp "$text_file" "$CONSILIUM_RUN_DIR/final.txt"
+            if [[ "${PORCH_SINGLE_AGENT:-}" == "1" ]]; then
+                cp "$text_file" "$PORCH_RUN_DIR/final.txt"
             fi
         fi
     fi
@@ -117,6 +117,6 @@ artifacts_write_final() {
 
 artifacts_set_primary_final() {
     local text_file="$1"
-    [[ -n "${CONSILIUM_RUN_DIR:-}" && -f "$text_file" ]] || return 0
-    cp "$text_file" "$CONSILIUM_RUN_DIR/final.txt"
+    [[ -n "${PORCH_RUN_DIR:-}" && -f "$text_file" ]] || return 0
+    cp "$text_file" "$PORCH_RUN_DIR/final.txt"
 }

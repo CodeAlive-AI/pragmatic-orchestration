@@ -30,7 +30,7 @@ class State:
         self.done = False
         self.lock = threading.Lock()
         self.sse_queues: List[List[str]] = []
-        self.slow = float(os.environ.get("CONSILIUM_FAKE_STEER_SLOW", "0.35"))
+        self.slow = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.35"))
 
 
 STATE = State()
@@ -159,14 +159,14 @@ class Handler(BaseHTTPRequestHandler):
             # Emit delta after short delay in background
             def work(prompt_index: int):
                 time.sleep(STATE.slow * 0.4)
-                if os.environ.get("CONSILIUM_FAKE_OC_PERMISSION"):
+                if os.environ.get("PORCH_FAKE_OC_PERMISSION"):
                     broadcast({"type": "message.part.updated", "properties": {
                         "sessionID": STATE.session_id, "part": {"id": "tool-permission",
                         "type": "tool", "tool": "bash", "callID": "call-permission",
                         "state": {"status": "running", "input": {"command": "mkdir /tmp/example"}}}}})
                     for _ in range(6):
                         broadcast({"type": "server.heartbeat", "properties": {}})
-                    time.sleep(float(os.environ.get("CONSILIUM_FAKE_OC_PERMISSION_DELAY", "0")))
+                    time.sleep(float(os.environ.get("PORCH_FAKE_OC_PERMISSION_DELAY", "0")))
                     broadcast({"type": "permission.asked", "properties": {
                         "sessionID": STATE.session_id, "id": "permission-example",
                         "permission": "external_directory", "patterns": ["/tmp/example/*"],
@@ -227,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    log = os.environ.get("CONSILIUM_FAKE_ARGV_LOG")
+    log = os.environ.get("PORCH_FAKE_ARGV_LOG")
     if log:
         with open(log, "a", encoding="utf-8") as f:
             f.write(json.dumps({"bin": "opencode-steer", "argv": sys.argv[1:]}) + "\n")

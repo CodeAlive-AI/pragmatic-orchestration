@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Config loader for consilium multi-agent scripts.
+# Config loader for porch multi-agent scripts.
 # Reads config.json (in the skill root) and exposes helper functions.
 #
 # Agent config schema (per agent id):
@@ -12,15 +12,19 @@
 #   effort   : string — reasoning effort (backend-specific)
 #   supports_delegate : bool — optional; false for review-only backends (gemini)
 #
-# Overrides: CONSILIUM_CONFIG env var can point to a custom JSON file.
+# Overrides: PORCH_CONFIG env var can point to a custom JSON file.
 
 SKILL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CONSILIUM_CONFIG="${CONSILIUM_CONFIG:-$SKILL_ROOT/config.json}"
+PORCH_CONFIG="${PORCH_CONFIG:-$SKILL_ROOT/config.json}"
+# config.json is user-local (gitignored); fall back to the shipped example.
+if [[ ! -f "$PORCH_CONFIG" && -f "$SKILL_ROOT/config.example.json" ]]; then
+    PORCH_CONFIG="$SKILL_ROOT/config.example.json"
+fi
 
 # Internal: read JSON via python3.
-# Usage: _cfg_python "script body that reads CONSILIUM_CONFIG"
+# Usage: _cfg_python "script body that reads PORCH_CONFIG"
 _cfg_python() {
-    CONSILIUM_CONFIG_PATH="$CONSILIUM_CONFIG" python3 -c "
+    PORCH_CONFIG_PATH="$PORCH_CONFIG" python3 -c "
 import sys
 sys.stdout.reconfigure(newline='\n')
 $1"
@@ -29,13 +33,13 @@ $1"
 # Validate config file exists and parses as JSON.
 # Exits 1 with a clear message if missing/invalid.
 config_validate() {
-    if [[ ! -f "$CONSILIUM_CONFIG" ]]; then
-        echo "Error: consilium config not found: $CONSILIUM_CONFIG" >&2
+    if [[ ! -f "$PORCH_CONFIG" ]]; then
+        echo "Error: porch config not found: $PORCH_CONFIG" >&2
         return 1
     fi
     _cfg_python '
 import json, os, sys
-path = os.environ["CONSILIUM_CONFIG_PATH"]
+path = os.environ["PORCH_CONFIG_PATH"]
 try:
     with open(path) as f:
         json.load(f)
@@ -49,7 +53,7 @@ except Exception as e:
 config_enabled_agents() {
     _cfg_python '
 import json, os
-with open(os.environ["CONSILIUM_CONFIG_PATH"]) as f:
+with open(os.environ["PORCH_CONFIG_PATH"]) as f:
     cfg = json.load(f)
 for name, agent in cfg.get("agents", {}).items():
     if agent.get("enabled"):
@@ -61,7 +65,7 @@ for name, agent in cfg.get("agents", {}).items():
 config_all_agents() {
     _cfg_python '
 import json, os
-with open(os.environ["CONSILIUM_CONFIG_PATH"]) as f:
+with open(os.environ["PORCH_CONFIG_PATH"]) as f:
     cfg = json.load(f)
 for name in cfg.get("agents", {}):
     print(name)
@@ -76,7 +80,7 @@ config_get_field() {
     local field="$2"
     AGENT_ID="$agent_id" FIELD="$field" _cfg_python '
 import json, os, sys
-with open(os.environ["CONSILIUM_CONFIG_PATH"]) as f:
+with open(os.environ["PORCH_CONFIG_PATH"]) as f:
     cfg = json.load(f)
 agents = cfg.get("agents", {})
 name = os.environ["AGENT_ID"]
@@ -96,7 +100,7 @@ config_is_enabled() {
     local agent_id="$1"
     AGENT_ID="$agent_id" _cfg_python '
 import json, os, sys
-with open(os.environ["CONSILIUM_CONFIG_PATH"]) as f:
+with open(os.environ["PORCH_CONFIG_PATH"]) as f:
     cfg = json.load(f)
 agents = cfg.get("agents", {})
 name = os.environ["AGENT_ID"]
@@ -137,10 +141,10 @@ BACKEND_CMDS = {
     "devin-cli": "devin",
 }
 
-with open(os.environ["CONSILIUM_CONFIG_PATH"]) as f:
+with open(os.environ["PORCH_CONFIG_PATH"]) as f:
     cfg = json.load(f)
 
-print("<consilium-plan>")
+print("<porch-plan>")
 for name, agent in cfg.get("agents", {}).items():
     backend = agent.get("backend", "")
     model = agent.get("model", "")
@@ -159,7 +163,7 @@ for name, agent in cfg.get("agents", {}).items():
         " backend-available=\"" + available + "\""
     )
     print("  <agent " + attrs + "/>")
-print("</consilium-plan>")
+print("</porch-plan>")
 '
 }
 

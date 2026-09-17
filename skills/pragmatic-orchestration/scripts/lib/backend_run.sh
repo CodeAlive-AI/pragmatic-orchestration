@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Unified backend runner for agents-consilium v5.
+# Unified backend runner for pragmatic-orchestration v5.
 #
 # Usage:
 #   backend_run.sh --mode review|delegate --agent-id <id> [options] ["prompt"]
@@ -11,21 +11,21 @@
 #   --mode review|delegate  Required. review = read-only; delegate = full YOLO.
 #   --agent-id <id>          Required. Exact config agent id.
 #   --role <role>            Override role from config.
-#   --prompt-file <path>     Raw prompt from file (implies CONSILIUM_RAW_PROMPT=1).
+#   --prompt-file <path>     Raw prompt from file (implies PORCH_RAW_PROMPT=1).
 #   --raw                    Send prompt without principles/role/template wrap.
 #   --no-wrap                Alias for --raw.
 #   -h, --help
 #
 # Env overrides (tests use these to inject fake CLIs):
-#   CONSILIUM_BIN_CODEX / CONSILIUM_BIN_CLAUDE / CONSILIUM_BIN_OPENCODE
-#   CONSILIUM_BIN_GEMINI / CONSILIUM_BIN_GROK / CONSILIUM_BIN_DEVIN
-#   CONSILIUM_DUMP_ARGV=<path>  — if set, write the exact argv array as JSONL and exit 0
+#   PORCH_BIN_CODEX / PORCH_BIN_CLAUDE / PORCH_BIN_OPENCODE
+#   PORCH_BIN_GEMINI / PORCH_BIN_GROK / PORCH_BIN_DEVIN
+#   PORCH_DUMP_ARGV=<path>  — if set, write the exact argv array as JSONL and exit 0
 #                                 without executing (used by argv safety tests).
 #
 # Observability:
 #   progress → stderr live while the model is still running (not post-hoc)
 #   final answer text → stdout only
-#   artifacts under $CONSILIUM_RUN_DIR when archival enabled
+#   artifacts under $PORCH_RUN_DIR when archival enabled
 #
 # Streaming architecture (structured backends):
 #   prompt_file -> backend_cmd 2>stderr_file | normalize_stream.py --raw-out --progress --extract-text
@@ -86,7 +86,7 @@ done
 MODE_CAPS_JSON="$(
     python3 "$LIB_DIR/mode_policy.py" "$MODE" --json 2>/dev/null
 )" || {
-    echo "Error: --mode must be a known Consilium mode (review|delegate|…); got: $MODE" >&2
+    echo "Error: --mode must be a known Porch mode (review|delegate|…); got: $MODE" >&2
     exit $EXIT_USAGE
 }
 ACCESS_POLICY="$(
@@ -219,13 +219,13 @@ fi
 unset FULL_PROMPT 2>/dev/null || true
 
 # Stage prompt bodies on disk before the pipeline — never put large text in env.
-_PROMPT_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/consilium-prompt.XXXXXX")"
+_PROMPT_STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/porch-prompt.XXXXXX")"
 _PROMPT_USER_FILE="$_PROMPT_STAGE_DIR/user.txt"
 _PROMPT_ROLE_FILE="$_PROMPT_STAGE_DIR/role.txt"
 printf '%s' "$PROMPT" > "$_PROMPT_USER_FILE"
 
-if [[ "$RAW_MODE" -eq 1 || -n "${CONSILIUM_RAW_PROMPT:-}" ]]; then
-    export CONSILIUM_RAW_PROMPT=1
+if [[ "$RAW_MODE" -eq 1 || -n "${PORCH_RAW_PROMPT:-}" ]]; then
+    export PORCH_RAW_PROMPT=1
     FULL_PROMPT="$(
         python3 "$LIB_DIR/prompt_pipeline.py" --mode raw --raw --user-file "$_PROMPT_USER_FILE" 2>/dev/null \
         || cat "$_PROMPT_USER_FILE"
@@ -244,11 +244,11 @@ else
         } > "$_PROMPT_ROLE_FILE"
     fi
     SKIP_TPL_ARGS=()
-    if [[ -n "${CONSILIUM_SKIP_OUTPUT_TEMPLATE:-}" ]]; then
+    if [[ -n "${PORCH_SKIP_OUTPUT_TEMPLATE:-}" ]]; then
         SKIP_TPL_ARGS+=(--skip-output-template)
     fi
     PIPE_MODE="$MODE"
-    if [[ -n "${CONSILIUM_SKIP_OUTPUT_TEMPLATE:-}" && "$MODE" == "review" ]]; then
+    if [[ -n "${PORCH_SKIP_OUTPUT_TEMPLATE:-}" && "$MODE" == "review" ]]; then
         PIPE_MODE="review-code"
     fi
     FULL_PROMPT="$(
@@ -276,12 +276,12 @@ unset _PROMPT_STAGE_DIR _PROMPT_USER_FILE _PROMPT_ROLE_FILE
 # Resolve CLI binary if shared contract did not supply one.
 bin_for() {
     case "$1" in
-        codex-cli)   echo "${CONSILIUM_BIN_CODEX:-codex}" ;;
-        claude-code) echo "${CONSILIUM_BIN_CLAUDE:-claude}" ;;
-        opencode)    echo "${CONSILIUM_BIN_OPENCODE:-opencode}" ;;
-        gemini-cli)  echo "${CONSILIUM_BIN_GEMINI:-gemini}" ;;
-        grok-build)  echo "${CONSILIUM_BIN_GROK:-grok}" ;;
-        devin-cli)   echo "${CONSILIUM_BIN_DEVIN:-devin}" ;;
+        codex-cli)   echo "${PORCH_BIN_CODEX:-codex}" ;;
+        claude-code) echo "${PORCH_BIN_CLAUDE:-claude}" ;;
+        opencode)    echo "${PORCH_BIN_OPENCODE:-opencode}" ;;
+        gemini-cli)  echo "${PORCH_BIN_GEMINI:-gemini}" ;;
+        grok-build)  echo "${PORCH_BIN_GROK:-grok}" ;;
+        devin-cli)   echo "${PORCH_BIN_DEVIN:-devin}" ;;
         *)           echo "" ;;
     esac
 }
@@ -310,33 +310,33 @@ case "$BACKEND" in
         ;;
 esac
 
-# Opt-in debug event tape (CLI or CONSILIUM_DEBUG_EVENTS=1).
+# Opt-in debug event tape (CLI or PORCH_DEBUG_EVENTS=1).
 if [[ -n "$DEBUG_EVENTS" ]]; then
     if [[ "$DEBUG_EVENTS" == "__default__" ]]; then
-        export CONSILIUM_DEBUG_EVENTS=1
+        export PORCH_DEBUG_EVENTS=1
     else
-        export CONSILIUM_DEBUG_EVENTS=1
-        export CONSILIUM_DEBUG_EVENTS_PATH="$DEBUG_EVENTS"
+        export PORCH_DEBUG_EVENTS=1
+        export PORCH_DEBUG_EVENTS_PATH="$DEBUG_EVENTS"
     fi
 fi
 
 # Progress identity = the invocation, not just the agent. Fan-out layers run the
 # same agent in several roles/stages concurrently; without the key their live
 # lines are indistinguishable. Artifact paths reuse the same value below.
-PROGRESS_ID="${CONSILIUM_ARTIFACT_KEY:-$AGENT_ID}"
+PROGRESS_ID="${PORCH_ARTIFACT_KEY:-$AGENT_ID}"
 progress_agent_start "$PROGRESS_ID" "$BACKEND" "$MODE" "$MODEL" "$EFFORT"
 
-# Ensure run dir + artifact subdirs exist (honors pre-set CONSILIUM_RUN_DIR)
-if [[ "${CONSILIUM_SAVE_OUTPUTS:-1}" != "0" ]]; then
-    if [[ -z "${CONSILIUM_RUN_DIR:-}" ]]; then
+# Ensure run dir + artifact subdirs exist (honors pre-set PORCH_RUN_DIR)
+if [[ "${PORCH_SAVE_OUTPUTS:-1}" != "0" ]]; then
+    if [[ -z "${PORCH_RUN_DIR:-}" ]]; then
         artifacts_init_run "$MODE"
     else
-        mkdir -p "$CONSILIUM_RUN_DIR/raw" "$CONSILIUM_RUN_DIR/normalized" "$CONSILIUM_RUN_DIR/final"
-        export CONSILIUM_RUN_DIR
+        mkdir -p "$PORCH_RUN_DIR/raw" "$PORCH_RUN_DIR/normalized" "$PORCH_RUN_DIR/final"
+        export PORCH_RUN_DIR
     fi
 fi
 # Artifact key identifies this invocation. Fan-out callers set an explicit
-# CONSILIUM_ARTIFACT_KEY (e.g. "codex.security", "discovery-small.0.x.analyst",
+# PORCH_ARTIFACT_KEY (e.g. "codex.security", "discovery-small.0.x.analyst",
 # "judge.primary.claude-code"). Ordinary ask/delegate leave it unset → agent id.
 ARTIFACT_KEY="$PROGRESS_ID"
 artifacts_paths_for "$ARTIFACT_KEY"
@@ -361,7 +361,7 @@ build_cmd_codex() {
             CMD+=(-c "model_reasoning_effort=\"$EFFORT\"")
         fi
         CMD+=(exec --model "$MODEL" --sandbox read-only --skip-git-repo-check --ephemeral)
-        if [[ -n "${CONSILIUM_CODEX_NO_MCP:-}" ]]; then
+        if [[ -n "${PORCH_CODEX_NO_MCP:-}" ]]; then
             CMD+=(--ignore-user-config)
         fi
         # Structured events for observability; final text via -o
@@ -407,7 +407,7 @@ build_cmd_claude() {
         CMD+=(--effort "$EFFORT")
     fi
     # Prefer stream-json for observability when not dumping argv only
-    if [[ -z "${CONSILIUM_DUMP_ARGV:-}" ]]; then
+    if [[ -z "${PORCH_DUMP_ARGV:-}" ]]; then
         CMD+=(--output-format stream-json --verbose)
     else
         CMD+=(--output-format text)
@@ -422,8 +422,8 @@ build_cmd_opencode() {
         # permissions. Review needs the full analysis/tool loop instead. Define
         # a primary review agent at runtime: full shell/search, no edits or task
         # delegation. The trusted prompt carries the report-only contract.
-        export OPENCODE_CONFIG_CONTENT='{"agent":{"consilium-review":{"description":"Independent read-only review performed without delegation","prompt":"Review independently and read-only. Work alone: never use task delegation, subagents, other models, or external workers. Use Bash, search, and read tools to inspect any repository files needed for the real blast radius. Return only the report; never modify files or external state.","mode":"primary","permission":{"edit":"deny","task":"deny","bash":"allow","read":"allow","glob":"allow","grep":"allow","list":"allow","lsp":"allow","webfetch":"allow","websearch":"allow"}}}}'
-        CMD+=(--agent consilium-review --auto)
+        export OPENCODE_CONFIG_CONTENT='{"agent":{"porch-review":{"description":"Independent read-only review performed without delegation","prompt":"Review independently and read-only. Work alone: never use task delegation, subagents, other models, or external workers. Use Bash, search, and read tools to inspect any repository files needed for the real blast radius. Return only the report; never modify files or external state.","mode":"primary","permission":{"edit":"deny","task":"deny","bash":"allow","read":"allow","glob":"allow","grep":"allow","list":"allow","lsp":"allow","webfetch":"allow","websearch":"allow"}}}}'
+        CMD+=(--agent porch-review --auto)
     else
         # --auto is current (opencode run --help): auto-approve non-denied permissions
         CMD+=(--agent build --auto)
@@ -432,7 +432,7 @@ build_cmd_opencode() {
     if [[ -n "$EFFORT" ]]; then
         CMD+=(--variant "$EFFORT")
     fi
-    if [[ -z "${CONSILIUM_DUMP_ARGV:-}" ]]; then
+    if [[ -z "${PORCH_DUMP_ARGV:-}" ]]; then
         CMD+=(--format json)
     else
         CMD+=(--format default)
@@ -447,7 +447,7 @@ build_cmd_gemini() {
     # Gemini enables built-in subagents by default. A highest-precedence
     # temporary system settings file disables them for this invocation; `-e
     # none` is the documented way to disable every extension.
-    RUNTIME_SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/consilium-gemini-settings.XXXXXX")"
+    RUNTIME_SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/porch-gemini-settings.XXXXXX")"
     printf '%s\n' '{"experimental":{"enableAgents":false,"extensionManagement":false,"extensionConfig":false}}' > "$RUNTIME_SETTINGS_FILE"
     export GEMINI_CLI_SYSTEM_SETTINGS_PATH="$RUNTIME_SETTINGS_FILE"
     CMD=("$BIN" --model "$MODEL" --approval-mode yolo -o text -e none --allowed-mcp-server-names "")
@@ -522,14 +522,14 @@ case "$BACKEND" in
 esac
 
 # Argv dump mode for tests — exact safety properties without executing
-if [[ -n "${CONSILIUM_DUMP_ARGV:-}" ]]; then
+if [[ -n "${PORCH_DUMP_ARGV:-}" ]]; then
     dump_cmd=("${CMD[@]}")
     if [[ "$PROMPT_VIA_FILE" -eq 1 ]]; then
         dump_cmd+=(--prompt-file "__PROMPT_FILE__")
     elif [[ "$BACKEND" == "codex-cli" ]]; then
         dump_cmd+=(-o "__LAST_MSG__" -)
     fi
-    printf '%s\0' "${dump_cmd[@]}" | AGENT_ID="$AGENT_ID" BACKEND="$BACKEND" MODE="$MODE" MODEL="$MODEL" DUMP_ARGV_PATH="$CONSILIUM_DUMP_ARGV" python3 -c '
+    printf '%s\0' "${dump_cmd[@]}" | AGENT_ID="$AGENT_ID" BACKEND="$BACKEND" MODE="$MODE" MODEL="$MODEL" DUMP_ARGV_PATH="$PORCH_DUMP_ARGV" python3 -c '
 import json, os, sys
 data = sys.stdin.buffer.read().split(b"\0")
 argv = [x.decode() for x in data if x != b""]
@@ -549,7 +549,7 @@ with open(os.environ["DUMP_ARGV_PATH"], "w") as f:
 fi
 
 # Prepare temp files
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/consilium-backend.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/porch-backend.XXXXXX")"
 cleanup_backend() {
     rm -rf "$TMP_DIR"
     [[ -z "$RUNTIME_SETTINGS_FILE" ]] || rm -f "$RUNTIME_SETTINGS_FILE"
@@ -603,7 +603,7 @@ run_streamed() {
         run_argv=(
             python3 "$LIB_DIR/terminal_guard.py"
             --backend opencode
-            --terminal-grace "${CONSILIUM_TERMINAL_GRACE:-2}"
+            --terminal-grace "${PORCH_TERMINAL_GRACE:-2}"
             -- "${run_argv[@]}"
         )
     fi
@@ -621,15 +621,15 @@ run_streamed() {
         --progress-id "$PROGRESS_ID"
     )
     # Callers may choose full previews, content-free compact counters, or silence.
-    if [[ -n "${CONSILIUM_PROGRESS_STYLE:-}" ]]; then
-        norm_argv+=(--progress-style "$CONSILIUM_PROGRESS_STYLE")
+    if [[ -n "${PORCH_PROGRESS_STYLE:-}" ]]; then
+        norm_argv+=(--progress-style "$PORCH_PROGRESS_STYLE")
     fi
-    if [[ -n "${CONSILIUM_PROGRESS_INTERVAL:-}" ]]; then
-        norm_argv+=(--progress-interval "$CONSILIUM_PROGRESS_INTERVAL")
+    if [[ -n "${PORCH_PROGRESS_INTERVAL:-}" ]]; then
+        norm_argv+=(--progress-interval "$PORCH_PROGRESS_INTERVAL")
     fi
-    if [[ -n "${CONSILIUM_DEBUG_EVENTS:-}" ]]; then
-        if [[ -n "${CONSILIUM_DEBUG_EVENTS_PATH:-}" ]]; then
-            norm_argv+=(--debug-events "$CONSILIUM_DEBUG_EVENTS_PATH")
+    if [[ -n "${PORCH_DEBUG_EVENTS:-}" ]]; then
+        if [[ -n "${PORCH_DEBUG_EVENTS_PATH:-}" ]]; then
+            norm_argv+=(--debug-events "$PORCH_DEBUG_EVENTS_PATH")
         else
             norm_argv+=(--debug-events)
         fi
@@ -716,7 +716,7 @@ sys.exit(1)
                 python3 -c '
 import sys
 sys.path.insert(0, sys.argv[3])
-from events import assemble_final_text, ConsiliumEvent, EventValidationError
+from events import assemble_final_text, PorchEvent, EventValidationError
 import json
 evts=[]
 saw_fail=False
@@ -728,7 +728,7 @@ for line in open(sys.argv[1], encoding="utf-8"):
         if o.get("type")=="run_failed":
             saw_fail=True
             continue
-        evts.append(ConsiliumEvent.from_dict(o))
+        evts.append(PorchEvent.from_dict(o))
     except Exception:
         continue
 # Forensic final may keep deltas for debugging, but is_error path must not
@@ -838,12 +838,12 @@ if text:
                 python3 -c '
 import sys,json
 sys.path.insert(0, sys.argv[3])
-from events import assemble_final_text, ConsiliumEvent
+from events import assemble_final_text, PorchEvent
 evts=[]
 for line in open(sys.argv[1], encoding="utf-8"):
     line=line.strip()
     if not line: continue
-    try: evts.append(ConsiliumEvent.from_dict(json.loads(line)))
+    try: evts.append(PorchEvent.from_dict(json.loads(line)))
     except Exception: continue
 text=assemble_final_text(evts)
 if text: open(sys.argv[2],"w",encoding="utf-8").write(text)

@@ -307,7 +307,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
     except _Interrupted:
         sys.stderr.write(
             f"Error: interrupted; run {args.run_id} is untouched. "
-            f"Resume with: consilium delegate wait {args.run_id}\n"
+            f"Resume with: porch delegate wait {args.run_id}\n"
         )
         return 130
     except RegistryError as e:
@@ -462,7 +462,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 ensure_ascii=False,
             )
         else:
-            parts = [f"[consilium] watch run_id={args.run_id}", f"ts={utc_now_iso()}", f"event={event}"]
+            parts = [f"[porch] watch run_id={args.run_id}", f"ts={utc_now_iso()}", f"event={event}"]
             parts.extend(f"{k}={v}" for k, v in fields.items() if v is not None and v != "")
             line = " ".join(parts).replace("\n", " ")
         if line == state["last_line"] and now - state["last_emit"] < 1.0:
@@ -845,8 +845,8 @@ def _timeout(value: str) -> float:
 
 
 def main(argv: Optional[list] = None) -> int:
-    p = argparse.ArgumentParser(prog="consilium-steer-control")
-    p.add_argument("--registry-root", default=os.environ.get("CONSILIUM_STEER_DIR", ""))
+    p = argparse.ArgumentParser(prog="porch-steer-control")
+    p.add_argument("--registry-root", default=os.environ.get("PORCH_STEER_DIR", ""))
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("steer")
@@ -934,7 +934,7 @@ def main(argv: Optional[list] = None) -> int:
     # command first, keeping its remaining arguments opaque, then parse them.
     dispatch = argparse.ArgumentParser(prog=p.prog, add_help=False)
     dispatch.add_argument("-h", "--help", action="store_true")
-    dispatch.add_argument("--registry-root", default=os.environ.get("CONSILIUM_STEER_DIR", ""))
+    dispatch.add_argument("--registry-root", default=os.environ.get("PORCH_STEER_DIR", ""))
     dispatch.add_argument("cmd", nargs="?", choices=sub.choices)
     dispatch.add_argument("command_args", nargs=argparse.REMAINDER)
     header = dispatch.parse_args(argv)

@@ -3,20 +3,20 @@
 # Default test suite does NOT run this (no network / model spend).
 #
 # Usage:
-#   CONSILIUM_STEER_SMOKE=1 bash scripts/tests/steer/smoke_real.sh -a grok "say hi then wait"
-#   CONSILIUM_STEER_SMOKE=1 bash scripts/tests/steer/smoke_real.sh -a claude-code "list files"
+#   PORCH_STEER_SMOKE=1 bash scripts/tests/steer/smoke_real.sh -a grok "say hi then wait"
+#   PORCH_STEER_SMOKE=1 bash scripts/tests/steer/smoke_real.sh -a claude-code "list files"
 #
 # Requires real binaries on PATH and valid auth for the chosen agent.
 set -euo pipefail
 
-if [[ "${CONSILIUM_STEER_SMOKE:-}" != "1" ]]; then
-  echo "Refusing to run real smoke without CONSILIUM_STEER_SMOKE=1" >&2
+if [[ "${PORCH_STEER_SMOKE:-}" != "1" ]]; then
+  echo "Refusing to run real smoke without PORCH_STEER_SMOKE=1" >&2
   echo "This spends model tokens and needs network." >&2
   exit 5
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONSILIUM="$(cd "$SCRIPT_DIR/../.." && pwd)/consilium"
+PORCH="$(cd "$SCRIPT_DIR/../.." && pwd)/porch"
 
 AGENT=""
 # Default task exercises concurrent queue: sleep keeps first prompt in-flight
@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$AGENT" ]]; then
-  echo "Usage: CONSILIUM_STEER_SMOKE=1 $0 -a <agent-id> [task]" >&2
+  echo "Usage: PORCH_STEER_SMOKE=1 $0 -a <agent-id> [task]" >&2
   exit 5
 fi
 
@@ -43,23 +43,23 @@ if [[ "$AGENT" == "grok" || "$AGENT" == "grok-build" ]]; then
   STRICT_GROK_CHECKS=1
 fi
 
-export CONSILIUM_STEER_DIR="${CONSILIUM_STEER_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/consilium-steer-smoke.XXXXXX")}"
-echo "CONSILIUM_STEER_DIR=$CONSILIUM_STEER_DIR" >&2
+export PORCH_STEER_DIR="${PORCH_STEER_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/porch-steer-smoke.XXXXXX")}"
+echo "PORCH_STEER_DIR=$PORCH_STEER_DIR" >&2
 echo "task=$TASK" >&2
 
 # Run the default steerable delegate in background; capture run_id from stderr.
 # Omitting --steerable here ensures the paid smoke exercises the public default.
 set +e
-"$CONSILIUM" delegate -a "$AGENT" "$TASK" >"$CONSILIUM_STEER_DIR/stdout.txt" 2>"$CONSILIUM_STEER_DIR/stderr.txt" &
+"$PORCH" delegate -a "$AGENT" "$TASK" >"$PORCH_STEER_DIR/stdout.txt" 2>"$PORCH_STEER_DIR/stderr.txt" &
 PID=$!
 set -e
 
 RUN_ID=""
 for _ in $(seq 1 100); do
-  if [[ -f "$CONSILIUM_STEER_DIR/stderr.txt" ]]; then
-    RUN_ID=$(sed -n 's/^run_id=//p' "$CONSILIUM_STEER_DIR/stderr.txt" | head -1)
+  if [[ -f "$PORCH_STEER_DIR/stderr.txt" ]]; then
+    RUN_ID=$(sed -n 's/^run_id=//p' "$PORCH_STEER_DIR/stderr.txt" | head -1)
     [[ -n "$RUN_ID" ]] && break
-    RUN_ID=$(grep -o 'run_id=run_[a-f0-9]*' "$CONSILIUM_STEER_DIR/stderr.txt" | head -1 | cut -d= -f2 || true)
+    RUN_ID=$(grep -o 'run_id=run_[a-f0-9]*' "$PORCH_STEER_DIR/stderr.txt" | head -1 | cut -d= -f2 || true)
     [[ -n "$RUN_ID" ]] && break
   fi
   sleep 0.1
@@ -67,7 +67,7 @@ done
 
 if [[ -z "$RUN_ID" ]]; then
   echo "Failed to obtain run_id" >&2
-  cat "$CONSILIUM_STEER_DIR/stderr.txt" >&2 || true
+  cat "$PORCH_STEER_DIR/stderr.txt" >&2 || true
   kill "$PID" 2>/dev/null || true
   exit 1
 fi
@@ -76,8 +76,8 @@ echo "run_id=$RUN_ID" >&2
 # Steer while first prompt is still in-flight (sleep 5 window).
 sleep 1
 echo "steer_text=$STEER_TEXT" >&2
-"$CONSILIUM" delegate steer "$RUN_ID" --mode auto "$STEER_TEXT" || true
-"$CONSILIUM" delegate status "$RUN_ID" --json | head -c 2000 || true
+"$PORCH" delegate steer "$RUN_ID" --mode auto "$STEER_TEXT" || true
+"$PORCH" delegate status "$RUN_ID" --json | head -c 2000 || true
 echo >&2
 
 set +e
@@ -87,17 +87,17 @@ set -e
 echo "supervisor_exit=$WAIT_RC" >&2
 
 echo "--- stdout ---"
-cat "$CONSILIUM_STEER_DIR/stdout.txt"
+cat "$PORCH_STEER_DIR/stdout.txt"
 echo "--- status ---"
-STATUS_JSON=$("$CONSILIUM" delegate status "$RUN_ID" --json || true)
+STATUS_JSON=$("$PORCH" delegate status "$RUN_ID" --json || true)
 echo "$STATUS_JSON"
 
-RUN_DIR="$CONSILIUM_STEER_DIR/runs/$RUN_ID"
+RUN_DIR="$PORCH_STEER_DIR/runs/$RUN_ID"
 FINAL_FILE=""
 if [[ -f "$RUN_DIR/final.txt" ]]; then
   FINAL_FILE="$RUN_DIR/final.txt"
-elif [[ -f "$CONSILIUM_STEER_DIR/stdout.txt" ]]; then
-  FINAL_FILE="$CONSILIUM_STEER_DIR/stdout.txt"
+elif [[ -f "$PORCH_STEER_DIR/stdout.txt" ]]; then
+  FINAL_FILE="$PORCH_STEER_DIR/stdout.txt"
 fi
 
 if [[ "$STRICT_GROK_CHECKS" -eq 1 ]]; then
@@ -107,7 +107,7 @@ if [[ "$STRICT_GROK_CHECKS" -eq 1 ]]; then
   if [[ -n "$FINAL_FILE" && -f "$FINAL_FILE" ]]; then
     BODY=$(cat "$FINAL_FILE")
   else
-    BODY=$(cat "$CONSILIUM_STEER_DIR/stdout.txt")
+    BODY=$(cat "$PORCH_STEER_DIR/stdout.txt")
   fi
 
   # Must contain steered final answer markers
@@ -133,7 +133,7 @@ if [[ "$STRICT_GROK_CHECKS" -eq 1 ]]; then
 
   # Terminal steer prompt must complete with matching lifecycle evidence.
   # Write status to a file so heredoc can own stdin for the checker script.
-  STATUS_FILE="$CONSILIUM_STEER_DIR/status-final.json"
+  STATUS_FILE="$PORCH_STEER_DIR/status-final.json"
   printf '%s\n' "$STATUS_JSON" >"$STATUS_FILE"
   if ! python3 - "$STATUS_FILE" <<'PY'
 import json, sys

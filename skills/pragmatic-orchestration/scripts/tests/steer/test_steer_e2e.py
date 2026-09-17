@@ -19,7 +19,7 @@ TESTS_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = TESTS_DIR.parent
 LIB_DIR = SCRIPTS_DIR / "lib"
 FAKES = TESTS_DIR / "fakes" / "steer"
-CONSILIUM = SCRIPTS_DIR / "consilium"
+PORCH = SCRIPTS_DIR / "porch"
 FIX = TESTS_DIR / "fixtures"
 
 PASS = 0
@@ -47,20 +47,20 @@ def assert_true(name: str, cond: bool, detail: str = "") -> None:
 
 def env_base(reg_root: Path, art: Path) -> dict:
     e = os.environ.copy()
-    e["CONSILIUM_CONFIG"] = str(FIX / "test-config.json")
-    e["CONSILIUM_STEER_DIR"] = str(reg_root)
-    e["CONSILIUM_RUN_DIR"] = str(art)
-    e["CONSILIUM_OUTPUT_DIR"] = str(art)
-    e["CONSILIUM_SAVE_OUTPUTS"] = "1"
+    e["PORCH_CONFIG"] = str(FIX / "test-config.json")
+    e["PORCH_STEER_DIR"] = str(reg_root)
+    e["PORCH_RUN_DIR"] = str(art)
+    e["PORCH_OUTPUT_DIR"] = str(art)
+    e["PORCH_SAVE_OUTPUTS"] = "1"
     e["PYTHONPATH"] = str(LIB_DIR) + (os.pathsep + e["PYTHONPATH"] if e.get("PYTHONPATH") else "")
-    e["CONSILIUM_FAKE_STEER_SLOW"] = "0.35"
+    e["PORCH_FAKE_STEER_SLOW"] = "0.35"
     # Point backends at steerable fakes
-    e["CONSILIUM_BIN_CLAUDE"] = str(FAKES / "fake-claude-steer")
-    e["CONSILIUM_BIN_CODEX"] = str(FAKES / "fake-codex-steer")
-    e["CONSILIUM_BIN_OPENCODE"] = str(FAKES / "fake-opencode-steer")
-    e["CONSILIUM_BIN_GROK"] = str(FAKES / "fake-grok-steer")
+    e["PORCH_BIN_CLAUDE"] = str(FAKES / "fake-claude-steer")
+    e["PORCH_BIN_CODEX"] = str(FAKES / "fake-codex-steer")
+    e["PORCH_BIN_OPENCODE"] = str(FAKES / "fake-opencode-steer")
+    e["PORCH_BIN_GROK"] = str(FAKES / "fake-grok-steer")
     # Devin's single ACP fake serves both one-shot and steerable paths.
-    e["CONSILIUM_BIN_DEVIN"] = str(TESTS_DIR / "fakes" / "fake-devin")
+    e["PORCH_BIN_DEVIN"] = str(TESTS_DIR / "fakes" / "fake-devin")
     return e
 
 
@@ -81,7 +81,7 @@ def extract_run_id(stderr: str) -> str:
         if line.startswith("run_id="):
             return line.split("=", 1)[1].strip()
         if "run_id=" in line:
-            # [consilium] steer run_id=...
+            # [porch] steer run_id=...
             for part in line.split():
                 if part.startswith("run_id="):
                     return part.split("=", 1)[1]
@@ -92,7 +92,7 @@ def start_steerable(agent: str, task: str, env: dict, cwd: Path):
     """Start steerable supervisor in background; return (proc, run_id)."""
     proc = subprocess.Popen(
         [
-            str(CONSILIUM),
+            str(PORCH),
             "delegate",
             "-a",
             agent,
@@ -356,9 +356,9 @@ def test_backend_e2e(agent: str, label: str, tmp: Path, extra_checks=None) -> No
     cwd.mkdir()
     env = env_base(reg_root, art)
     log = tmp / f"argv-{agent}.jsonl"
-    env["CONSILIUM_FAKE_ARGV_LOG"] = str(log)
+    env["PORCH_FAKE_ARGV_LOG"] = str(log)
     if agent == "grok":
-        env["CONSILIUM_FAKE_GROK_EVIDENCE"] = str(tmp / "grok-evidence.json")
+        env["PORCH_FAKE_GROK_EVIDENCE"] = str(tmp / "grok-evidence.json")
 
     try:
         proc, run_id, early_err = start_steerable(agent, f"task for {agent}", env, cwd)
@@ -370,12 +370,12 @@ def test_backend_e2e(agent: str, label: str, tmp: Path, extra_checks=None) -> No
 
     # Live progress before completion: stderr already has progress
     early = "".join(early_err)
-    assert_true(f"{label} live progress on stderr", "run_id=" in early or "[consilium]" in early)
+    assert_true(f"{label} live progress on stderr", "run_id=" in early or "[porch]" in early)
 
     # Steer once while running
     time.sleep(0.15)
     r = run_cmd(
-        [str(CONSILIUM), "delegate", "steer", run_id, "--mode", "auto", f"STEER guidance for {agent}"],
+        [str(PORCH), "delegate", "steer", run_id, "--mode", "auto", f"STEER guidance for {agent}"],
         env,
         timeout=20,
     )
@@ -387,7 +387,7 @@ def test_backend_e2e(agent: str, label: str, tmp: Path, extra_checks=None) -> No
     )
 
     # Status
-    r2 = run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env, timeout=10)
+    r2 = run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env, timeout=10)
     assert_true(f"{label} status json", r2.returncode == 0, r2.stderr)
     try:
         st = json.loads(r2.stdout)
@@ -427,12 +427,12 @@ def test_backend_e2e(agent: str, label: str, tmp: Path, extra_checks=None) -> No
     # stdout should not contain progress tags
     assert_true(
         f"{label} stdout no progress tags",
-        "[consilium]" not in out,
+        "[porch]" not in out,
         out[:200],
     )
 
     # Status terminal
-    r3 = run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env, timeout=10)
+    r3 = run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env, timeout=10)
     st3 = json.loads(r3.stdout) if r3.returncode == 0 else {}
     assert_true(
         f"{label} terminal status",
@@ -509,7 +509,7 @@ def test_opencode_sse_survives_quiet_gap(tmp: Path) -> None:
     env = env_base(reg_root, art)
     # First model delta arrives after slow * 0.4 = 0.8 seconds. This exceeds
     # the former 0.5-second socket timeout that poisoned buffered reads.
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "2.0"
+    env["PORCH_FAKE_STEER_SLOW"] = "2.0"
     proc, _, _ = start_steerable("opencode", "quiet-gap task", env, cwd)
     code, out, err = wait_proc(proc, timeout=20)
     assert_true("opencode quiet-gap exit 0", code == 0, err[-500:])
@@ -525,21 +525,21 @@ def test_grok_queue_and_send_now(tmp: Path) -> None:
     cwd = tmp / "cwd-grok2"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "0.6"
-    env["CONSILIUM_FAKE_GROK_EVIDENCE"] = str(tmp / "grok-ev2.json")
+    env["PORCH_FAKE_STEER_SLOW"] = "0.6"
+    env["PORCH_FAKE_GROK_EVIDENCE"] = str(tmp / "grok-ev2.json")
 
     proc, run_id, _ = start_steerable("grok", "LONG TASK", env, cwd)
     time.sleep(0.2)
     # queue mode steer
     r1 = run_cmd(
-        [str(CONSILIUM), "delegate", "steer", run_id, "--mode", "queue", "STEER queue me"],
+        [str(PORCH), "delegate", "steer", run_id, "--mode", "queue", "STEER queue me"],
         env,
         timeout=15,
     )
     assert_true("grok queue steer accepted", r1.returncode == 0, r1.stderr)
     # interrupt sendNow
     r2 = run_cmd(
-        [str(CONSILIUM), "delegate", "steer", run_id, "--mode", "interrupt", "STEER interrupt now"],
+        [str(PORCH), "delegate", "steer", run_id, "--mode", "interrupt", "STEER interrupt now"],
         env,
         timeout=15,
     )
@@ -549,7 +549,7 @@ def test_grok_queue_and_send_now(tmp: Path) -> None:
     assert_true("grok race exit 0", code == 0, err[-400:])
 
     # Status delivery classes
-    st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     classes = {s.get("delivery_class") for s in st.get("steers") or [] if s.get("delivery_class")}
     # queue_next_turn and/or cancel_and_send
     assert_true(
@@ -586,15 +586,15 @@ def test_cancel(tmp: Path) -> None:
     cwd = tmp / "cwd-cancel"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "2.0"
+    env["PORCH_FAKE_STEER_SLOW"] = "2.0"
     proc, run_id, _ = start_steerable("claude-code", "slow task", env, cwd)
     time.sleep(0.2)
-    r = run_cmd([str(CONSILIUM), "delegate", "cancel", run_id], env, timeout=10)
+    r = run_cmd([str(PORCH), "delegate", "cancel", run_id], env, timeout=10)
     assert_true("cancel cmd ok", r.returncode == 0, r.stderr)
     code, out, err = wait_proc(proc, timeout=20)
     # cancelled exits non-zero typically 130
     assert_true("cancel terminates", code != 0 or "cancel" in err.lower(), f"code={code}")
-    st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     assert_true(
         "cancel terminal status",
         st.get("status") in ("cancelled", "failed", "completed"),
@@ -612,13 +612,13 @@ def test_duplicate_idempotency(tmp: Path) -> None:
     cwd.mkdir()
     env = env_base(reg_root, art)
     # Window must outlast three sequential steer CLI calls; 0.5s flakes under load.
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "1.5"
+    env["PORCH_FAKE_STEER_SLOW"] = "1.5"
     proc, run_id, _ = start_steerable("codex", "dup task", env, cwd)
     time.sleep(0.15)
     # Same client_id + same content + same mode → idempotent
     r1 = run_cmd(
         [
-            str(CONSILIUM),
+            str(PORCH),
             "delegate",
             "steer",
             run_id,
@@ -630,7 +630,7 @@ def test_duplicate_idempotency(tmp: Path) -> None:
     )
     r2 = run_cmd(
         [
-            str(CONSILIUM),
+            str(PORCH),
             "delegate",
             "steer",
             run_id,
@@ -653,7 +653,7 @@ def test_duplicate_idempotency(tmp: Path) -> None:
     # Same client_id + different content → explicit conflict reject
     r3 = run_cmd(
         [
-            str(CONSILIUM),
+            str(PORCH),
             "delegate",
             "steer",
             run_id,
@@ -681,13 +681,13 @@ def test_malicious_client_id_e2e(tmp: Path) -> None:
     cwd = tmp / "cwd-mal"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "0.45"
+    env["PORCH_FAKE_STEER_SLOW"] = "0.45"
     proc, run_id, _ = start_steerable("claude-code", "mal task", env, cwd)
     time.sleep(0.15)
     evil = "../../tmp/pwned"
     r = run_cmd(
         [
-            str(CONSILIUM),
+            str(PORCH),
             "delegate",
             "steer",
             run_id,
@@ -730,17 +730,17 @@ def test_grok_ack_not_delivered_on_write(tmp: Path) -> None:
     cwd = tmp / "cwd-gack"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "0.7"
+    env["PORCH_FAKE_STEER_SLOW"] = "0.7"
     proc, run_id, _ = start_steerable("grok", "ack task", env, cwd)
     time.sleep(0.15)
     run_cmd(
-        [str(CONSILIUM), "delegate", "steer", run_id, "--mode", "queue", "STEER for ack"],
+        [str(PORCH), "delegate", "steer", run_id, "--mode", "queue", "STEER for ack"],
         env,
         timeout=15,
     )
     # Poll status while in flight / after
     time.sleep(0.3)
-    st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     statuses = [s.get("mailbox_status") for s in (st.get("steers") or [])]
     # Allowed intermediate/final protocol statuses
     allowed = {
@@ -764,7 +764,7 @@ def test_grok_ack_not_delivered_on_write(tmp: Path) -> None:
     assert_true("statuses known", all(s in allowed for s in statuses if s), str(statuses))
     code, out, err = wait_proc(proc, timeout=45)
     assert_true("gack exit 0", code == 0, err[-300:])
-    st2 = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st2 = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     final_steers = st2.get("steers") or []
     completed = [s for s in final_steers if s.get("mailbox_status") == "completed"]
     requestish = [
@@ -805,19 +805,19 @@ def test_oneshot_regression(tmp: Path) -> None:
     print("=== regression: one-shot delegate unchanged ===")
     # Use non-steerable path with original fakes from parent fakes/
     env = os.environ.copy()
-    env["CONSILIUM_CONFIG"] = str(FIX / "test-config.json")
-    env["CONSILIUM_BIN_GROK"] = str(TESTS_DIR / "fakes" / "fake-grok")
-    env["CONSILIUM_BIN_CODEX"] = str(TESTS_DIR / "fakes" / "fake-codex")
-    env["CONSILIUM_BIN_CLAUDE"] = str(TESTS_DIR / "fakes" / "fake-claude")
-    env["CONSILIUM_BIN_OPENCODE"] = str(TESTS_DIR / "fakes" / "fake-opencode")
-    env["CONSILIUM_BIN_GEMINI"] = str(TESTS_DIR / "fakes" / "fake-gemini")
-    env["CONSILIUM_SUPPRESS_SHELL_WARN"] = "1"
-    env["CONSILIUM_RUN_DIR"] = str(tmp / "oneshot-art")
+    env["PORCH_CONFIG"] = str(FIX / "test-config.json")
+    env["PORCH_BIN_GROK"] = str(TESTS_DIR / "fakes" / "fake-grok")
+    env["PORCH_BIN_CODEX"] = str(TESTS_DIR / "fakes" / "fake-codex")
+    env["PORCH_BIN_CLAUDE"] = str(TESTS_DIR / "fakes" / "fake-claude")
+    env["PORCH_BIN_OPENCODE"] = str(TESTS_DIR / "fakes" / "fake-opencode")
+    env["PORCH_BIN_GEMINI"] = str(TESTS_DIR / "fakes" / "fake-gemini")
+    env["PORCH_SUPPRESS_SHELL_WARN"] = "1"
+    env["PORCH_RUN_DIR"] = str(tmp / "oneshot-art")
     oneshot_log = tmp / "oneshot-argv.jsonl"
-    env["CONSILIUM_FAKE_ARGV_LOG"] = str(oneshot_log)
+    env["PORCH_FAKE_ARGV_LOG"] = str(oneshot_log)
     (tmp / "oneshot-art").mkdir(parents=True)
     r = run_cmd(
-        [str(CONSILIUM), "delegate", "-a", "grok", "--one-shot", "implement one-shot"],
+        [str(PORCH), "delegate", "-a", "grok", "--one-shot", "implement one-shot"],
         env,
         timeout=30,
     )
@@ -829,7 +829,7 @@ def test_oneshot_regression(tmp: Path) -> None:
     # once, not copied/re-read after the first read.
     r = run_cmd(
         [
-            str(CONSILIUM),
+            str(PORCH),
             "delegate",
             "-a",
             "grok",
@@ -860,12 +860,12 @@ def test_oneshot_regression(tmp: Path) -> None:
     )
 
     steer_env = dict(env)
-    steer_env["CONSILIUM_BIN_GROK"] = str(FAKES / "fake-grok-steer")
-    steer_env["CONSILIUM_STEER_DIR"] = str(tmp / "stdin-steer-registry")
-    steer_env["CONSILIUM_RUN_DIR"] = str(tmp / "stdin-steer-artifacts")
+    steer_env["PORCH_BIN_GROK"] = str(FAKES / "fake-grok-steer")
+    steer_env["PORCH_STEER_DIR"] = str(tmp / "stdin-steer-registry")
+    steer_env["PORCH_RUN_DIR"] = str(tmp / "stdin-steer-artifacts")
     r = run_cmd(
         [
-            str(CONSILIUM),
+            str(PORCH),
             "delegate",
             "-a",
             "grok",
@@ -891,16 +891,16 @@ def test_claude_interrupt_rejected(tmp: Path) -> None:
     cwd = tmp / "cwd-clint"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "0.8"
+    env["PORCH_FAKE_STEER_SLOW"] = "0.8"
     proc, run_id, _ = start_steerable("claude-code", "task", env, cwd)
     time.sleep(0.15)
     r = run_cmd(
-        [str(CONSILIUM), "delegate", "steer", run_id, "--mode", "interrupt", "nope"],
+        [str(PORCH), "delegate", "steer", run_id, "--mode", "interrupt", "nope"],
         env,
     )
     # mailbox accepts; protocol rejects — wait a bit and check status
     time.sleep(0.8)
-    st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     steers = st.get("steers") or []
     # find interrupt
     rejected = [
@@ -913,7 +913,7 @@ def test_claude_interrupt_rejected(tmp: Path) -> None:
     # If only accepted still, wait for supervisor to process
     if not rejected:
         time.sleep(1.0)
-        st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+        st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
         steers = st.get("steers") or []
         rejected = [s for s in steers if s.get("mailbox_status") == "rejected"]
         assert_true("claude interrupt rejected after process", len(rejected) >= 1, str(steers))
@@ -929,11 +929,11 @@ def test_process_cleanup(tmp: Path) -> None:
     cwd = tmp / "cwd-clean"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "0.25"
+    env["PORCH_FAKE_STEER_SLOW"] = "0.25"
     proc, run_id, _ = start_steerable("opencode", "cleanup task", env, cwd)
     # get child from meta once available
     time.sleep(0.3)
-    st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     child = st.get("child_pid")
     code, out, err = wait_proc(proc, timeout=40)
     assert_true("cleanup exit", code == 0, err[-300:])
@@ -1333,13 +1333,13 @@ def test_grok_late_ack_e2e(tmp: Path) -> None:
     cwd.mkdir()
     env = env_base(reg_root, art)
     # Initial prompt work is slow; ack delay forces steer() 5s wait to expire queued.
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "0.4"
-    env["CONSILIUM_FAKE_GROK_ACK_DELAY"] = "6.0"
-    env["CONSILIUM_FAKE_GROK_THOUGHT"] = "1"
+    env["PORCH_FAKE_STEER_SLOW"] = "0.4"
+    env["PORCH_FAKE_GROK_ACK_DELAY"] = "6.0"
+    env["PORCH_FAKE_GROK_THOUGHT"] = "1"
     proc, run_id, _ = start_steerable("grok", "LONG INITIAL TASK", env, cwd)
     time.sleep(0.25)
     r = run_cmd(
-        [str(CONSILIUM), "delegate", "steer", run_id, "--mode", "queue", "STEER late ack please"],
+        [str(PORCH), "delegate", "steer", run_id, "--mode", "queue", "STEER late ack please"],
         env,
         timeout=20,
     )
@@ -1350,7 +1350,7 @@ def test_grok_late_ack_e2e(tmp: Path) -> None:
     saw_started = False
     deadline = time.time() + 45
     while time.time() < deadline:
-        st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+        st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
         steers = st.get("steers") or []
         for s in steers:
             ms = s.get("mailbox_status")
@@ -1366,7 +1366,7 @@ def test_grok_late_ack_e2e(tmp: Path) -> None:
 
     code, out, err = wait_proc(proc, timeout=60)
     assert_true("late-ack exit 0", code == 0, err[-400:])
-    st_final = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st_final = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     final_steers = st_final.get("steers") or []
     completed = [s for s in final_steers if s.get("mailbox_status") == "completed"]
     assert_true(
@@ -1394,7 +1394,7 @@ def test_grok_late_ack_e2e(tmp: Path) -> None:
         "THOUGHT_ONLY_MARKER" not in (out or ""),
         out[:300] if out else "",
     )
-    final_path = Path(env["CONSILIUM_RUN_DIR"]) / "final.txt"
+    final_path = Path(env["PORCH_RUN_DIR"]) / "final.txt"
     # final may live under run artifacts
     run_final = reg_root / "runs" / run_id / "final.txt"
     body = ""
@@ -1698,13 +1698,13 @@ def test_grok_dropped_prompt_e2e(tmp: Path) -> None:
     cwd = tmp / "cwd-grok-drop"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "1.0"
-    env["CONSILIUM_FAKE_GROK_DROP_STEERS"] = "1"
+    env["PORCH_FAKE_STEER_SLOW"] = "1.0"
+    env["PORCH_FAKE_GROK_DROP_STEERS"] = "1"
     proc, run_id, _ = start_steerable("grok", "LONG INITIAL TASK", env, cwd)
     time.sleep(0.15)
     r = run_cmd(
         [
-            str(CONSILIUM),
+            str(PORCH),
             "delegate",
             "steer",
             run_id,
@@ -1719,7 +1719,7 @@ def test_grok_dropped_prompt_e2e(tmp: Path) -> None:
     code, out, err = wait_proc(proc, timeout=45)
     assert_true("drop run exits cleanly", code == 0, err[-400:])
     st = json.loads(
-        run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout
+        run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout
     )
     steers = st.get("steers") or []
     assert_true(
@@ -1751,8 +1751,8 @@ def test_grok_thought_not_in_stdout_e2e(tmp: Path) -> None:
     cwd = tmp / "cwd-gthought"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "0.2"
-    env["CONSILIUM_FAKE_GROK_THOUGHT"] = "1"
+    env["PORCH_FAKE_STEER_SLOW"] = "0.2"
+    env["PORCH_FAKE_GROK_THOUGHT"] = "1"
     proc, run_id, _ = start_steerable("grok", "task with thoughts", env, cwd)
     code, out, err = wait_proc(proc, timeout=40)
     assert_true("thought e2e exit 0", code == 0, err[-300:])
@@ -1781,7 +1781,7 @@ def _devin_e2e_checks(env, run_id, reg_root, out, err, tmp) -> None:
     assert_true("devin final has FAKE_DEVIN_OK", "FAKE_DEVIN_OK" in (out or ""), (out or "")[:300])
     assert_true("devin merged steer text in final", "STEER:" in (out or ""), (out or "")[:300])
     assert_true("devin thought never in final", "FAKE_THOUGHT_NOT_FINAL" not in (out or ""))
-    st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     steers = st.get("steers") or []
     statuses = {s.get("mailbox_status") or s.get("status") for s in steers}
     assert_true(
@@ -1803,11 +1803,11 @@ def test_devin_interrupt_steer(tmp: Path) -> None:
     cwd = tmp / "cwd-devint"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "1.5"
+    env["PORCH_FAKE_STEER_SLOW"] = "1.5"
     proc, run_id, _ = start_steerable("devin", "LONG TASK", env, cwd)
     time.sleep(0.3)
     r = run_cmd(
-        [str(CONSILIUM), "delegate", "steer", run_id, "--mode", "interrupt", "STEER interrupt now"],
+        [str(PORCH), "delegate", "steer", run_id, "--mode", "interrupt", "STEER interrupt now"],
         env,
         timeout=15,
     )
@@ -1816,7 +1816,7 @@ def test_devin_interrupt_steer(tmp: Path) -> None:
     assert_true("devin interrupt exit 0", code == 0, f"code={code} err={(err or '')[-400:]}")
     assert_true("devin interrupt final has answer", "FAKE_DEVIN_OK" in (out or ""), (out or "")[:300])
 
-    st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     steers = st.get("steers") or []
     classes = {s.get("delivery_class") for s in steers if s.get("delivery_class")}
     assert_true("devin interrupt class cancel_and_send", "cancel_and_send" in classes, str(steers))
@@ -2080,11 +2080,11 @@ def test_backend_settings_consistency_unit(tmp: Path) -> None:
         encoding="utf-8",
     )
     keys = (
-        "CONSILIUM_CONFIG",
-        "CONSILIUM_BIN_CODEX",
-        "CONSILIUM_BIN_CLAUDE",
-        "CONSILIUM_BIN_OPENCODE",
-        "CONSILIUM_BIN_GROK",
+        "PORCH_CONFIG",
+        "PORCH_BIN_CODEX",
+        "PORCH_BIN_CLAUDE",
+        "PORCH_BIN_OPENCODE",
+        "PORCH_BIN_GROK",
         "CODEX_MODEL",
         "CODEX_EFFORT",
         "CLAUDE_MODEL",
@@ -2098,12 +2098,12 @@ def test_backend_settings_consistency_unit(tmp: Path) -> None:
     try:
         for key in keys:
             os.environ.pop(key, None)
-        os.environ["CONSILIUM_CONFIG"] = str(config)
+        os.environ["PORCH_CONFIG"] = str(config)
         for key in (
-            "CONSILIUM_BIN_CODEX",
-            "CONSILIUM_BIN_CLAUDE",
-            "CONSILIUM_BIN_OPENCODE",
-            "CONSILIUM_BIN_GROK",
+            "PORCH_BIN_CODEX",
+            "PORCH_BIN_CLAUDE",
+            "PORCH_BIN_OPENCODE",
+            "PORCH_BIN_GROK",
         ):
             os.environ[key] = "/bin/false"
 
@@ -2733,17 +2733,17 @@ def test_grok_steer_reject_when_done(tmp: Path) -> None:
 
 
 def test_save_outputs_zero_no_cwd_artifacts(tmp: Path) -> None:
-    """CONSILIUM_SAVE_OUTPUTS=0 must not create ./raw or ./final.txt in project cwd."""
+    """PORCH_SAVE_OUTPUTS=0 must not create ./raw or ./final.txt in project cwd."""
     print("=== e2e: SAVE_OUTPUTS=0 private artifacts ===")
     reg_root = tmp / "reg-save0"
     reg_root.mkdir(parents=True)
     cwd = tmp / "cwd-save0"
     cwd.mkdir()
     env = env_base(reg_root, tmp / "art-save0-unused")
-    env["CONSILIUM_SAVE_OUTPUTS"] = "0"
+    env["PORCH_SAVE_OUTPUTS"] = "0"
     # Clear ordinary run dir so path would otherwise fall back to "."
-    env.pop("CONSILIUM_RUN_DIR", None)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "0.2"
+    env.pop("PORCH_RUN_DIR", None)
+    env["PORCH_FAKE_STEER_SLOW"] = "0.2"
     # Ensure cwd has no pre-existing artifacts
     for name in ("raw", "normalized", "final", "final.txt"):
         p = cwd / name
@@ -2791,7 +2791,7 @@ def test_opencode_auth_e2e_password_not_in_artifacts(tmp: Path) -> None:
     cwd = tmp / "cwd-oc-auth-e2e"
     cwd.mkdir(exist_ok=True)
     env = env_base(reg_root, art)
-    env["CONSILIUM_FAKE_STEER_SLOW"] = "0.25"
+    env["PORCH_FAKE_STEER_SLOW"] = "0.25"
     proc, run_id, _ = start_steerable("opencode", "auth task", env, cwd)
     code, out, err = wait_proc(proc, timeout=40)
     assert_true("oc auth exit 0", code == 0, err[-400:])
@@ -2824,7 +2824,7 @@ def test_registry_loss_does_not_lose_final(tmp: Path) -> None:
         art.mkdir(parents=True)
         cwd.mkdir(parents=True)
         env = env_base(reg_root, art)
-        env["CONSILIUM_FAKE_STEER_SLOW"] = "3.2"
+        env["PORCH_FAKE_STEER_SLOW"] = "3.2"
         proc, run_id, _ = start_steerable(
             "grok", f"registry resilience {failure}", env, cwd
         )
@@ -2852,7 +2852,7 @@ def test_registry_loss_does_not_lose_final(tmp: Path) -> None:
             time.sleep(0.05)
         assert_true(f"{failure} registry recovered while active", recovered_while_active)
         live_status = run_cmd(
-            [str(CONSILIUM), "delegate", "status", run_id, "--json"], env
+            [str(PORCH), "delegate", "status", run_id, "--json"], env
         )
         assert_true(f"{failure} recovered status works", live_status.returncode == 0, live_status.stderr)
         if live_status.returncode == 0:
@@ -2915,13 +2915,13 @@ def test_wait_already_terminal(tmp: Path) -> None:
     code, out, _ = wait_proc(proc, timeout=30)
     assert_true("wait/done foreground ok", code == 0, f"code={code}")
 
-    r = run_cmd([str(CONSILIUM), "delegate", "wait", run_id], env, timeout=30)
+    r = run_cmd([str(PORCH), "delegate", "wait", run_id], env, timeout=30)
     assert_true("wait/done exit 0", r.returncode == 0, r.stderr)
     # The whole point of preferring run_dir/final.txt: identical bytes to the
     # foreground delegate's stdout.
     assert_true("wait/done stdout matches foreground", r.stdout == out, repr(r.stdout[:120]))
 
-    rj = run_cmd([str(CONSILIUM), "delegate", "wait", run_id, "--json"], env, timeout=30)
+    rj = run_cmd([str(PORCH), "delegate", "wait", run_id, "--json"], env, timeout=30)
     payload = json.loads(rj.stdout)
     assert_true("wait/done json status", payload.get("status") == "completed", str(payload.get("status")))
     # The JSON body is the stored answer verbatim; the trailing newline only
@@ -2931,23 +2931,23 @@ def test_wait_already_terminal(tmp: Path) -> None:
         payload.get("final_text") == out.rstrip("\n"),
         repr(payload.get("final_text")),
     )
-    st = json.loads(run_cmd([str(CONSILIUM), "delegate", "status", run_id, "--json"], env).stdout)
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     assert_true(
         "wait/done json is not the status preview",
         "final_preview" in st and "final_preview" not in payload,
     )
 
-    rq = run_cmd([str(CONSILIUM), "delegate", "wait", run_id, "--quiet"], env, timeout=30)
+    rq = run_cmd([str(PORCH), "delegate", "wait", run_id, "--quiet"], env, timeout=30)
     assert_true("wait/done quiet prints nothing", rq.stdout == "" and rq.returncode == 0, repr(rq.stdout))
 
 
 def test_wait_running_to_completed(tmp: Path) -> None:
     print("=== e2e: wait blocks until a running run finishes ===")
-    env, reg_root, cwd = _wait_env(tmp, "wait-run", CONSILIUM_FAKE_STEER_SLOW="1.5")
+    env, reg_root, cwd = _wait_env(tmp, "wait-run", PORCH_FAKE_STEER_SLOW="1.5")
     proc, run_id, _ = start_steerable("claude-code", "slow task", env, cwd)
     started = time.time()
     waiter = subprocess.Popen(
-        [str(CONSILIUM), "delegate", "wait", run_id],
+        [str(PORCH), "delegate", "wait", run_id],
         env=env, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     time.sleep(0.5)
@@ -2964,10 +2964,10 @@ def test_wait_running_to_completed(tmp: Path) -> None:
 
 def test_wait_failed(tmp: Path) -> None:
     print("=== e2e: wait on a failed run ===")
-    env, reg_root, cwd = _wait_env(tmp, "wait-fail", CONSILIUM_FAKE_CLAUDE_STEER_MODE="crash")
+    env, reg_root, cwd = _wait_env(tmp, "wait-fail", PORCH_FAKE_CLAUDE_STEER_MODE="crash")
     proc, run_id, _ = start_steerable("claude-code", "crashing task", env, cwd)
     wait_proc(proc, timeout=30)
-    r = run_cmd([str(CONSILIUM), "delegate", "wait", run_id], env, timeout=30)
+    r = run_cmd([str(PORCH), "delegate", "wait", run_id], env, timeout=30)
     meta = _meta(reg_root, run_id)
     assert_true("wait/fail terminal status", meta.get("status") in ("failed", "completed"), str(meta.get("status")))
     if meta.get("status") == "failed":
@@ -2981,11 +2981,11 @@ def test_wait_failed(tmp: Path) -> None:
 
 def test_wait_cancelled(tmp: Path) -> None:
     print("=== e2e: wait on a cancelled run ===")
-    env, reg_root, cwd = _wait_env(tmp, "wait-cancel", CONSILIUM_FAKE_CLAUDE_STEER_MODE="hang")
+    env, reg_root, cwd = _wait_env(tmp, "wait-cancel", PORCH_FAKE_CLAUDE_STEER_MODE="hang")
     proc, run_id, _ = start_steerable("claude-code", "long task", env, cwd)
     time.sleep(0.3)
-    run_cmd([str(CONSILIUM), "delegate", "cancel", run_id], env, timeout=10)
-    r = run_cmd([str(CONSILIUM), "delegate", "wait", run_id], env, timeout=40)
+    run_cmd([str(PORCH), "delegate", "cancel", run_id], env, timeout=10)
+    r = run_cmd([str(PORCH), "delegate", "wait", run_id], env, timeout=40)
     meta = _meta(reg_root, run_id)
     if meta.get("status") == "cancelled":
         assert_true("wait/cancel exit 130", r.returncode == 130, f"rc={r.returncode}")
@@ -2996,7 +2996,7 @@ def test_wait_cancelled(tmp: Path) -> None:
 
 def test_wait_supervisor_killed(tmp: Path) -> None:
     print("=== e2e: wait never hangs on a dead supervisor ===")
-    env, reg_root, cwd = _wait_env(tmp, "wait-killed", CONSILIUM_FAKE_CLAUDE_STEER_MODE="hang")
+    env, reg_root, cwd = _wait_env(tmp, "wait-killed", PORCH_FAKE_CLAUDE_STEER_MODE="hang")
     proc, run_id, _ = start_steerable("claude-code", "long task", env, cwd)
     time.sleep(0.3)
     sup_pid = int(_meta(reg_root, run_id).get("pid") or 0)
@@ -3006,7 +3006,7 @@ def test_wait_supervisor_killed(tmp: Path) -> None:
     started = time.time()
     # A subprocess timeout here would surface as an exception, which is exactly
     # the regression this test exists to catch.
-    r = run_cmd([str(CONSILIUM), "delegate", "wait", run_id], env, timeout=30)
+    r = run_cmd([str(PORCH), "delegate", "wait", run_id], env, timeout=30)
     assert_true("wait/killed returns without hanging", time.time() - started < 25)
     assert_true("wait/killed exit 70", r.returncode == 70, f"rc={r.returncode} err={r.stderr[-200:]}")
     meta = _meta(reg_root, run_id)
@@ -3022,23 +3022,23 @@ def test_list(tmp: Path) -> None:
     done_proc, done_id, _ = start_steerable("claude-code", "quick task", env, cwd)
     wait_proc(done_proc, timeout=30)
 
-    env["CONSILIUM_FAKE_CLAUDE_STEER_MODE"] = "hang"
+    env["PORCH_FAKE_CLAUDE_STEER_MODE"] = "hang"
     live_proc, live_id, _ = start_steerable("claude-code", "long task", env, cwd)
     time.sleep(0.3)
 
-    active = json.loads(run_cmd([str(CONSILIUM), "delegate", "list", "--json"], env).stdout)
+    active = json.loads(run_cmd([str(PORCH), "delegate", "list", "--json"], env).stdout)
     ids = [m["run_id"] for m in active]
     assert_true("list default hides terminal runs", done_id not in ids, str(ids))
     assert_true("list default shows the live run", live_id in ids, str(ids))
 
-    every = json.loads(run_cmd([str(CONSILIUM), "delegate", "list", "--all", "--json"], env).stdout)
+    every = json.loads(run_cmd([str(PORCH), "delegate", "list", "--all", "--json"], env).stdout)
     all_ids = [m["run_id"] for m in every]
     assert_true("list --all shows both", done_id in all_ids and live_id in all_ids, str(all_ids))
 
     sup_pid = int(_meta(reg_root, live_id).get("pid") or 0)
     os.kill(sup_pid, signal.SIGKILL)
     time.sleep(0.5)
-    stale = json.loads(run_cmd([str(CONSILIUM), "delegate", "list", "--json"], env).stdout)
+    stale = json.loads(run_cmd([str(PORCH), "delegate", "list", "--json"], env).stdout)
     row = next((m for m in stale if m["run_id"] == live_id), {})
     assert_true("list marks a dead supervisor stale", row.get("effective_status") == "stale", str(row))
     assert_true(
@@ -3047,7 +3047,7 @@ def test_list(tmp: Path) -> None:
         str(_meta(reg_root, live_id).get("status")),
     )
 
-    run_cmd([str(CONSILIUM), "delegate", "list", "--reap", "--all", "--json"], env)
+    run_cmd([str(PORCH), "delegate", "list", "--reap", "--all", "--json"], env)
     reaped = _meta(reg_root, live_id)
     assert_true("list --reap marks it failed", reaped.get("status") == "failed", str(reaped.get("status")))
     assert_true("list --reap records supervisor_dead", reaped.get("error") == "supervisor_dead")
@@ -3088,7 +3088,7 @@ def test_events_bounded_cursor_reader(tmp: Path) -> None:
 
     env = env_base(reg_root, artifacts)
     first = run_cmd(
-        [str(CONSILIUM), "delegate", "events", run_id, "--cursor", "0", "--max-events", "1"],
+        [str(PORCH), "delegate", "events", run_id, "--cursor", "0", "--max-events", "1"],
         env,
     )
     assert_true("events first page exits 0", first.returncode == 0, first.stderr)
@@ -3101,7 +3101,7 @@ def test_events_bounded_cursor_reader(tmp: Path) -> None:
 
     second = run_cmd(
         [
-            str(CONSILIUM),
+            str(PORCH),
             "delegate",
             "events",
             run_id,
@@ -3119,13 +3119,13 @@ def test_events_bounded_cursor_reader(tmp: Path) -> None:
     assert_true("events caps data", len(thought.get("data", "")) == 2000 and thought.get("data_truncated") is True, str(thought))
 
     tail = json.loads(
-        run_cmd([str(CONSILIUM), "delegate", "events", run_id, "--max-events", "1"], env).stdout
+        run_cmd([str(PORCH), "delegate", "events", run_id, "--max-events", "1"], env).stdout
     )
     assert_true("events default returns latest complete group", tail["events"][0]["type"] == "thinking_delta", str(tail))
     assert_true("events ignores incomplete final line", tail.get("next_cursor") == 5, str(tail))
 
     reg.update_meta(run_id, status="failed", exit_code=9)
-    terminal = run_cmd([str(CONSILIUM), "delegate", "events", run_id], env)
+    terminal = run_cmd([str(PORCH), "delegate", "events", run_id], env)
     terminal_body = json.loads(terminal.stdout)
     assert_true("events read success is independent of run failure", terminal.returncode == 0, terminal.stderr)
     assert_true("events reports terminal run outcome", terminal_body.get("terminal") is True and terminal_body.get("exit_code") == 9, str(terminal_body))
@@ -3137,18 +3137,18 @@ def test_events_bounded_cursor_reader(tmp: Path) -> None:
         cwd=str(root),
         artifacts_dir=str(root / "empty-artifacts"),
     )
-    empty = json.loads(run_cmd([str(CONSILIUM), "delegate", "events", empty_id], env).stdout)
+    empty = json.loads(run_cmd([str(PORCH), "delegate", "events", empty_id], env).stdout)
     assert_true("events missing artifact is empty success", empty.get("events") == [] and empty.get("next_cursor") == 0, str(empty))
 
-    bad_run = run_cmd([str(CONSILIUM), "delegate", "events", "run_missing"], env)
+    bad_run = run_cmd([str(PORCH), "delegate", "events", "run_missing"], env)
     assert_true("events unknown run is an error", bad_run.returncode != 0, bad_run.stderr)
 
 
 def test_watch_terminates(tmp: Path) -> None:
     print("=== e2e: watch streams changes and stops at terminal ===")
-    env, reg_root, cwd = _wait_env(tmp, "watch", CONSILIUM_FAKE_STEER_SLOW="1.0")
+    env, reg_root, cwd = _wait_env(tmp, "watch", PORCH_FAKE_STEER_SLOW="1.0")
     proc, run_id, _ = start_steerable("claude-code", "slow task", env, cwd)
-    r = run_cmd([str(CONSILIUM), "delegate", "watch", run_id], env, timeout=40)
+    r = run_cmd([str(PORCH), "delegate", "watch", run_id], env, timeout=40)
     lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
     assert_true("watch exit 0", r.returncode == 0, r.stderr[-200:])
     assert_true("watch has lines", len(lines) >= 2, str(lines))
@@ -3164,14 +3164,14 @@ def test_watch_terminates(tmp: Path) -> None:
 
 def test_detach_lifecycle(tmp: Path) -> None:
     print("=== e2e: detached delegate ===")
-    env, reg_root, cwd = _wait_env(tmp, "detach", CONSILIUM_FAKE_STEER_SLOW="1.0")
+    env, reg_root, cwd = _wait_env(tmp, "detach", PORCH_FAKE_STEER_SLOW="1.0")
     # Scope the leak check to this test: earlier tests SIGKILL delegate.sh,
     # which skips its EXIT trap and legitimately strands temp files.
-    task_tmp_glob = os.path.join(tempfile.gettempdir(), "consilium-delegate-task.*")
+    task_tmp_glob = os.path.join(tempfile.gettempdir(), "porch-delegate-task.*")
     pre_existing = set(glob.glob(task_tmp_glob))
     started = time.time()
     r = run_cmd(
-        [str(CONSILIUM), "delegate", "-a", "claude-code", "--detach", "detached task"],
+        [str(PORCH), "delegate", "-a", "claude-code", "--detach", "detached task"],
         env, timeout=40,
     )
     elapsed = time.time() - started
@@ -3193,22 +3193,22 @@ def test_detach_lifecycle(tmp: Path) -> None:
 
     leaked = set(glob.glob(task_tmp_glob)) - pre_existing
     assert_true("detach cleans up its task temp file", not leaked, str(leaked))
-    detach_tmp = glob.glob(os.path.join(tempfile.gettempdir(), "consilium-detach*"))
+    detach_tmp = glob.glob(os.path.join(tempfile.gettempdir(), "porch-detach*"))
     assert_true("detach cleans up its handshake temp file", not detach_tmp, str(detach_tmp))
 
-    w = run_cmd([str(CONSILIUM), "delegate", "wait", run_id], env, timeout=60)
+    w = run_cmd([str(PORCH), "delegate", "wait", run_id], env, timeout=60)
     assert_true("detach + wait exit 0", w.returncode == 0, w.stderr[-200:])
     assert_true("detach + wait returns the answer", w.stdout.strip() != "", repr(w.stdout))
 
     # Same handshake, but the task arrives on stdin.
     r2 = run_cmd(
-        [str(CONSILIUM), "delegate", "-a", "claude-code", "--detach"],
+        [str(PORCH), "delegate", "-a", "claude-code", "--detach"],
         env, timeout=40, input_text="task from stdin",
     )
     assert_true("detach from stdin exit 0", r2.returncode == 0, r2.stderr[-300:])
     rid2 = r2.stdout.strip()
     assert_true("detach from stdin prints a run id", rid2.startswith("run_"), repr(r2.stdout))
-    w2 = run_cmd([str(CONSILIUM), "delegate", "wait", rid2], env, timeout=60)
+    w2 = run_cmd([str(PORCH), "delegate", "wait", rid2], env, timeout=60)
     assert_true("detach from stdin + wait exit 0", w2.returncode == 0, w2.stderr[-200:])
 
 
@@ -3219,9 +3219,9 @@ def main() -> int:
     for p in FAKES.iterdir():
         if p.is_file():
             p.chmod(p.stat().st_mode | 0o111)
-    CONSILIUM.chmod(CONSILIUM.stat().st_mode | 0o111)
+    PORCH.chmod(PORCH.stat().st_mode | 0o111)
 
-    tmp = Path(tempfile.mkdtemp(prefix="consilium-steer-test-"))
+    tmp = Path(tempfile.mkdtemp(prefix="porch-steer-test-"))
     print(f"tmpdir={tmp}")
     try:
         test_mailbox_and_registry_unit(tmp)

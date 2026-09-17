@@ -38,7 +38,7 @@ foreign-session filtering, and SSE lines larger than 64 KiB with Unicode content
 Opt-in real smoke tests spend tokens:
 
 ```bash
-CONSILIUM_STEER_SMOKE=1 bash scripts/tests/steer/smoke_real.sh -a grok
+PORCH_STEER_SMOKE=1 bash scripts/tests/steer/smoke_real.sh -a grok
 ```
 
 ## Cross-platform checks

@@ -73,7 +73,7 @@ KEEP_TMP=""
 JUDGE_AGENT="claude-code"
 JUDGE_FALLBACK="opencode"
 NO_FALLBACK=""
-PROGRESS="${CONSILIUM_PROGRESS:-full}"
+PROGRESS="${PORCH_PROGRESS:-full}"
 RELATED_FILES=()
 
 # progress.sh is sourced best-effort above; keep this pipeline runnable without it.
@@ -81,7 +81,7 @@ if ! declare -F progress_set_style >/dev/null 2>&1; then
     progress_set_style() { [[ "$1" == "full" || "$1" == "compact" || "$1" == "none" ]]; }
 fi
 if ! declare -F progress_enabled >/dev/null 2>&1; then
-    progress_enabled() { [[ "${CONSILIUM_PROGRESS_STYLE:-full}" != "none" ]]; }
+    progress_enabled() { [[ "${PORCH_PROGRESS_STYLE:-full}" != "none" ]]; }
 fi
 # Stage narration: suppressed by --progress none, like every other progress line.
 note() { progress_enabled || return 0; echo -e "$*" >&2; }
@@ -131,13 +131,13 @@ ALL_AGENTS_NEEDED=(
 [[ -z "$NO_FALLBACK" ]] && ALL_AGENTS_NEEDED+=("$JUDGE_FALLBACK")
 
 # ------ Config validation --------------------------------------------------
-CONSILIUM_CONFIG="${CONSILIUM_CONFIG:-$SKILL_DIR/config.json}"
-[[ -f "$CONSILIUM_CONFIG" ]] || { echo -e "${RED}Error: config not found: $CONSILIUM_CONFIG${NC}" >&2; exit 4; }
+PORCH_CONFIG="${PORCH_CONFIG:-$SKILL_DIR/config.json}"
+[[ -f "$PORCH_CONFIG" ]] || { echo -e "${RED}Error: config not found: $PORCH_CONFIG${NC}" >&2; exit 4; }
 
 missing="$(python3 - <<PYEOF
 import json, sys
 needed = "${ALL_AGENTS_NEEDED[*]}".split()
-agents = json.load(open("$CONSILIUM_CONFIG"))["agents"]
+agents = json.load(open("$PORCH_CONFIG"))["agents"]
 print(",".join([n for n in needed if n not in agents]))
 PYEOF
 )"
@@ -148,7 +148,7 @@ fi
 
 # ------ Input loading ------------------------------------------------------
 INPUT_LABEL=""
-TMP_ROOT="$(mktemp -d -t "agents-consilium-ultrareview-XXXXXX")"
+TMP_ROOT="$(mktemp -d -t "pragmatic-orchestration-ultrareview-XXXXXX")"
 cleanup_root() { [[ -z "$KEEP_TMP" ]] && rm -rf "$TMP_ROOT" || echo -e "${YELLOW}[debug] keeping ultrareview tmp: $TMP_ROOT${NC}" >&2; }
 trap cleanup_root EXIT
 
@@ -244,7 +244,7 @@ mkdir -p "$RESP_DIR"
 PLAN_LINES="$TMP_ROOT/plan-lines.txt"
 grep -v '^#' "$PLAN_FULL" | grep -E '^(broad|specialists|probe)\|' > "$PLAN_LINES" || true
 
-note "${YELLOW}[Launching discovery plan stages (max_parallel=${CONSILIUM_MAX_PARALLEL:-0})...]${NC}"
+note "${YELLOW}[Launching discovery plan stages (max_parallel=${PORCH_MAX_PARALLEL:-0})...]${NC}"
 set +e
 SUMMARY="$("$LIB_DIR/workflow_runner.sh" run-discovery-plan \
     --plan-lines-file "$PLAN_LINES" \

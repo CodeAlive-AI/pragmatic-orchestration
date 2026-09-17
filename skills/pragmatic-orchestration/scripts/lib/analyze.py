@@ -1,6 +1,6 @@
 """Session reflection/analytics layer over lib/sessions.py fragments.
 
-Adds three read-only commands to `consilium sessions`:
+Adds three read-only commands to `porch sessions`:
 
   turns  — one JSONL row per user-triggered turn (TraceLab definition: from
            the triggering human prompt to the last agent output before the
@@ -134,7 +134,7 @@ def iter_dedup_sessions(stores: list[S.Store], args: Any,
     """Yield (store, ref, fragments) once per canonical conversation.
 
     Layered stores repeat a thread (codex rollout vs state index vs catalog;
-    claude-desktop manifest vs linked claude transcript; consilium run vs the
+    claude-desktop manifest vs linked claude transcript; porch run vs the
     agent's own session). First occurrence wins — stores arrive in canonical
     order from selected_stores(). Metadata-only layers still yield a session
     (their own fragments) but never fabricate turns: a turn needs a trigger.
@@ -552,7 +552,7 @@ def _summary(stores: list[S.Store], stats: dict[str, int], emitted: int) -> dict
         "unreadable_files": stats.get("unreadable", 0),
         "dedup_rule": "first canonical layer wins (rollout/transcript > index/catalog); "
                       "claude-desktop code-sessions keyed by cliSessionId; "
-                      "consilium runs deduped by native_session",
+                      "porch runs deduped by native_session",
         "note": "flags/turns are deterministic heuristics with evidence locators — "
                 "verify a claim via `sessions show <harness:id> --around SEQ` before quoting it",
     }

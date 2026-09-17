@@ -17,7 +17,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 
-class ConsiliumArgumentParser(argparse.ArgumentParser):
+class PorchArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         self.print_usage(sys.stderr)
         self.exit(5, f"{self.prog}: error: {message}\n")
@@ -76,7 +76,7 @@ def parse_grok_screen(screen: str) -> dict[str, Any]:
 
 
 def read_codex(timeout: float = 15.0) -> dict[str, Any]:
-    binary = os.environ.get("CONSILIUM_BIN_CODEX", "codex")
+    binary = os.environ.get("PORCH_BIN_CODEX", "codex")
     process = subprocess.Popen(
         [binary, "app-server"],
         stdin=subprocess.PIPE,
@@ -91,7 +91,7 @@ def read_codex(timeout: float = 15.0) -> dict[str, Any]:
         process.stdin.write(json.dumps({
             "id": 1,
             "method": "initialize",
-            "params": {"clientInfo": {"name": "agents-consilium-quota", "version": "1.0.0"}},
+            "params": {"clientInfo": {"name": "pragmatic-orchestration-quota", "version": "1.0.0"}},
         }) + "\n")
         process.stdin.flush()
         initialized = False
@@ -130,7 +130,7 @@ def read_codex(timeout: float = 15.0) -> dict[str, Any]:
 def _grok_remote_script(cwd: str) -> str:
     quoted_cwd = shlex.quote(cwd)
     return f'''set -eu
-session="consilium-quota-$$"
+session="porch-quota-$$"
 cleanup() {{ tmux kill-session -t "$session" 2>/dev/null || true; }}
 trap cleanup EXIT INT TERM
 tmux new-session -d -s "$session" -x 180 -y 55
@@ -163,12 +163,12 @@ def _read_grok_once(host: str, cwd: str, timeout: float) -> dict[str, Any]:
 
 
 def read_grok(timeout: float = 25.0) -> dict[str, Any]:
-    host = os.environ.get("CONSILIUM_GROK_QUOTA_SSH_HOST", "grok-aws")
-    cwd = os.environ.get("CONSILIUM_GROK_QUOTA_CWD", "/mnt/codealive/workspaces")
+    host = os.environ.get("PORCH_GROK_QUOTA_SSH_HOST", "grok-aws")
+    cwd = os.environ.get("PORCH_GROK_QUOTA_CWD", "/mnt/codealive/workspaces")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", host):
-        raise RuntimeError("CONSILIUM_GROK_QUOTA_SSH_HOST must be a safe SSH alias")
+        raise RuntimeError("PORCH_GROK_QUOTA_SSH_HOST must be a safe SSH alias")
     if not PurePosixPath(cwd).is_absolute() or "\x00" in cwd:
-        raise RuntimeError("CONSILIUM_GROK_QUOTA_CWD must be an absolute remote path")
+        raise RuntimeError("PORCH_GROK_QUOTA_CWD must be an absolute remote path")
     errors = []
     for attempt in range(2):
         try:
@@ -181,7 +181,7 @@ def read_grok(timeout: float = 25.0) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = ConsiliumArgumentParser(prog="consilium quota")
+    parser = PorchArgumentParser(prog="porch quota")
     parser.add_argument("provider", nargs="?", choices=("all", "codex", "grok"), default="all")
     args = parser.parse_args()
     readers = {"codex": read_codex, "grok": read_grok}

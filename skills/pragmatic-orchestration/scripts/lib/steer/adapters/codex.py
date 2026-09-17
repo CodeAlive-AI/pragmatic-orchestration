@@ -236,7 +236,7 @@ class CodexAdapter(BackendAdapter):
             "initialize",
             {
                 "clientInfo": {
-                    "name": "agents-consilium-steer",
+                    "name": "pragmatic-orchestration-steer",
                     "version": "1.0.0",
                 }
             },

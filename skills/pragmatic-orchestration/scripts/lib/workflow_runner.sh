@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# workflow_runner.sh — reusable bounded fan-out runner for Consilium plans.
+# workflow_runner.sh — reusable bounded fan-out runner for Porch plans.
 #
 # Consumes declarative pass lines (from workflow_plans.py --shell) or is called
 # by review_ask / review_code / review_super / review_ultra helpers.
 #
 # Concurrency:
-#   CONSILIUM_MAX_PARALLEL=0   unlimited (default; historical behaviour)
-#   CONSILIUM_MAX_PARALLEL=N   at most N concurrent background jobs
+#   PORCH_MAX_PARALLEL=0   unlimited (default; historical behaviour)
+#   PORCH_MAX_PARALLEL=N   at most N concurrent background jobs
 #
 # Contract preserved:
 #   - partial (exit 2) / all-failed (exit 3) via caller aggregation
@@ -38,7 +38,7 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$LIB_DIR/common.sh" 2>/dev/null || true
 
 max_parallel() {
-    local n="${CONSILIUM_MAX_PARALLEL:-0}"
+    local n="${PORCH_MAX_PARALLEL:-0}"
     if ! [[ "$n" =~ ^[0-9]+$ ]]; then
         n=0
     fi
@@ -95,14 +95,14 @@ cmd_launch_backend() {
     (
         set +e
         set +o pipefail
-        export CONSILIUM_RUN_DIR="${CONSILIUM_RUN_DIR:-}"
-        export CONSILIUM_SAVE_OUTPUTS="${CONSILIUM_SAVE_OUTPUTS:-}"
+        export PORCH_RUN_DIR="${PORCH_RUN_DIR:-}"
+        export PORCH_SAVE_OUTPUTS="${PORCH_SAVE_OUTPUTS:-}"
         if [[ -n "$art_key" ]]; then
-            export CONSILIUM_ARTIFACT_KEY="$art_key"
+            export PORCH_ARTIFACT_KEY="$art_key"
         else
-            unset CONSILIUM_ARTIFACT_KEY 2>/dev/null || true
+            unset PORCH_ARTIFACT_KEY 2>/dev/null || true
         fi
-        if [[ "$mode" == "review" && -z "${CONSILIUM_RAW_PROMPT:-}" ]]; then
+        if [[ "$mode" == "review" && -z "${PORCH_RAW_PROMPT:-}" ]]; then
             # discovery / code paths often skip Assessment template
             :
         fi

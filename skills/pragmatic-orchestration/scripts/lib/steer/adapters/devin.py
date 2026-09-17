@@ -191,7 +191,7 @@ class DevinAdapter(BackendAdapter):
                     "fs": {"readTextFile": False, "writeTextFile": False},
                     "terminal": False,
                 },
-                "clientInfo": {"name": "agents-consilium", "version": "1.0.0"},
+                "clientInfo": {"name": "pragmatic-orchestration", "version": "1.0.0"},
             },
             timeout=60.0,
         )

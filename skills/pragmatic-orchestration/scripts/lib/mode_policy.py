@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit mode → capability policy matrix for Consilium.
+"""Explicit mode → capability policy matrix for Porch.
 
 Source of truth for filesystem / shell / web / memory / subagents / steer /
 interrupt decisions. Backend-specific safety flags still live with each
@@ -218,7 +218,7 @@ def _main() -> int:
     import json
     import sys
 
-    ap = argparse.ArgumentParser(description="Consilium mode capability policy")
+    ap = argparse.ArgumentParser(description="Porch mode capability policy")
     ap.add_argument("mode", nargs="?", default="")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--access-class", action="store_true",

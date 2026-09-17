@@ -48,14 +48,14 @@ class Session:
         self.cv = threading.Condition(self.lock)
         self.order: List[str] = []  # completion order of promptIds
         self.started_order: List[str] = []
-        self.slow = float(os.environ.get("CONSILIUM_FAKE_STEER_SLOW", "0.45"))
+        self.slow = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.45"))
         # Delay before first agent_* chunk for a prompt (simulates tool sleep).
         # Used to force steer() to return queued before applied confirmation.
-        self.ack_delay = float(os.environ.get("CONSILIUM_FAKE_GROK_ACK_DELAY", "0"))
-        self.mode = os.environ.get("CONSILIUM_FAKE_GROK_STEER_MODE", "ok")
-        self.drop_steers = os.environ.get("CONSILIUM_FAKE_GROK_DROP_STEERS", "0") == "1"
+        self.ack_delay = float(os.environ.get("PORCH_FAKE_GROK_ACK_DELAY", "0"))
+        self.mode = os.environ.get("PORCH_FAKE_GROK_STEER_MODE", "ok")
+        self.drop_steers = os.environ.get("PORCH_FAKE_GROK_DROP_STEERS", "0") == "1"
         # When set, emit thought text that must NOT appear in final output.
-        self.emit_thought = os.environ.get("CONSILIUM_FAKE_GROK_THOUGHT", "1") != "0"
+        self.emit_thought = os.environ.get("PORCH_FAKE_GROK_THOUGHT", "1") != "0"
         self.stop = False
 
     def _queue_snapshot(self) -> Dict[str, Any]:
@@ -216,7 +216,7 @@ class Session:
 
 
 def main() -> int:
-    log = os.environ.get("CONSILIUM_FAKE_ARGV_LOG")
+    log = os.environ.get("PORCH_FAKE_ARGV_LOG")
     if log:
         with open(log, "a", encoding="utf-8") as f:
             f.write(json.dumps({"bin": "grok-steer", "argv": sys.argv[1:]}) + "\n")
@@ -317,7 +317,7 @@ def main() -> int:
     with sess.cv:
         sess.cv.notify_all()
     # Persist race evidence for tests
-    evidence = os.environ.get("CONSILIUM_FAKE_GROK_EVIDENCE")
+    evidence = os.environ.get("PORCH_FAKE_GROK_EVIDENCE")
     if evidence:
         with open(evidence, "w", encoding="utf-8") as f:
             json.dump(

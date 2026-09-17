@@ -1,5 +1,5 @@
 {
-  "_comment": "Example consilium config (v5). Copy over config.json or set CONSILIUM_CONFIG. JSON ignores _comment.",
+  "_comment": "Example porch config (v5). Copy over config.json or set PORCH_CONFIG. JSON ignores _comment.",
   "agents": {
     "codex": {
       "enabled": false,

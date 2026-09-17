@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Layered prompt pipeline for Consilium.
+"""Layered prompt pipeline for Porch.
 
 Trusted layers (fixed order, lowest → highest provenance of user control):
 
-  1. framework_policy   — Consilium independent-advisory / operational rules
+  1. framework_policy   — Porch independent-advisory / operational rules
   2. mode_contract      — mode-specific review contract
   3. role               — specialist / analyst / lateral role text
   4. output_schema      — required output template or XML schema
@@ -349,14 +349,14 @@ def build_prompt(
 ) -> BuiltPrompt:
     """Public entry used by shell and tests.
 
-    When honor_env=True (CLI / shell wrappers), CONSILIUM_RAW_PROMPT and
-    CONSILIUM_SKIP_OUTPUT_TEMPLATE are honored. Library/unit callers leave
+    When honor_env=True (CLI / shell wrappers), PORCH_RAW_PROMPT and
+    PORCH_SKIP_OUTPUT_TEMPLATE are honored. Library/unit callers leave
     honor_env=False so ambient env cannot strip review layers accidentally.
     """
     if honor_env:
-        if os.environ.get("CONSILIUM_RAW_PROMPT"):
+        if os.environ.get("PORCH_RAW_PROMPT"):
             raw = True
-        if os.environ.get("CONSILIUM_SKIP_OUTPUT_TEMPLATE"):
+        if os.environ.get("PORCH_SKIP_OUTPUT_TEMPLATE"):
             skip_output_template = True
     if review_instructions and role_text:
         role_text = (
@@ -405,7 +405,7 @@ def _main() -> int:
     import argparse
     import sys
 
-    ap = argparse.ArgumentParser(description="Consilium layered prompt builder")
+    ap = argparse.ArgumentParser(description="Porch layered prompt builder")
     ap.add_argument("--mode", required=True)
     ap.add_argument("--role-file", default="")
     ap.add_argument("--role-text", default="")

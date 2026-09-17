@@ -1,18 +1,18 @@
-# ACP evaluation for agents-consilium
+# ACP evaluation for pragmatic-orchestration
 
 Date: 2026-07-24
 
 ## Decision
 
 Keep direct headless CLI invocation as the production transport for
-`agents-consilium`. Do not migrate the skill to ACP now, do not add a hybrid
+`pragmatic-orchestration`. Do not migrate the skill to ACP now, do not add a hybrid
 ACP/CLI path, and do not create a separate `grok-acp`.
 
 ACP is a good editor-to-agent protocol and provides a cleaner common event
 model. For this skill's short-lived batch workload, however, it would move
 rather than remove complexity:
 
-- consilium would need a bidirectional ACP client, not just a stream parser;
+- porch would need a bidirectional ACP client, not just a stream parser;
 - permissions, authentication, session lifecycle, cancellation, and server
   shutdown would become client responsibilities;
 - review safety and delegate YOLO behavior would still require
@@ -56,7 +56,7 @@ automatically answer it. This is consent mediation, not filesystem or process
 isolation. An agent can also execute its own tools rather than use
 client-mediated `fs/*` or `terminal/*` methods.
 
-Consequences for consilium:
+Consequences for porch:
 
 - **review** still needs harness or OS enforcement such as Codex/Grok sandbox
   flags, plan agents, and tool allow/deny lists;
@@ -76,11 +76,11 @@ The local CLI versions inspected during the evaluation were:
 
 | Harness | ACP path | Status for this use case |
 |---|---|---|
-| OpenCode | Native `opencode acp` server | No extra adapter, but consilium would still need an ACP client and OpenCode-specific permission/mode handling. |
+| OpenCode | Native `opencode acp` server | No extra adapter, but porch would still need an ACP client and OpenCode-specific permission/mode handling. |
 | Grok Build | Native `grok agent stdio` server | A separate `grok-acp` would duplicate functionality already shipped by Grok Build. |
 | Codex | Official `@agentclientprotocol/codex-acp` adapter over Codex App Server | Adds an adapter process and lifecycle. It exposes Codex-specific `read-only`, `agent`, and `agent-full-access` modes rather than removing backend-specific policy. |
 | Claude Code | Official `@agentclientprotocol/claude-agent-acp` adapter over Claude Agent SDK | Adds a separate package and adapter semantics instead of using the installed Claude Code headless CLI directly. |
-| Gemini CLI | ACP-capable in the ecosystem, but not a migration driver | Gemini remains review-only in consilium. |
+| Gemini CLI | ACP-capable in the ecosystem, but not a migration driver | Gemini remains review-only in porch. |
 
 ## Observability and completion
 
@@ -92,7 +92,7 @@ ACP offers richer normalized progress than vendor-specific CLI streams:
   or cancelled states;
 - a successful prompt turn returns an explicit `stopReason`.
 
-Adopting it would still require consilium to:
+Adopting it would still require porch to:
 
 1. spawn and supervise the ACP server;
 2. perform initialization and authentication;
@@ -102,7 +102,7 @@ Adopting it would still require consilium to:
 6. interpret `stopReason` and structured errors;
 7. cancel or close the session;
 8. terminate a server process that is designed to remain alive;
-9. map all events into consilium's artifact and progress formats.
+9. map all events into porch's artifact and progress formats.
 
 For a one-shot batch command, this is a larger lifecycle surface than piping a
 headless CLI's streaming output through the existing normalizer.
@@ -133,18 +133,18 @@ grok agent stdio
 ```
 
 Creating `grok-acp` would add another server or wrapper around the same native
-capability. Consilium's public runtime still uses ordinary CLI transports
+capability. Porch's public runtime still uses ordinary CLI transports
 (Codex app-server, Claude stream-json, OpenCode HTTP/SSE, Grok streaming-json)
-plus a closed internal ConsiliumEvent schema for normalized artifacts; ACP is
-not a public Consilium transport. If an ACP experiment is needed later, the useful missing component
-would be a generic consilium ACP **client**, with Grok configured as one agent
+plus a closed internal PorchEvent schema for normalized artifacts; ACP is
+not a public Porch transport. If an ACP experiment is needed later, the useful missing component
+would be a generic porch ACP **client**, with Grok configured as one agent
 command. It would not be a Grok-specific ACP server.
 
 ## When to reconsider
 
 Re-evaluate ACP if one or more of these become true:
 
-- consilium needs interactive multi-turn or resumable sessions;
+- porch needs interactive multi-turn or resumable sessions;
 - permission prompts must be rendered in a client UI;
 - Codex and Claude Code ship native ACP servers with documented safety modes
   equivalent to their current CLI flags;

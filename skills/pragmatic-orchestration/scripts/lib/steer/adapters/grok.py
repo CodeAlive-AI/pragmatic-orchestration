@@ -522,7 +522,7 @@ class GrokAdapter(BackendAdapter):
                     "terminal": False,
                 },
                 "clientInfo": {
-                    "name": "agents-consilium-steer",
+                    "name": "pragmatic-orchestration-steer",
                     "version": "1.0.0",
                 },
                 "_meta": {
@@ -531,7 +531,7 @@ class GrokAdapter(BackendAdapter):
                         "skipGitStatus": True,
                         "skipProjectLayout": True,
                     },
-                    "clientType": "agents-consilium",
+                    "clientType": "pragmatic-orchestration",
                     "clientVersion": "1.0.0",
                 },
             },

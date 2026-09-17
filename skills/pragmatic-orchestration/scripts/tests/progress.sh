@@ -12,9 +12,9 @@
 
 echo "=== review progress: CLI contract ==="
 
-# Earlier sections pin CONSILIUM_RUN_DIR to inspect artifacts; these tests need
+# Earlier sections pin PORCH_RUN_DIR to inspect artifacts; these tests need
 # the auto-created (human-named) run dir instead.
-unset CONSILIUM_RUN_DIR
+unset PORCH_RUN_DIR
 
 PT="$TMP/progress"
 mkdir -p "$PT"
@@ -37,33 +37,33 @@ assert_matches() {
   fi
 }
 
-out=$("$CONSILIUM" review ask --progress bogus "q" 2>&1) && rc=0 || rc=$?
+out=$("$PORCH" review ask --progress bogus "q" 2>&1) && rc=0 || rc=$?
 assert_eq "ask rejects unknown --progress" "$rc" "5"
 assert_contains "ask --progress error names the values" "$out" "full, compact, or none"
 
-out=$("$CONSILIUM" review code --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
+out=$("$PORCH" review code --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
 assert_eq "code rejects unknown --progress" "$rc" "5"
 
-out=$("$CONSILIUM" review code --depth super --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
+out=$("$PORCH" review code --depth super --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
 assert_eq "super rejects unknown --progress" "$rc" "5"
 
-out=$("$CONSILIUM" review code --depth ultra --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
+out=$("$PORCH" review code --depth ultra --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
 assert_eq "ultra rejects unknown --progress" "$rc" "5"
 
-out=$("$CONSILIUM" review ask --help 2>&1) || true
+out=$("$PORCH" review ask --help 2>&1) || true
 assert_contains "ask help documents --progress" "$out" "--progress full|compact|none"
 
-out=$("$CONSILIUM" review code --help 2>&1) || true
+out=$("$PORCH" review code --help 2>&1) || true
 assert_contains "code help documents --progress" "$out" "--progress <full|compact|none>"
 
-out=$("$CONSILIUM" --help 2>&1) || true
+out=$("$PORCH" --help 2>&1) || true
 assert_contains "top-level help documents progress styles" "$out" "Live progress (all review depths)"
-assert_contains "top-level help names CONSILIUM_PROGRESS" "$out" "CONSILIUM_PROGRESS"
+assert_contains "top-level help names PORCH_PROGRESS" "$out" "PORCH_PROGRESS"
 
 echo "=== review progress: styles ==="
 
 # full (default): per-agent previews reach stderr while the run is in flight.
-"$CONSILIUM" review ask -a codex "explain" >"$PT/full.out" 2>"$PT/full.err" || true
+"$PORCH" review ask -a codex "explain" >"$PT/full.out" 2>"$PT/full.err" || true
 full_err="$(cat "$PT/full.err")"
 assert_contains "full progress starts the agent" "$full_err" "start agent=codex"
 assert_contains "full progress finishes the agent" "$full_err" "done agent=codex status=ok"
@@ -71,7 +71,7 @@ assert_contains "full progress previews content" "$full_err" "type=text data="
 assert_file "full progress leaves stdout intact" "$PT/full.out"
 
 # compact: liveness only — counters, never model content.
-"$CONSILIUM" review ask --progress compact -a codex "explain" >"$PT/compact.out" 2>"$PT/compact.err" || true
+"$PORCH" review ask --progress compact -a codex "explain" >"$PT/compact.out" 2>"$PT/compact.err" || true
 compact_err="$(cat "$PT/compact.err")"
 assert_contains "compact progress emits counters" "$compact_err" "chunks="
 assert_contains "compact progress emits elapsed" "$compact_err" "elapsed="
@@ -79,16 +79,16 @@ assert_not_contains "compact progress carries no content" "$compact_err" "type=t
 assert_file "compact progress leaves stdout intact" "$PT/compact.out"
 
 # none: silence, including the orchestrator's own stage lines.
-"$CONSILIUM" review ask --progress none -a codex "explain" >"$PT/none.out" 2>"$PT/none.err" || true
+"$PORCH" review ask --progress none -a codex "explain" >"$PT/none.out" 2>"$PT/none.err" || true
 assert_eq "none is silent on stderr" "$(wc -c < "$PT/none.err" | tr -d ' ')" "0"
 assert_file "none still answers on stdout" "$PT/none.out"
 
 # The env fallback is what a wrapper sets once for a whole session.
-CONSILIUM_PROGRESS=none "$CONSILIUM" review ask -a codex "explain" >/dev/null 2>"$PT/env.err" || true
-assert_eq "CONSILIUM_PROGRESS=none is honored" "$(wc -c < "$PT/env.err" | tr -d ' ')" "0"
+PORCH_PROGRESS=none "$PORCH" review ask -a codex "explain" >/dev/null 2>"$PT/env.err" || true
+assert_eq "PORCH_PROGRESS=none is honored" "$(wc -c < "$PT/env.err" | tr -d ' ')" "0"
 
 # Silence must not swallow the report itself, nor real failures.
-"$CONSILIUM" review code --depth basic --progress none -a codex "$PSRC" >"$PT/code-none.out" 2>"$PT/code-none.err" || true
+"$PORCH" review code --depth basic --progress none -a codex "$PSRC" >"$PT/code-none.out" 2>"$PT/code-none.err" || true
 assert_eq "code none is silent on stderr" "$(wc -c < "$PT/code-none.err" | tr -d ' ')" "0"
 assert_file "code none still reports on stdout" "$PT/code-none.out"
 
@@ -96,7 +96,7 @@ echo "=== review progress: per-invocation identity ==="
 
 # Code review runs one agent per role. Progress must name the role, otherwise
 # two concurrent passes of the same agent are indistinguishable on stderr.
-"$CONSILIUM" review code --depth basic -a codex "$PSRC" >/dev/null 2>"$PT/code.err" || true
+"$PORCH" review code --depth basic -a codex "$PSRC" >/dev/null 2>"$PT/code.err" || true
 code_err="$(cat "$PT/code.err")"
 assert_contains "code progress keys the security pass" "$code_err" "agent=codex.security"
 assert_contains "code progress keys the correctness pass" "$code_err" "agent=codex.correctness"
@@ -121,7 +121,7 @@ assert_eq "human ids stay unique over 200 draws" "$uniq_count" "200"
 # The artifact run dir is quoted back to the caller — it must read as words.
 run_parent="$PT/outputs"
 mkdir -p "$run_parent"
-CONSILIUM_OUTPUT_DIR="$run_parent" "$CONSILIUM" review ask -a codex "explain" >/dev/null 2>"$PT/rundir.err" || true
+PORCH_OUTPUT_DIR="$run_parent" "$PORCH" review ask -a codex "explain" >/dev/null 2>"$PT/rundir.err" || true
 run_dir_name="$(basename "$(find "$run_parent" -maxdepth 1 -mindepth 1 -type d | head -1)")"
 assert_matches "run dir reads as words" "$run_dir_name" '^run-ask-[a-z]+-[a-z]+-[0-9a-f]{4}$'
 assert_contains "run dir path is reported live" "$(cat "$PT/rundir.err")" "run_dir=$run_parent/"

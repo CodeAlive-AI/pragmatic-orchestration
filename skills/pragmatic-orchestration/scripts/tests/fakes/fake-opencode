@@ -1,11 +1,11 @@
 #!/bin/bash
 set -euo pipefail
-LOG="${CONSILIUM_FAKE_ARGV_LOG:-/dev/null}"
+LOG="${PORCH_FAKE_ARGV_LOG:-/dev/null}"
 python3 -c '
 import json, os, sys
 try:
     inline = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT", "{}"))
-    review_agent = inline.get("agent", {}).get("consilium-review", {})
+    review_agent = inline.get("agent", {}).get("porch-review", {})
     perms = review_agent.get("permission", {})
 except Exception:
     review_agent = {}
@@ -28,16 +28,16 @@ if printf '%s\n' "$@" | grep -qx -- 'json' || printf '%s\n' "$@" | grep -q -- '-
   # emit json when format json requested
   for a in "$@"; do
     if [[ "$a" == "json" ]]; then
-      if [[ -n "${CONSILIUM_FAKE_OPENCODE_IDLE_BEFORE_TEXT:-}" ]]; then
+      if [[ -n "${PORCH_FAKE_OPENCODE_IDLE_BEFORE_TEXT:-}" ]]; then
         echo '{"type":"session.idle"}'
       fi
       echo '{"type":"text","text":"FAKE_OPENCODE_OK"}'
       echo '{"type":"session.complete"}'
-      if [[ -n "${CONSILIUM_FAKE_OPENCODE_TEXT_AFTER_COMPLETE:-}" ]]; then
+      if [[ -n "${PORCH_FAKE_OPENCODE_TEXT_AFTER_COMPLETE:-}" ]]; then
         echo '{"type":"text","text":"AFTER_COMPLETE"}'
       fi
-      if [[ -n "${CONSILIUM_FAKE_OPENCODE_HANG_AFTER_COMPLETE:-}" ]]; then
-        sleep "${CONSILIUM_FAKE_OPENCODE_HANG_SECONDS:-30}"
+      if [[ -n "${PORCH_FAKE_OPENCODE_HANG_AFTER_COMPLETE:-}" ]]; then
+        sleep "${PORCH_FAKE_OPENCODE_HANG_SECONDS:-30}"
       fi
       exit 0
     fi

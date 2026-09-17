@@ -1,9 +1,9 @@
 #!/bin/bash
 #
 # delegate — full-YOLO single-agent task execution in the caller's CWD.
-# Invoked by: scripts/consilium delegate -a <exact-agent-id> ...
-#             scripts/consilium delegate --one-shot -a <id> ...
-#             scripts/consilium delegate steer|status|cancel|events ...
+# Invoked by: scripts/porch delegate -a <exact-agent-id> ...
+#             scripts/porch delegate --one-shot -a <id> ...
+#             scripts/porch delegate steer|status|cancel|events ...
 #
 # No sandbox, no approval prompts, no extra confirmation flag.
 # Exact agent id only — no globs, no defaults.
@@ -102,19 +102,19 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             cat <<'EOF'
 Usage:
-  consilium delegate -a <exact-agent-id> ["task"]
-  consilium delegate -a <exact-agent-id> --one-shot ["task"]
-  consilium delegate -a <exact-agent-id> --detach ["task"]
-  consilium delegate -a <codex-profile> --persist-session [--detach] "task"
-  consilium delegate -a <codex-profile> --continue-run RUN_ID [--detach] "follow-up"
-  consilium delegate steer RUN_ID [--mode auto|queue|interrupt] [--prompt-file FILE] "guidance"
-  consilium delegate status RUN_ID [--json]
-  consilium delegate cancel RUN_ID
-  consilium delegate wait RUN_ID [--timeout SEC] [--json] [--quiet]
-  consilium delegate wait-any RUN_ID [RUN_ID ...] [--acknowledged RUN_ID] [--timeout SEC]
-  consilium delegate watch RUN_ID [--heartbeat SEC] [--json]
-  consilium delegate events RUN_ID [--cursor N] [--max-events N]
-  consilium delegate list [--active|--all] [--reap] [--json]
+  porch delegate -a <exact-agent-id> ["task"]
+  porch delegate -a <exact-agent-id> --one-shot ["task"]
+  porch delegate -a <exact-agent-id> --detach ["task"]
+  porch delegate -a <codex-profile> --persist-session [--detach] "task"
+  porch delegate -a <codex-profile> --continue-run RUN_ID [--detach] "follow-up"
+  porch delegate steer RUN_ID [--mode auto|queue|interrupt] [--prompt-file FILE] "guidance"
+  porch delegate status RUN_ID [--json]
+  porch delegate cancel RUN_ID
+  porch delegate wait RUN_ID [--timeout SEC] [--json] [--quiet]
+  porch delegate wait-any RUN_ID [RUN_ID ...] [--acknowledged RUN_ID] [--timeout SEC]
+  porch delegate watch RUN_ID [--heartbeat SEC] [--json]
+  porch delegate events RUN_ID [--cursor N] [--max-events N]
+  porch delegate list [--active|--all] [--reap] [--json]
 
 Full-YOLO delegation to exactly one agent in the current working directory.
 No sandbox, no approval prompts. Gemini is not supported (review-only).
@@ -183,7 +183,7 @@ fi
 # supports regular files, FIFOs, and pseudo-files such as /dev/stdin without a
 # second read/cp (macOS fcopyfile rejects copying /dev/fd-backed stdin). It also
 # preserves trailing newlines and keeps large bodies out of argv and env.
-_del_prompt_tmp="$(mktemp "${TMPDIR:-/tmp}/consilium-delegate-task.XXXXXX")"
+_del_prompt_tmp="$(mktemp "${TMPDIR:-/tmp}/porch-delegate-task.XXXXXX")"
 chmod 600 "$_del_prompt_tmp"
 cleanup_delegate_prompt() { rm -f "$_del_prompt_tmp"; }
 trap cleanup_delegate_prompt EXIT
@@ -226,8 +226,8 @@ if [[ "$PERSIST_SESSION" -eq 1 && ( "$STEERABLE" -ne 1 || "$BACKEND" != "codex-c
     exit $EXIT_USAGE
 fi
 
-export CONSILIUM_MODE="delegate"
-export CONSILIUM_SINGLE_AGENT=1
+export PORCH_MODE="delegate"
+export PORCH_SINGLE_AGENT=1
 artifacts_init_run "delegate"
 if [[ "$STEERABLE" -eq 1 ]]; then
     progress_stage "delegate" "agent=$AGENT_ID cwd=$(pwd) steerable=1"
@@ -235,19 +235,19 @@ else
     progress_stage "delegate" "agent=$AGENT_ID cwd=$(pwd) one_shot=1"
 fi
 
-# Delegate sends the task as-is (no consilium review principles wrap that forbids writes)
-export CONSILIUM_RAW_PROMPT=1
+# Delegate sends the task as-is (no porch review principles wrap that forbids writes)
+export PORCH_RAW_PROMPT=1
 
 if [[ "$STEERABLE" -eq 1 ]]; then
     # Large prompts reach the supervisor through the normalized file only.
-    # Protocol artifacts: use CONSILIUM_RUN_DIR only when ordinary archival is on.
-    # With CONSILIUM_SAVE_OUTPUTS=0, artifacts_init_run clears RUN_DIR — never fall
+    # Protocol artifacts: use PORCH_RUN_DIR only when ordinary archival is on.
+    # With PORCH_SAVE_OUTPUTS=0, artifacts_init_run clears RUN_DIR — never fall
     # back to project cwd (".") because that would write ./raw ./final.txt into the
     # user's tree. Empty artifacts-dir tells the supervisor to place protocol
     # artifacts under the private 0700 registry run dir (meta records the path).
     ART=""
-    if [[ "${CONSILIUM_SAVE_OUTPUTS:-1}" != "0" && -n "${CONSILIUM_RUN_DIR:-}" ]]; then
-        ART="$CONSILIUM_RUN_DIR"
+    if [[ "${PORCH_SAVE_OUTPUTS:-1}" != "0" && -n "${PORCH_RUN_DIR:-}" ]]; then
+        ART="$PORCH_RUN_DIR"
     fi
     REG_ARGS=()
     if [[ "$PERSIST_SESSION" -eq 1 ]]; then
@@ -256,15 +256,15 @@ if [[ "$STEERABLE" -eq 1 ]]; then
     if [[ -n "$CONTINUE_RUN" ]]; then
         REG_ARGS+=(--continue-run "$CONTINUE_RUN")
     fi
-    if [[ -n "${CONSILIUM_STEER_DIR:-}" ]]; then
-        REG_ARGS+=(--registry-root "$CONSILIUM_STEER_DIR")
+    if [[ -n "${PORCH_STEER_DIR:-}" ]]; then
+        REG_ARGS+=(--registry-root "$PORCH_STEER_DIR")
     fi
     if [[ "$DETACH" -eq 1 ]]; then
         # Detached: stdio goes to a private log the supervisor relocates under
         # its own run dir once the run id exists. The answer is never read from
         # this log — run_dir/final.txt stays authoritative and `wait` serves it.
-        _det_log="$(mktemp "${TMPDIR:-/tmp}/consilium-detach.XXXXXX")"
-        _det_idf="$(mktemp "${TMPDIR:-/tmp}/consilium-detach-id.XXXXXX")"
+        _det_log="$(mktemp "${TMPDIR:-/tmp}/porch-detach.XXXXXX")"
+        _det_idf="$(mktemp "${TMPDIR:-/tmp}/porch-detach-id.XXXXXX")"
         chmod 600 "$_det_log" "$_det_idf"
         _det_log_kept=0
         cleanup_detach() {

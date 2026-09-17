@@ -28,22 +28,22 @@ def current_uid() -> int:
 
 
 def default_registry_root() -> Path:
-    override = os.environ.get("CONSILIUM_STEER_DIR")
+    override = os.environ.get("PORCH_STEER_DIR")
     if override:
         return Path(override).expanduser()
     if os.name == "nt":
         local_appdata = os.environ.get("LOCALAPPDATA")
         base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
-        return base / "agents-consilium" / "steer"
+        return base / "pragmatic-orchestration" / "steer"
     xdg = os.environ.get("XDG_CACHE_HOME")
     if xdg:
-        return Path(xdg) / "agents-consilium" / "steer"
+        return Path(xdg) / "pragmatic-orchestration" / "steer"
     # macOS-friendly user cache default
     home = Path.home()
     mac_cache = home / "Library" / "Caches"
     if mac_cache.is_dir() or os.uname().sysname == "Darwin":
-        return mac_cache / "agents-consilium" / "steer"
-    return home / ".cache" / "agents-consilium" / "steer"
+        return mac_cache / "pragmatic-orchestration" / "steer"
+    return home / ".cache" / "pragmatic-orchestration" / "steer"
 
 
 class RegistryError(Exception):

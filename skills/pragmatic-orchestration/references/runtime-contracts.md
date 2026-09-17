@@ -17,15 +17,15 @@ Use this reference when diagnosing or changing observability, normalized events,
 |---|---|
 | stderr | Mode-specific progress for foreground commands; this is not a promise of tool/file visibility for steerable delegation |
 | stdout | Clean final answer only |
-| artifacts | Per-run `raw/*.jsonl`, `normalized/*.jsonl`, `final/*.txt`, and `final.txt` under `CONSILIUM_OUTPUT_DIR` or `CONSILIUM_RUN_DIR` |
+| artifacts | Per-run `raw/*.jsonl`, `normalized/*.jsonl`, `final/*.txt`, and `final.txt` under `PORCH_OUTPUT_DIR` or `PORCH_RUN_DIR` |
 
-Artifact keys are per invocation: profile id for ask/delegate, `agent.role` for basic/specialist review, `<stage>.<index>.<agent>.<role>` for super/ultra discovery, and `judge.primary.<agent>` / `judge.fallback.<agent>` for judge attempts. Fan-out never relies only on inherited `CONSILIUM_ARTIFACT_KEY`.
+Artifact keys are per invocation: profile id for ask/delegate, `agent.role` for basic/specialist review, `<stage>.<index>.<agent>.<role>` for super/ultra discovery, and `judge.primary.<agent>` / `judge.fallback.<agent>` for judge attempts. Fan-out never relies only on inherited `PORCH_ARTIFACT_KEY`.
 
 One-shot architecture remains `backend_cmd | normalize_stream.py --raw-out --progress --extract-text`. Raw lines are persisted and normalized immediately. `PIPESTATUS` preserves backend exit and Grok end/error validation independently.
 
 ## Closed event schema
 
-`scripts/lib/events.py` defines the closed `ConsiliumEvent` type set shared by one-shot normalization and steerable persistence. Unknown event types are rejected rather than silently written. Original backend payloads may be retained under `raw`.
+`scripts/lib/events.py` defines the closed `PorchEvent` type set shared by one-shot normalization and steerable persistence. Unknown event types are rejected rather than silently written. Original backend payloads may be retained under `raw`.
 
 | Type | Purpose |
 |---|---|
@@ -46,10 +46,10 @@ Live stderr keeps the human vocabulary `thought`, `text`, `end`, and `error`. Fi
 The opt-in tape records bounded, sequence-numbered JSONL across RAW → PARSED → NORMALIZED → RENDERED → FINAL without leaking event bodies onto normal stderr.
 
 ```bash
-CONSILIUM_DEBUG_EVENTS=1 "$CONSILIUM" review ask "Q"
-CONSILIUM_DEBUG_EVENTS_PATH=/tmp/tape.jsonl
-CONSILIUM_DEBUG_EVENTS_MAX=10000
-CONSILIUM_DEBUG_EVENTS_MAX_BYTES=33554432
+PORCH_DEBUG_EVENTS=1 "$PORCH" review ask "Q"
+PORCH_DEBUG_EVENTS_PATH=/tmp/tape.jsonl
+PORCH_DEBUG_EVENTS_MAX=10000
+PORCH_DEBUG_EVENTS_MAX_BYTES=33554432
 ```
 
 One-shot normalization records all stages; the steerable supervisor records normalized adapter events. Overflow, dropped, and gap counts are reported on close instead of being hidden.
@@ -66,7 +66,7 @@ One-shot normalization records all stages; the steerable supervisor records norm
 |---|---|---|
 | Codex CLI | `--search`, `exec --sandbox read-only`, ask-for-approval never, multi-agent disabled | `--dangerously-bypass-approvals-and-sandbox` |
 | Claude Code | `dontAsk`, safe mode, no session/Chrome, Edit/Write/Agent/Task denied, Bash + web enabled | `--dangerously-skip-permissions` |
-| OpenCode | runtime `consilium-review` primary agent with its own work-alone prompt: full diagnostics, edit/task denied | `--agent build --auto` |
+| OpenCode | runtime `porch-review` primary agent with its own work-alone prompt: full diagnostics, edit/task denied | `--agent build --auto` |
 | Grok Build | `--no-plan`, read-only sandbox, terminal enabled, subagents disabled | `--always-approve`, no sandbox |
 | Gemini CLI | `--approval-mode yolo`, extensions/MCP/subagents disabled; report-only prompt contract | unsupported |
 
@@ -95,8 +95,8 @@ mechanical read-only boundary is required for untrusted repositories.
 
 | Setting | Meaning |
 |---|---|
-| `CONSILIUM_MAX_PARALLEL=0` | Unlimited jobs; default and historical behavior |
-| `CONSILIUM_MAX_PARALLEL=N` | At most N ask/discovery/specialist jobs concurrently |
+| `PORCH_MAX_PARALLEL=0` | Unlimited jobs; default and historical behavior |
+| `PORCH_MAX_PARALLEL=N` | At most N ask/discovery/specialist jobs concurrently |
 
 Stage order, partial/all-failed exit semantics, artifact keys, live progress, and independent outputs remain deterministic.
 
@@ -153,9 +153,9 @@ Run ids are human-readable word pairs with a four-hex uniqueness suffix, for exa
 
 ## Resource limits
 
-Consilium is unlimited by default: no wrapper timeout, step/token/response budget, or fan-out cap. Prompts use stdin or private temporary files; delegate reads file/stdin sources exactly once; raw/normalized/final outputs stream to disk without truncation. Only the opt-in debug tape is bounded, with explicit overflow reporting.
+Porch is unlimited by default: no wrapper timeout, step/token/response budget, or fan-out cap. Prompts use stdin or private temporary files; delegate reads file/stdin sources exactly once; raw/normalized/final outputs stream to disk without truncation. Only the opt-in debug tape is bounded, with explicit overflow reporting.
 
-Provider/harness limits still apply. Consilium itself never imposes an execution
+Provider/harness limits still apply. Porch itself never imposes an execution
 deadline; observe long-running work and cancel it explicitly when needed.
 
 ## Native Grok one-shot contract

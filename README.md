@@ -17,6 +17,12 @@ The repo also ships **`remote-agents`**: a companion skill for operating dedicat
 
 Full documentation: [skills/pragmatic-orchestration/README.md](skills/pragmatic-orchestration/README.md) and [SKILL.md](skills/pragmatic-orchestration/SKILL.md).
 
+## Demo
+
+![Astra delegates work, steers an active worker, and verifies the result](assets/pragmatic-orchestration-demo.gif)
+
+*Illustrative scenario. Usage figures show Astra quota only; worker usage is separate.*
+
 ## Recommended combinations
 
 These combinations come from field use.

@@ -10,6 +10,10 @@ through **`porch`** (the sibling `pragmatic-orchestration` skill) on the host.
 
 ## What it covers
 
+- **Onboarding** — phased runbook (`references/onboarding.md`) plus
+  `onboard.py check`, a read-only readiness doctor, and `init-keys`/`set-peer`
+  for WireGuard key setup. `setup-host-bridge.ps1` performs the host-side
+  bridge provisioning.
 - **Provisioning/hardening** — no-ingress security groups, SSM-only access,
   least-privilege controller IAM, signature-verified toolchain bootstrap,
   `apply-hardening.ps1`/`audit-hardening.ps1`, a Terraform module for the

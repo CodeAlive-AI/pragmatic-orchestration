@@ -42,6 +42,7 @@
       },
       "bridge": {
         "shareName": "Work",
+        "accountName": "remote-agents-work",
         "subnetPrefix": "10.99.0",
         "listenPort": 51820,
         "mountRoot": "~/.remote-agents",

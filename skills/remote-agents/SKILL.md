@@ -20,6 +20,7 @@ host identity comes from `config.json` (copy `config.example.json`, or set
 `REMOTE_AGENTS_HOST`, or `defaultHost`.
 
 ```bash
+./scripts/onboard.py check        # readiness matrix for a new/existing host
 ./scripts/host.sh status          # instance state + SSM reachability
 ./scripts/host.sh start|stop|restart
 ./scripts/host.sh ssh             # interactive SSH-over-SSM
@@ -44,6 +45,7 @@ scripts auto-detect the OS via `scripts/lib/devlocal.py`.
 
 | Need | Path |
 |---|---|
+| Onboard a new host end-to-end | [onboarding.md](references/onboarding.md) + `scripts/onboard.py check` |
 | Provision/harden a new host | [provisioning.md](references/provisioning.md) (+ `references/terraform/`, `examples/`) |
 | Configure host identity | [configuration.md](references/configuration.md) |
 | SSH config, file transfer, SMB mount | [bridge.md](references/bridge.md) |
@@ -92,6 +94,8 @@ Always:
 ## Scripts map
 
 `host.sh` lifecycle/transport · `lib/config.py` host resolution ·
+`onboard.py` readiness check / wg key init · `setup-host-bridge.ps1`
+host-side bridge setup · `lib/devlocal.py` dev-OS primitives ·
 `desktop.py` + `desktop/{probe,observer}.py` headless desktop ·
 `work-bridge.py` / `work-bridge.command` / `install-work-bridge-service.py`
 SMB bridge · `Start-Interactive.ps1` GUI launcher · `Start-VisualQa.ps1` +

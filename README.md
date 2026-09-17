@@ -54,53 +54,16 @@ For planning, use Astra medium+ or Fable, guided by the `code-that-fits-in-your-
 
 ## Install
 
-Any agent supporting the Agent Skills standard:
-
 ```bash
-npx skills add CodeAlive-AI/pragmatic-orchestration@pragmatic-orchestration -g -y
+npx skills add CodeAlive-AI/pragmatic-orchestration@pragmatic-orchestration
+claude plugin marketplace add CodeAlive-AI/pragmatic-orchestration && claude plugin install pragmatic-orchestration@pragmatic-orchestration
 ```
-
-As a Claude Code plugin:
-
-```bash
-claude plugin marketplace add CodeAlive-AI/pragmatic-orchestration
-claude plugin install pragmatic-orchestration@pragmatic-orchestration
-```
-
-You also need Python 3 and at least one supported coding-agent CLI installed and authenticated.
-
-Configuration: copy `skills/pragmatic-orchestration/config.example.json` to `config.json` in the same directory (gitignored, per-user) or point `PORCH_CONFIG` at your own file. Without `config.json`, the shipped example defaults are used. `remote-agents` follows the same pattern (`REMOTE_AGENTS_CONFIG` / `config.json`).
 
 ## Platform support
 
 The system is fully field-tested on macOS. Linux and Windows 11 support is experimental: both are covered by CI but have less field use. CI runs on Ubuntu, macOS, and Windows.
 
 Windows 11 requires Git Bash/MSYS2 and native Python 3.11+. `porch.cmd` runs `sessions` and `quota` natively; `review` and `delegate` run from Git Bash.
-
-## Repository layout
-
-```
-pragmatic-orchestration/
-├── .claude-plugin/            ← single-plugin marketplace (source: "./")
-├── skills/
-│   ├── pragmatic-orchestration/
-│   │   ├── SKILL.md           ← agent-facing instructions
-│   │   ├── README.md          ← human-facing docs
-│   │   ├── scripts/porch      ← the CLI (+ porch.cmd for Windows)
-│   │   ├── references/        ← per-mode deep docs
-│   │   ├── prompts/           ← review/specialist prompt templates
-│   │   └── config.example.json
-│   └── remote-agents/         ← dedicated remote agent hosts (Linux/Windows)
-│       ├── SKILL.md           ← agent-facing instructions
-│       ├── scripts/           ← host.sh, desktop.py, work-bridge.py, Windows helpers
-│       ├── references/        ← provisioning, bridge, porch-remote, security…
-│       └── config.example.json
-└── .github/workflows/         ← offline regression CI
-```
-
-## History
-
-Extracted from [CodeAlive-AI/ai-driven-development](https://github.com/CodeAlive-AI/ai-driven-development) (`skills/agents-consilium`) via `git filter-repo`; commit history preserved (SHAs rewritten). Earlier pre-consolidation history lives in the archived `CodeAlive-AI/awesome-agent-skills` repository.
 
 ## License
 

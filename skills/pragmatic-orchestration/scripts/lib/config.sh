@@ -15,10 +15,15 @@
 # Overrides: PORCH_CONFIG env var can point to a custom JSON file.
 
 SKILL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-PORCH_CONFIG="${PORCH_CONFIG:-$SKILL_ROOT/config.json}"
-# config.json is user-local (gitignored); fall back to the shipped example.
-if [[ ! -f "$PORCH_CONFIG" && -f "$SKILL_ROOT/config.example.json" ]]; then
-    PORCH_CONFIG="$SKILL_ROOT/config.example.json"
+# config.json is user-local (gitignored); the shipped example is the default.
+# An explicit PORCH_CONFIG override is used verbatim — a missing file there
+# must surface as an error, not silently fall back.
+if [[ -z "${PORCH_CONFIG:-}" ]]; then
+    if [[ -f "$SKILL_ROOT/config.json" ]]; then
+        PORCH_CONFIG="$SKILL_ROOT/config.json"
+    else
+        PORCH_CONFIG="$SKILL_ROOT/config.example.json"
+    fi
 fi
 
 # Internal: read JSON via python3.

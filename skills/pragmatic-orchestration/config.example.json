@@ -15,7 +15,7 @@
       "model": "gpt-5.6",
       "effort": "high",
       "role": "analyst",
-      "label": "Codex GPT-5.6 (Sol alias, high)"
+      "label": "Codex GPT-5.6 (Sol alias)"
     },
     "codex-gpt-5.6-terra": {
       "enabled": false,
@@ -55,7 +55,7 @@
       "model": "grok-4.6",
       "effort": "high",
       "role": "analyst",
-      "label": "Grok 4.6 (native, high)"
+      "label": "Grok 4.6 (native)"
     },
     "grok-fast": {
       "enabled": false,
@@ -63,7 +63,7 @@
       "model": "grok-4.5",
       "effort": "high",
       "role": "analyst",
-      "label": "Grok 4.5 (fast context research, disabled)"
+      "label": "Grok 4.5 (fast context research)"
     },
     "devin": {
       "enabled": false,
@@ -78,7 +78,7 @@
       "model": "xai/grok-4.5",
       "effort": "high",
       "role": "analyst",
-      "label": "xAI Grok 4.5 (OpenCode fallback, disabled)"
+      "label": "xAI Grok 4.5 (OpenCode fallback)"
     },
     "opencode-kimi-k3": {
       "enabled": false,
@@ -86,7 +86,7 @@
       "model": "opencode/kimi-k3",
       "effort": "none",
       "role": "analyst",
-      "label": "OpenCode Zen Kimi K3 (fallback, disabled)"
+      "label": "OpenCode Zen Kimi K3 (fallback)"
     },
     "opencode-go-kimi-k3": {
       "enabled": true,
@@ -95,7 +95,7 @@
       "effort": "max",
       "role": "analyst",
       "label": "OC-Go Kimi K3",
-      "review_instructions": "Treat every review as an adversarial audit. Assume defects exist until repository evidence disproves them; never default to 'looks fine'. Inspect the changed and affected code exhaustively: callers, tests, error and cancellation paths, concurrency, data boundaries, configuration, and operational failure modes. Do not stop after the first issue and do not praise the implementation. Seek the maximum number of concrete, consequential defects — but never invent findings. Report only evidence-validated issues, and conclude 'no findings' only after completing this inspection."
+      "review_instructions": "Treat every review as an adversarial audit. Assume defects exist until repository evidence disproves them; never default to 'looks fine'. Inspect the changed and affected code exhaustively: callers, tests, error and cancellation paths, concurrency, data boundaries, configuration, and operational failure modes. Do not stop after the first issue and do not praise the implementation. Seek the maximum number of concrete, consequential defects \u2014 but never invent findings. Report only evidence-validated issues, and conclude 'no findings' only after completing this inspection."
     },
     "opencode-go-muse-spark-1.3-contributor": {
       "enabled": false,
@@ -103,7 +103,7 @@
       "model": "opencode-go/muse-spark-1.3-contributor",
       "effort": "xhigh",
       "role": "lateral",
-      "label": "OC-Go Muse Spark 1.3 Contributor (disabled)"
+      "label": "OC-Go Muse Spark 1.3 Contributor"
     },
     "opencode-go-deepseek-v4.1-flash": {
       "enabled": false,
@@ -111,7 +111,7 @@
       "model": "opencode-go/deepseek-v4.1-flash",
       "effort": "max",
       "role": "analyst",
-      "label": "OC-Go DeepSeek V4.1 Flash (disabled)"
+      "label": "OC-Go DeepSeek V4.1 Flash"
     },
     "opencode-synthetic-kimi-k3": {
       "enabled": false,
@@ -119,7 +119,7 @@
       "model": "synthetic/hf:moonshotai/Kimi-K3",
       "effort": "none",
       "role": "lateral",
-      "label": "Synthetic Kimi K3 (fallback, disabled)"
+      "label": "Synthetic Kimi K3 (fallback)"
     },
     "claude-code": {
       "enabled": false,
@@ -151,7 +151,7 @@
       "model": "claude-sonnet-5",
       "effort": "high",
       "role": "lateral",
-      "label": "Claude Sonnet 5 (lateral)"
+      "label": "Claude Sonnet 5"
     },
     "opencode-go-minimax": {
       "enabled": false,

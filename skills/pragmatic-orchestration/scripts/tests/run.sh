@@ -983,7 +983,7 @@ assert_eq "normalize error fails" "$rc" "1"
 echo "=== Review code depth routing (dry structure) ==="
 # super dry-run needs full config agents — use real skill config for dry-run only
 set +e
-out=$(PORCH_CONFIG="$SCRIPTS_DIR/../config.json" \
+out=$(PORCH_CONFIG="$SCRIPTS_DIR/../config.example.json" \
   "$PORCH" review code --depth super --dry-run "$FIX/sample.py" 2>&1)
 rc=$?
 set -e
@@ -991,7 +991,7 @@ assert_eq "super dry-run exit 0" "$rc" "0"
 assert_contains "super dry-run plan" "$out" "DRY RUN"
 
 set +e
-out=$(PORCH_CONFIG="$SCRIPTS_DIR/../config.json" \
+out=$(PORCH_CONFIG="$SCRIPTS_DIR/../config.example.json" \
   "$PORCH" review code --depth ultra --dry-run "$FIX/sample.py" 2>&1)
 rc=$?
 set -e

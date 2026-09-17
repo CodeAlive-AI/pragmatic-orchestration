@@ -267,7 +267,11 @@ def config_path() -> Path:
     env = os.environ.get("PORCH_CONFIG")
     if env:
         return Path(env)
-    return skill_root() / "config.json"
+    default = skill_root() / "config.json"
+    if default.is_file():
+        return default
+    example = skill_root() / "config.example.json"
+    return example if example.is_file() else default
 
 
 def load_config() -> Dict[str, Any]:

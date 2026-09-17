@@ -1,8 +1,10 @@
 # pragmatic-orchestration
 
-Use other coding agents as subagents — even when your primary agent does not support their models.
+`pragmatic-orchestration` is a field-tested system for orchestrating coding agents across vendors. Its cross-agent skill turns any skill-capable harness into an orchestrator: Codex, Claude Code, Cursor, OpenCode, and others can call external agents through the `porch` CLI.
 
-`pragmatic-orchestration` is a cross-agent skill (agentskills.io layout) that lets any coding agent which can run skills call a different coding-agent CLI to research, review, or implement work — via the `porch` CLI:
+In field use, frontier models such as Astra and Fable cover roughly 2–10× more work with practically no loss of quality when they orchestrate and cheaper executors implement. The best fit is autonomous work lasting hours or days, producing tens to hundreds of thousands of lines of code.
+
+The repo ships two skills in the Agent Skills layout: `pragmatic-orchestration` and `remote-agents`. `porch` provides four modes:
 
 - **review** — independent opinions or multi-depth code review from several model families at once (read-only).
 - **delegate** — hand a task to one exact agent: steerable by default, detachable, with `wait` / `watch` / `events` / `list` to supervise long-running work (full-access runtime).
@@ -14,6 +16,37 @@ Supported worker harnesses: Codex CLI, Claude Code, OpenCode, Grok Build, Devin 
 The repo also ships **`remote-agents`**: a companion skill for operating dedicated remote Linux/Windows hosts that run these agents — secure VM/OS provisioning, SSH-over-SSM access with no public ingress, the WireGuard/SMB work bridge, `porch` on the remote host, a headless Windows desktop, bounded visual QA, durable worker daemons, and Codex Remote threads. See [skills/remote-agents/SKILL.md](skills/remote-agents/SKILL.md).
 
 Full documentation: [skills/pragmatic-orchestration/README.md](skills/pragmatic-orchestration/README.md) and [SKILL.md](skills/pragmatic-orchestration/SKILL.md).
+
+## Recommended combinations
+
+These combinations come from field use.
+
+| Priority | Orchestrator → executor | Tradeoff |
+|---|---|---|
+| Best quality | Astra Light or Fable Low → Sol low or Opus low | Very high quality. Quotas still get consumed, but several times slower than using frontier models end-to-end. Opus low lasts longest as executor. |
+| Quality/quota balance | Sol medium → Devin SWE 2.0, with Astra as planner | Devin SWE 2.0 is free on the $20 subscription until October 15, 2026. |
+
+For planning, use Astra medium+ or Fable, guided by the `code-that-fits-in-your-head` skill (`~/.claude/skills/code-that-fits-in-your-head/SKILL.md`). Having the orchestrator and planner consult each other works well.
+
+## Delegation discipline
+
+[references/delegate.md](skills/pragmatic-orchestration/references/delegate.md) collects the practices that address common subagent delegation failures:
+
+- Write a precise task contract: purpose, exact working root, scope, compatibility constraints, anticipated pitfalls, acceptance criteria, and required checks.
+- Check every worker within its first minute. Inspect actual actions and findings, then adapt supervision to risk and progress; 5–15 minutes is the suggested follow-up interval.
+- Require a deviation journal when delegating to a less capable model. Record unexpected findings, evidence, actions, and unresolved risks. Read-only workers return it in their final answer.
+- Do not retry blindly. Inspect events and partial work, send only new guidance, and confirm a writer has stopped before assigning overlapping work to a replacement.
+- The parent owns verification. Inspect the diff and surrounding code, verify the checks, then reconcile the entire deviation journal. A worker's summary or successful exit is not enough.
+
+## Orchestration tips
+
+- Have the orchestrator keep its plan and progress in a Markdown file so context compaction cannot erase them.
+- In Codex, use a cron reminder every 15–30 minutes. `goal` consumes quota quickly.
+- Periodically ask whether enough work is running in parallel. Put that question in the cron description or install a hook to prompt it.
+- With Claude Code as orchestrator, cap context at about 300k tokens with `/autocompact 300000` to limit context rot. Keep updating the progress file.
+- Use Jujutsu (`jj`) for parallel work. Its flexible conflict, rebase, and commit-moving semantics let conflicts accumulate for the orchestrator to resolve later in one pass.
+- Regularly have a strong model analyze session transcripts to assess subagent effectiveness and the orchestration flow.
+- If workers spend hours without progress and the orchestrator cannot redirect them, stop all work and intervene. Continuing the same loop makes it worse.
 
 ## Install
 
@@ -36,7 +69,9 @@ Configuration: copy `skills/pragmatic-orchestration/config.example.json` to `con
 
 ## Platform support
 
-Linux and macOS are covered by the full offline regression suite (957 checks). Windows 11 with Git Bash/MSYS2 and native Python 3.11+ has experimental, community-supported compatibility — `porch.cmd` runs `sessions` and `quota` natively; `review` and `delegate` run from Git Bash. CI covers ubuntu/macos/windows.
+The system is fully field-tested on macOS. Linux and Windows 11 support is experimental: both are covered by CI but have less field use. CI runs on Ubuntu, macOS, and Windows.
+
+Windows 11 requires Git Bash/MSYS2 and native Python 3.11+. `porch.cmd` runs `sessions` and `quota` natively; `review` and `delegate` run from Git Bash.
 
 ## Repository layout
 

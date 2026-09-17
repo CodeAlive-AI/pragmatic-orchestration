@@ -38,7 +38,7 @@ shared `~/.aws/config` carries a conflicting or obsolete stanza.
 | Field | Meaning |
 |---|---|
 | `rdpBookmark` | Saved Windows App bookmark name; its credential is read from the macOS Keychain at start |
-| `rdpAppBundleId` | RDP client bundle id for `desktop-open` (default `com.microsoft.rdc.macos`) |
+| `rdpAppBundleId` | RDP client bundle id for `desktop-open` (default `com.microsoft.rdc.macos`, used by Microsoft Remote Desktop and Windows App on macOS) |
 | `windowsUser` | Interactive account (default `Administrator`) |
 | `localPort` / `remotePort` | SSM port-forward pair (default `13389`/`3389`) |
 | `viewerLocalPort` / `viewerRemotePort` | Observer tunnel pair (default `16080`/`16081`) |

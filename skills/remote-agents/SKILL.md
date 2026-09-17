@@ -27,7 +27,7 @@ host identity comes from `config.json` (copy `config.example.json`, or set
 ./scripts/host.sh audit           # work-root layout audit (Windows)
 ./scripts/host.sh desktop-start|desktop-status|desktop-probe|desktop-stop  # Windows GUI
 ./scripts/host.sh desktop-viewer|desktop-viewer-stop|desktop-clear-auth
-./scripts/host.sh desktop-tunnel|desktop-open                              # manual RDP path
+./scripts/host.sh desktop-tunnel|desktop-open                              # manual Windows App path
 ./scripts/work-bridge.py connect|status|mount|unmount|disconnect           # SMB work mount
 ```
 

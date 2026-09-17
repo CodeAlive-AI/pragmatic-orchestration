@@ -33,6 +33,35 @@ scripts/host.sh stop                  # only when nobody else uses the host
 The Mac needs FreeRDP's `sfreerdp` (Homebrew `freerdp`) and Python 3. Do not
 install XQuartz/x11vnc for this workflow.
 
+## Manual interactive session (Windows App)
+
+Secondary path — for when the operator wants to watch or drive the desktop
+personally, or sfreerdp is unsuitable for the task at hand:
+
+```bash
+scripts/host.sh desktop-tunnel   # SSM port-forward 127.0.0.1:<localPort> → host <remotePort>
+scripts/host.sh desktop-open     # opens the configured RDP client by bundle id
+```
+
+Wait for `Port <localPort> opened`, then open the configured bookmark
+(`desktop.rdpBookmark`) in the client. `desktop-open` launches the app via
+`desktop.rdpAppBundleId` (default `com.microsoft.rdc.macos` — the bundle id
+used by Microsoft Remote Desktop and its successor Windows App on macOS).
+The bookmark's saved Keychain credential is the same item the headless
+helper reads — create it once by connecting manually and letting the client
+save the password.
+
+Invariants:
+
+- The bookmark address stays `127.0.0.1:<localPort>` — never repoint it to a
+  public IP or DNS name. Closing the SSM session removes reachability.
+- Windows gives one console session per user: a client connecting while
+  sfreerdp holds the desktop steals that session and drops the other side.
+  Never run a manual client during a UI run; after manual viewing, re-run
+  `desktop-start` + `desktop-probe` before trusting automated QA again.
+- Disconnect is not logoff — the session and any locked state persist on
+  the host.
+
 `desktop-start` reuses an owned live connection and always runs a fresh probe.
 The probe (`desktop/probe.py`) runs via a temporary interactive scheduled task
 and checks input desktop `Default`, nonzero session id, and a usable

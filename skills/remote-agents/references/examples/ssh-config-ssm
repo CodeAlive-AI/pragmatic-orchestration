@@ -1,0 +1,27 @@
+# SSH-over-SSM alias template — copy into ~/.ssh/config per host.
+# HostName is the EC2 instance id, not a DNS name. IdentityFile is a
+# dedicated per-host key whose public half was installed at provisioning.
+
+Host agent-linux
+  HostName i-0123456789abcdef0
+  User ubuntu
+  IdentityFile ~/.ssh/agent-linux_ed25519
+  IdentitiesOnly yes
+  ProxyCommand sh -c "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters 'portNumber=%p' --profile <aws-profile> --region <region>"
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%C
+  ControlPersist 10m
+
+Host agent-windows
+  HostName i-0123456789abcdef0
+  User Administrator
+  IdentityFile ~/.ssh/agent-windows_ed25519
+  IdentitiesOnly yes
+  ProxyCommand sh -c "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters 'portNumber=%p' --profile <aws-profile> --region <region>"
+  ServerAliveInterval 30
+  ServerAliveCountMax 3
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%C
+  ControlPersist 10m

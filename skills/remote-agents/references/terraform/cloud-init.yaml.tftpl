@@ -1,0 +1,24 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - jq
+  - unzip
+  - build-essential
+  - openssh-server
+  - python3
+  - python3-pip
+
+runcmd:
+  - [bash, -lc, 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash -']
+  - [bash, -lc, 'DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs']
+  - [bash, -lc, 'systemctl enable --now ssh']
+  - [bash, -lc, 'if command -v snap >/dev/null 2>&1; then snap install amazon-ssm-agent --classic || true; systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || true; fi']
+  - [bash, -lc, 'loginctl enable-linger ubuntu || true']
+  - [bash, -lc, 'install -d -m 700 -o ubuntu -g ubuntu /home/ubuntu/.config /home/ubuntu/.local /home/ubuntu/.local/bin /home/ubuntu/.local/state /home/ubuntu/.local/share']
+%{ for cmd in bootstrap_commands ~}
+  - [bash, -lc, ${jsonencode(cmd)}]
+%{ endfor ~}

@@ -1,6 +1,6 @@
 # Pragmatic Orchestration — Development Guide
 
-Single-skill repo. `skills/pragmatic-orchestration/` follows the canonical Agent Skills layout, read by both `npx skills add` (the cross-agent CLI) and Claude Code's plugin install (`/plugin marketplace add` + `/plugin install …@pragmatic-orchestration`). The plugin sees the repo root as itself via `source: "./"` in `marketplace.json`.
+Multi-skill repo shipped as one plugin. `skills/<name>/` follows the canonical Agent Skills layout, read by both `npx skills add` (the cross-agent CLI) and Claude Code's plugin install (`/plugin marketplace add` + `/plugin install …@pragmatic-orchestration`). The plugin sees the repo root as itself via `source: "./"` in `marketplace.json`. Current skills: `pragmatic-orchestration` (the `porch` orchestration CLI) and `remote-agents` (dedicated remote Linux/Windows agent hosts).
 
 ## Git publishing defaults
 
@@ -11,9 +11,9 @@ explicitly requests one.
 
 ## Naming
 
-- Skill name: `pragmatic-orchestration` (SKILL.md frontmatter, directory, state dirs).
-- CLI name: `porch` (`scripts/porch`, `scripts/porch.cmd`).
-- Environment variables: `PORCH_*` prefix.
+- Skill names: `pragmatic-orchestration`, `remote-agents` (SKILL.md frontmatter, directory, state dirs).
+- CLI name: `porch` (`scripts/porch`, `scripts/porch.cmd`); remote-agents has no CLI of its own, its entry point is `scripts/host.sh`.
+- Environment variables: `PORCH_*` for orchestration; `REMOTE_AGENTS_*` for the host skill.
 - Historical name: `agents-consilium` / `consilium` — do not reintroduce.
 
 ## Testing
@@ -44,6 +44,9 @@ Docs-only changes (README/AGENTS) do not need a release.
 
 ## Configuration
 
-`skills/pragmatic-orchestration/config.json` is user-local and gitignored — the
-loader falls back to `config.example.json`. Never commit a personal
-`config.json`; update `config.example.json` when the schema or roster changes.
+`skills/*/config.json` is user-local and gitignored — `pragmatic-orchestration`'s
+loader falls back to `config.example.json`, while `remote-agents` requires a real
+`config.json` (its example holds placeholders). `remote-agents` also keeps local
+bridge secrets/state under `skills/remote-agents/.bridge-state/` (gitignored) —
+never commit credentials, private keys, or real infrastructure identifiers there
+or anywhere in the repo. Update `config.example.json` when a schema changes.

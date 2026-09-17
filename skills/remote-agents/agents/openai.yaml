@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Agents"
+  short_description: "Provision, reach, and supervise dedicated remote hosts that run coding agents"
+  default_prompt: "Use $remote-agents to select the right host and execution plane, delegate through porch on the host, supervise honestly, and leave nothing behind."

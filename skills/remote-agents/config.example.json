@@ -1,0 +1,59 @@
+{
+  "defaultHost": "windows-dev",
+  "hosts": {
+    "linux-dev": {
+      "os": "linux",
+      "sshAlias": "agent-linux",
+      "workRoot": "/home/ubuntu/agent-work",
+      "aws": {
+        "profile": "remote-agents-controller",
+        "region": "us-east-1",
+        "instanceId": "i-00000000000000000",
+        "configFile": null
+      }
+    },
+    "windows-dev": {
+      "os": "windows",
+      "sshAlias": "agent-windows",
+      "workRoot": "C:/Work",
+      "aws": {
+        "profile": "remote-agents-controller",
+        "region": "us-east-1",
+        "instanceId": "i-00000000000000000",
+        "configFile": "~/.aws/agent-host-config"
+      },
+      "desktop": {
+        "rdpBookmark": "Agent Windows (SSM)",
+        "rdpApp": "Windows App",
+        "windowsUser": "Administrator",
+        "localPort": 13389,
+        "remotePort": 3389,
+        "viewerLocalPort": 16080,
+        "viewerRemotePort": 16081,
+        "size": "1600x1000",
+        "helperDir": "desktop-helpers",
+        "remotePython": "C:/Users/Administrator/qa-venv/Scripts/pythonw.exe",
+        "taskPrefix": "RemoteAgents-Desktop",
+        "probeWaitSeconds": 15
+      },
+      "bridge": {
+        "shareName": "Work",
+        "subnetPrefix": "10.99.0",
+        "listenPort": 51820,
+        "mountRoot": "~/.remote-agents",
+        "launchdLabel": "remote-agents.work-bridge",
+        "appSupportDir": "/Library/Application Support/RemoteAgents-WorkBridge",
+        "sudoersFile": "remote-agents-work-bridge",
+        "stateDir": null
+      },
+      "qa": {
+        "agentBin": "C:/Users/Administrator/.grok/bin/grok.exe",
+        "agentModel": "grok-4.6",
+        "python": "C:/Program Files/Python313/python.exe",
+        "mcpServer": "C:/Users/Administrator/.agents/skills/windows-qa-engineer/scripts/windows_qa_mcp_server.py",
+        "mcpName": "windows-qa",
+        "artifactDir": "C:/Users/Administrator/AppData/Local/RemoteAgents-QA/screenshots"
+      }
+    }
+  }
+}

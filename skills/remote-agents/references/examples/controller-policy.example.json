@@ -1,0 +1,62 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadInstanceState",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeSecurityGroups",
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetConnectionStatus",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommands",
+        "ssm:ListCommandInvocations",
+        "ssm:CancelCommand"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PowerOnlyThisHost",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:RebootInstances"
+      ],
+      "Resource": "arn:aws:ec2:<region>:<account-id>:instance/<instance-id>"
+    },
+    {
+      "Sid": "StartSessionToThisHost",
+      "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": [
+        "arn:aws:ec2:<region>:<account-id>:instance/<instance-id>",
+        "arn:aws:ssm:<region>::document/AWS-StartSSHSession",
+        "arn:aws:ssm:<region>::document/AWS-StartPortForwardingSession"
+      ]
+    },
+    {
+      "Sid": "ManageOwnSessions",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:ResumeSession",
+        "ssm:TerminateSession"
+      ],
+      "Resource": "arn:aws:ssm:<region>:<account-id>:session/<controller-identity-name>-*"
+    },
+    {
+      "Sid": "RecoveryCommandsOnThisHost",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ec2:<region>:<account-id>:instance/<instance-id>",
+        "arn:aws:ssm:<region>::document/AWS-RunPowerShellScript",
+        "arn:aws:ssm:<region>::document/AWS-RunShellScript"
+      ]
+    }
+  ]
+}

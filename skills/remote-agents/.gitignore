@@ -1,0 +1,4 @@
+/config.json
+/.bridge-state/
+__pycache__/
+*.pyc

@@ -37,7 +37,7 @@ APP_SUPPORT = Path(BRIDGE.get('appSupportDir', '/Library/Application Support/Rem
 SUDOERS_NAME = BRIDGE.get('sudoersFile', 'remote-agents-work-bridge')
 LOG = Path(BRIDGE.get('logFile', '/var/log/remote-agents-work-bridge.log'))
 
-source = Path(__file__).resolve().parents[1] / '.bridge-state'
+source = Path(BRIDGE.get('stateDir') or (Path(__file__).resolve().parents[1] / '.bridge-state'))
 config = configparser.ConfigParser(interpolation=None)
 config.read(source / f'{HOST_ID}.conf')
 if config.sections() != ['Interface', 'Peer'] \

@@ -69,7 +69,14 @@ scripts/work-bridge.py path         # print the mount path
 
 `work-bridge.command` is a double-clickable wrapper for interactive use.
 `install-work-bridge-service.py` (run once with sudo) installs a fixed
-launchd service: pinned binaries copied into `appSupportDir`, a locked
+launchd service — pass host selection explicitly since plain `sudo` drops
+the user environment:
+
+```bash
+sudo REMOTE_AGENTS_HOST=<id> python3 scripts/install-work-bridge-service.py
+```
+
+The service is fixed: pinned binaries copied into `appSupportDir`, a locked
 `wg.conf`, an `endpoint` file as the *only* user-writable input (validated as
 IPv4, never executed), and a sudoers rule allowing only
 `launchctl kickstart -k`/`kill SIGTERM` on the service label — so routine

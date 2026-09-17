@@ -16,7 +16,7 @@ server on the host (a dedicated `windows-qa`-style skill provides one) and set
 - Artifact PNGs written under `qa.artifactDir` with recorded
   `artifact_path`/`image_size` metadata so runs are auditable offline.
 
-`verify-qa-vision.py` + `validate-qa-vision.py` are the installation smoke
+`verify-qa-vision.py` + `validate_qa_vision.py` are the installation smoke
 test: they draw a random fixture window, verify the transport directly
 (native image blocks, pixel-exact crops, invalid-region rejection), then run
 the agent with a visual-only prompt and compare its JSON answer against ground

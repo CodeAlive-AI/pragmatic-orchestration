@@ -11,7 +11,7 @@ dependency-free POSIX wrapper, so installation is a file copy.
 scp -r skills/pragmatic-orchestration <alias>:/tmp/porch
 ssh <alias> 'mkdir -p ~/.local/share/porch && cp -r /tmp/porch/* ~/.local/share/porch/ \
              && ln -sf ~/.local/share/porch/scripts/porch ~/.local/bin/porch && rm -rf /tmp/porch'
-ssh <alias> 'porch --version'
+ssh <alias> 'porch delegate list --active'   # smoke check: prints [] when nothing runs
 ```
 
 Copy `config.example.json` to `~/.local/share/porch/config.json` (or set

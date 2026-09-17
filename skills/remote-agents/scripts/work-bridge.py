@@ -36,7 +36,13 @@ MOUNT = Path(os.path.expanduser(
     BRIDGE.get('mountRoot', '~/.remote-agents'))) / HOST_ID
 # Keep network filesystems outside repositories and skill discovery trees.
 _skill_root = Path(__file__).resolve().parents[1]
-if not MOUNT.is_absolute() or MOUNT.resolve().is_relative_to(_skill_root):
+try:
+    _repo_root = Path(subprocess.check_output(
+        ['git', '-C', str(_skill_root), 'rev-parse', '--show-toplevel'],
+        text=True, stderr=subprocess.DEVNULL).strip())
+except (subprocess.CalledProcessError, FileNotFoundError):
+    _repo_root = _skill_root
+if not MOUNT.is_absolute() or MOUNT.resolve().is_relative_to(_repo_root):
     raise RuntimeError('Work mount must be an absolute path outside the repository')
 
 

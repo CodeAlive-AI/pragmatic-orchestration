@@ -24,7 +24,7 @@
       },
       "desktop": {
         "rdpBookmark": "Agent Windows (SSM)",
-        "rdpApp": "Windows App",
+        "rdpAppBundleId": "com.microsoft.rdc.macos",
         "windowsUser": "Administrator",
         "localPort": 13389,
         "remotePort": 3389,
@@ -33,8 +33,7 @@
         "size": "1600x1000",
         "helperDir": "desktop-helpers",
         "remotePython": "C:/Users/Administrator/qa-venv/Scripts/pythonw.exe",
-        "taskPrefix": "RemoteAgents-Desktop",
-        "probeWaitSeconds": 15
+        "taskPrefix": "RemoteAgents-Desktop"
       },
       "bridge": {
         "shareName": "Work",
@@ -44,6 +43,7 @@
         "launchdLabel": "remote-agents.work-bridge",
         "appSupportDir": "/Library/Application Support/RemoteAgents-WorkBridge",
         "sudoersFile": "remote-agents-work-bridge",
+        "logFile": "/var/log/remote-agents-work-bridge.log",
         "stateDir": null
       },
       "qa": {

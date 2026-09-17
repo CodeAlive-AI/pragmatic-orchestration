@@ -90,7 +90,7 @@ Always:
 `work-bridge.py` / `work-bridge.command` / `install-work-bridge-service.py`
 SMB bridge · `Start-Interactive.ps1` GUI launcher · `Start-VisualQa.ps1` +
 `run-visual-qa.py` bounded QA worker · `verify-qa-vision.py` +
-`validate-qa-vision.py` driver smoke test · `fetch-qa-screenshots.py` evidence
+`validate_qa_vision.py` driver smoke test · `fetch-qa-screenshots.py` evidence
 · `bootstrap-windows.ps1` toolchain · `apply-hardening.ps1` /
 `audit-hardening.ps1` baseline + report · `Test-WorkStorage.ps1` layout audit
 · `install-7zip.ps1`, `repair-visual-studio-path.ps1` recovery helpers ·

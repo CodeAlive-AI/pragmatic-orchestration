@@ -38,7 +38,7 @@ shared `~/.aws/config` carries a conflicting or obsolete stanza.
 | Field | Meaning |
 |---|---|
 | `rdpBookmark` | Saved Windows App bookmark name; its credential is read from the macOS Keychain at start |
-| `rdpApp` / `rdpAppBundleId` | RDP client (`open -b com.microsoft.rdc.macos`) |
+| `rdpAppBundleId` | RDP client bundle id for `desktop-open` (default `com.microsoft.rdc.macos`) |
 | `windowsUser` | Interactive account (default `Administrator`) |
 | `localPort` / `remotePort` | SSM port-forward pair (default `13389`/`3389`) |
 | `viewerLocalPort` / `viewerRemotePort` | Observer tunnel pair (default `16080`/`16081`) |
@@ -58,6 +58,7 @@ shared `~/.aws/config` carries a conflicting or obsolete stanza.
 | `launchdLabel` | Optional system tunnel service label |
 | `appSupportDir` | Service install dir (e.g. `/Library/Application Support/RemoteAgents-WorkBridge`) |
 | `sudoersFile` | `/etc/sudoers.d/<name>` for password-free kickstart/kill |
+| `logFile` | Service log path (default `/var/log/remote-agents-work-bridge.log`) |
 | `stateDir` | Override for `.bridge-state` (default: inside the skill, gitignored) |
 
 ### `qa` (windows visual QA)

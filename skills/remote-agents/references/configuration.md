@@ -60,6 +60,9 @@ Per-dev-OS behavior is documented in [local-platforms.md](local-platforms.md).
 |---|---|
 | `shareName` | SMB share exported by the host (e.g. `Work`) |
 | `accountName` | Dedicated non-admin SMB account created by `setup-host-bridge.ps1` (default `remote-agents-work`) |
+| `fwRulePrefix` | Display-name prefix used to derive the two host firewall rules (default `RemoteAgents-WorkBridge`) |
+| `fwRuleWg` | Exact DisplayName of the WireGuard rule; default `<fwRulePrefix>-WireGuard` |
+| `fwRuleSmb` | Exact DisplayName of the SMB rule; default `<fwRulePrefix>-SMB` |
 | `subnetPrefix` | WireGuard /24 prefix; `.1` = Windows, `.2` = Mac |
 | `listenPort` | UDP port the security group allows (e.g. `51820`) |
 | `mountRoot` | Local mount root; mount lands at `<mountRoot>/<host-id>` (ignored on Windows — UNC access) |

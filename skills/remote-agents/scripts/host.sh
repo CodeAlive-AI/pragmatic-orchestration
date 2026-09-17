@@ -80,10 +80,15 @@ require_instance() {
 }
 
 wait_for_ssm() {
+  # Prefer the SSH probe: some restricted profiles cannot call
+  # ssm:GetConnectionStatus even though SSH-over-SSM works.
   local connection
   for _ in {1..30}; do
     connection=$("${AWS[@]}" ssm get-connection-status --target "$INSTANCE" --query Status --output text 2>/dev/null || true)
     if [[ "$connection" == 'connected' ]]; then
+      return 0
+    fi
+    if ssh -o BatchMode=yes -o ConnectTimeout=10 "$ALIAS" 'true' 2>/dev/null; then
       return 0
     fi
     sleep 5
@@ -105,7 +110,7 @@ case "$CMD" in
         --instance-ids "$INSTANCE" \
         --query 'Reservations[0].Instances[0].{State:State.Name,Type:InstanceType,AZ:Placement.AvailabilityZone,PrivateIP:PrivateIpAddress,PublicIP:PublicIpAddress,LaunchTime:LaunchTime}' \
         --output table
-      "${AWS[@]}" ssm get-connection-status --target "$INSTANCE" --output table || true
+      "${AWS[@]}" ssm get-connection-status --target "$INSTANCE" --output table 2>/dev/null || true
     else
       echo "no aws.instanceId configured; checking SSH alias only" >&2
       ssh -o ConnectTimeout=10 -o BatchMode=yes "$ALIAS" 'echo SSH_OK' 2>/dev/null || echo "SSH unreachable"

@@ -64,9 +64,9 @@ def which(*names):
 def run_out(argv, timeout=20, env=None):
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
-        return r.returncode, (r.stdout + r.stderr).strip()
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return -1, str(exc)
+        return -1, '', str(exc)
 
 
 def aws_cmd(*args):
@@ -83,7 +83,7 @@ def aws_cmd(*args):
 
 def ssh(remote_cmd, timeout=60):
     return run_out(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
-                    HOST['sshAlias'], remote_cmd], timeout=timeout)
+                    HOST['sshAlias'], remote_cmd], timeout=timeout)  # (rc, stdout, stderr)
 
 
 # ------------------------------------------------------------- dev checks
@@ -107,9 +107,9 @@ def check_dev():
         report(PASS, 'dev.shell', devlocal.DEV_OS)
 
     cmd, env = aws_cmd('sts', 'get-caller-identity', '--query', 'Account', '--output', 'text')
-    rc, out = run_out(cmd, env=env)
+    rc, out, err = run_out(cmd, env=env)
     report(PASS if rc == 0 else FAIL, 'dev.aws-creds',
-           f'caller identity ok' if rc == 0 else f'aws auth failed: {out[:120]}')
+           'caller identity ok' if rc == 0 else f'aws auth failed: {(err or out)[:120]}')
 
     if devlocal.DEV_OS == 'windows':
         ok = which('wireguard', 'wg')
@@ -177,7 +177,7 @@ def _check_dev_credential():
             report(WARN, 'dev.rdp-credential', f'could not inspect bookmark db: {exc}')
         return
     if devlocal.DEV_OS == 'windows':
-        rc, out = run_out(['cmdkey', '/list'])
+        rc, out, _ = run_out(['cmdkey', '/list'])
         hit = f'TERMSRV/{ADDRESS}' in out or f'TERMSRV/{ADDRESS.split(":")[0]}' in out
         report(PASS if hit else FAIL, 'dev.rdp-credential',
                f'TERMSRV credential for {ADDRESS} saved' if hit else
@@ -196,22 +196,38 @@ def check_reachability():
         cmd, env = aws_cmd('ec2', 'describe-instances', '--instance-ids', instance,
                            '--query', 'Reservations[0].Instances[0].State.Name',
                            '--output', 'text')
-        rc, out = run_out(cmd, env=env)
-        state = out.splitlines()[-1] if rc == 0 else out[:120]
+        rc, out, err = run_out(cmd, env=env)
+        state = out.splitlines()[-1] if rc == 0 else (err or out)[:120]
         report(PASS if rc == 0 and state == 'running' else (WARN if rc == 0 else FAIL),
                'host.instance', state)
         cmd, env = aws_cmd('ssm', 'get-connection-status', '--target', instance,
                            '--query', 'Status', '--output', 'text')
-        rc, out = run_out(cmd, env=env)
-        ssm = out.splitlines()[-1] if rc == 0 else out[:120]
-        report(PASS if rc == 0 and ssm == 'connected' else FAIL, 'host.ssm', ssm)
+        rc, out, err = run_out(cmd, env=env)
+        if rc == 0:
+            ssm = out.splitlines()[-1]
+            report(PASS if ssm == 'connected' else FAIL, 'host.ssm', ssm)
+        elif re.search(r'AccessDenied|Unauthorized|not authorized', err or out, re.I):
+            cmd, env = aws_cmd('ssm', 'describe-instance-information',
+                               '--filters', f'Key=InstanceIds,Values={instance}',
+                               '--query', 'InstanceInformationList[0].PingStatus',
+                               '--output', 'text')
+            rc, out, err = run_out(cmd, env=env)
+            if rc == 0:
+                ping = out.splitlines()[-1] if out.strip() else 'unknown'
+                report(PASS if ping == 'Online' else WARN, 'host.ssm',
+                       f'{ping} (PingStatus fallback)')
+            else:
+                report(WARN, 'host.ssm',
+                       'GetConnectionStatus not authorized — the SSH check below is the proof')
+        else:
+            report(FAIL, 'host.ssm', (err or out)[:120])
     else:
         report(SKIP, 'host.instance', 'no aws.instanceId configured')
         report(SKIP, 'host.ssm', 'no aws.instanceId configured')
 
-    rc, out = ssh('echo SSH_OK')
+    rc, out, err = ssh('echo SSH_OK')
     report(PASS if rc == 0 and 'SSH_OK' in out else FAIL, 'host.ssh',
-           'SSH-over-SSM answers' if rc == 0 else f'ssh failed: {out[:120]}')
+           'SSH-over-SSM answers' if rc == 0 else f'ssh failed: {(err or out)[:120]}')
     return rc == 0
 
 
@@ -230,8 +246,8 @@ $r.pwshShell=($shell -and $shell -match 'pwsh')
 $r.wgTunnel=@(Get-Service 'WireGuardTunnel*').Name -join ','
 $share=Get-SmbShare -Name 'SHARENAME'
 $r.share=($null -ne $share); $r.shareEncrypted=($share -and $share.EncryptData)
-$r.fwWg=($null -ne (Get-NetFirewallRule -DisplayName 'RemoteAgents-WorkBridge-WireGuard'))
-$r.fwSmb=($null -ne (Get-NetFirewallRule -DisplayName 'RemoteAgents-WorkBridge-SMB'))
+$r.fwWg=($null -ne (Get-NetFirewallRule -DisplayName 'FWRULEWG'))
+$r.fwSmb=($null -ne (Get-NetFirewallRule -DisplayName 'FWRULESMB'))
 $r.smbUser=($null -ne (Get-LocalUser -Name 'ACCOUNTNAME'))
 $r.remotePython=(Test-Path 'REMOTEPYTHON')
 $r.porch=($null -ne (Get-Command porch -ErrorAction SilentlyContinue))
@@ -259,13 +275,16 @@ def check_host(ssh_ok):
         report(SKIP, 'host.probe', 'SSH unreachable — start the host and re-run check')
         return
     if OS_KIND == 'windows':
+        _fw = BRIDGE.get('fwRulePrefix', 'RemoteAgents-WorkBridge')
         script = (WINDOWS_PROBE
                   .replace('WORKROOT', HOST.get('workRoot', 'C:/Work'))
                   .replace('SHARENAME', SHARE)
                   .replace('ACCOUNTNAME', ACCOUNT)
+                  .replace('FWRULEWG', BRIDGE.get('fwRuleWg', f'{_fw}-WireGuard'))
+                  .replace('FWRULESMB', BRIDGE.get('fwRuleSmb', f'{_fw}-SMB'))
                   .replace('REMOTEPYTHON', DESKTOP.get('remotePython') or 'NUL'))
         encoded = base64.b64encode(script.encode('utf-16-le')).decode()
-        rc, out = ssh('powershell -NoProfile -NonInteractive -EncodedCommand ' + encoded)
+        rc, out, _err = ssh('powershell -NoProfile -NonInteractive -EncodedCommand ' + encoded)
         try:
             r = json.loads(out)
         except (json.JSONDecodeError, ValueError):
@@ -278,7 +297,8 @@ def check_host(ssh_ok):
         _interp('host.sshd', r['sshd'] == 'Running', f"sshd: {r['sshd']}")
         _interp('host.pwsh-shell', bool(r['pwshShell']),
                 'pwsh is the OpenSSH DefaultShell' if r['pwshShell'] else
-                'set pwsh 7 as HKLM:\\SOFTWARE\\OpenSSH DefaultShell (windows-host.md)', warn=True)
+                'set pwsh 7 as HKLM:\\SOFTWARE\\OpenSSH DefaultShell (windows-host.md)',
+                warn=not r['pwshShell'])
         if BRIDGE:
             _interp('host.wg-service', bool(r['wgTunnel']),
                     r['wgTunnel'] or 'run setup-host-bridge.ps1 on the host')
@@ -287,7 +307,8 @@ def check_host(ssh_ok):
                     f"share '{SHARE}' missing or unencrypted — setup-host-bridge.ps1")
             _interp('host.firewall', r['fwWg'] and r['fwSmb'],
                     'bridge rules present' if r['fwWg'] and r['fwSmb'] else
-                    'RemoteAgents-WorkBridge-* firewall rules missing')
+                    'bridge firewall rules missing — setup-host-bridge.ps1 '
+                    '(names: bridge.fwRuleWg/fwRuleSmb)')
             _interp('host.smb-account', r['smbUser'], f'dedicated account {ACCOUNT}')
         _interp('host.remote-python', r['remotePython'],
                 'remotePython present' if r['remotePython'] else
@@ -299,7 +320,7 @@ def check_host(ssh_ok):
         encoded = base64.b64encode(
             LINUX_PROBE.replace('WORKROOT', HOST.get('workRoot', '/srv/agent-work'))
             .encode()).decode()
-        rc, out = ssh('echo ' + encoded + ' | base64 -d | sh')
+        rc, out, _err = ssh('echo ' + encoded + ' | base64 -d | sh')
         try:
             r = json.loads(out)
         except (json.JSONDecodeError, ValueError):

@@ -15,7 +15,10 @@ param(
     [string]$DevTunnelIp = '10.99.0.2',
     [string]$WorkRoot = 'C:\Work',
     [string]$ShareName = 'Work',
-    [string]$AccountName = 'remote-agents-work'
+    [string]$AccountName = 'remote-agents-work',
+    # Display-name prefix for the two firewall rules; keep it in sync with the
+    # dev config's bridge.fwRuleWg / bridge.fwRuleSmb (onboard.py check verifies them)
+    [string]$RulePrefix = 'RemoteAgents-WorkBridge'
 )
 $ErrorActionPreference = 'Stop'
 
@@ -91,12 +94,12 @@ Set-SmbShare -Name $ShareName -EncryptData $true -Force
 Revoke-SmbShareAccess -Name $ShareName -AccountName 'Everyone' -Force -ErrorAction SilentlyContinue
 
 # --- Firewall ---------------------------------------------------------------
-foreach ($name in 'RemoteAgents-WorkBridge-WireGuard', 'RemoteAgents-WorkBridge-SMB') {
+foreach ($name in "$RulePrefix-WireGuard", "$RulePrefix-SMB") {
     Remove-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue
 }
-New-NetFirewallRule -DisplayName 'RemoteAgents-WorkBridge-WireGuard' -Direction Inbound `
+New-NetFirewallRule -DisplayName "$RulePrefix-WireGuard" -Direction Inbound `
     -Action Allow -Protocol UDP -LocalPort $ListenPort -Profile Any | Out-Null
-New-NetFirewallRule -DisplayName 'RemoteAgents-WorkBridge-SMB' -Direction Inbound `
+New-NetFirewallRule -DisplayName "$RulePrefix-SMB" -Direction Inbound `
     -Action Allow -Protocol TCP -LocalPort 445 `
     -LocalAddress $HostTunnelIp -RemoteAddress $DevTunnelIp -Profile Any | Out-Null
 # Broad built-in SMB-In rules stay disabled so only the tunnel-scoped rule applies.

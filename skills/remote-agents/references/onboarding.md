@@ -60,7 +60,10 @@ layout, sshd hardening.
 2. Host (elevated, over SSH or console): `scripts/setup-host-bridge.ps1`
    with `-PeerPublicKey` — creates the `WireGuardTunnel$` service, a dedicated
    non-admin SMB account with a random password, the encrypted share, and the
-   two scoped firewall rules. Copy it over with `scp` first.
+   two scoped firewall rules. Copy it over with `scp` first. Pass `-RulePrefix`
+   if the deployment uses a different firewall naming convention, and record
+   the same names in `bridge.fwRuleWg`/`bridge.fwRuleSmb` so `check` verifies
+   the right rules.
 3. Dev: save the printed `smbJson` as `.bridge-state/smb.json` (0600).
 4. Dev: `onboard.py set-peer <hostPublicKey>` (printed by the ps1).
 5. Optional: `sudo REMOTE_AGENTS_HOST=<id> python3 scripts/install-work-bridge-service.py`

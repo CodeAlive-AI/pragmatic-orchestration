@@ -43,6 +43,9 @@
       "bridge": {
         "shareName": "Work",
         "accountName": "remote-agents-work",
+        "fwRulePrefix": "RemoteAgents-WorkBridge",
+        "fwRuleWg": "RemoteAgents-WorkBridge-WireGuard",
+        "fwRuleSmb": "RemoteAgents-WorkBridge-SMB",
         "subnetPrefix": "10.99.0",
         "listenPort": 51820,
         "mountRoot": "~/.remote-agents",

@@ -2,6 +2,13 @@
 
 Use review for independent opinions or defect finding. Review is always read-only. Porch keeps agents independent; it does not merge or rank answers from `ask`, `basic`, or `specialists`. The calling agent judges them. `super` and `ultra` deliberately add an LLM judge after deterministic deduplication.
 
+## Acting on review findings
+
+Apply [review-acceptance.md](review-acceptance.md) before acting on findings,
+including judge verdicts. Give `ask` reviewers the task contract; assess `code`
+reports against it yourself. Review depth controls discovery effort, not the
+user's acceptance criteria.
+
 ## Ask
 
 ```bash

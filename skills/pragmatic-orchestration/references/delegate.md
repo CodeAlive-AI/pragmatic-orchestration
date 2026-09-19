@@ -12,6 +12,7 @@ Delegate hands one task to exactly one explicitly selected coding-agent profile 
 - Steering modes and mailbox lifecycle
 - Retry safety, registry, and artifacts
 - Backend delivery differences
+- [Task-relative result acceptance](#result-review-and-acceptance)
 
 ```bash
 "$PORCH" delegate -a grok "Implement the caching layer described in DESIGN.md"
@@ -244,10 +245,9 @@ hung; consider whether clarification or assistance would help before replacing i
 Preserve useful partial work. Before replacing a writer, confirm it has stopped
 and inspect its partial changes. Do not duplicate work with unknown side effects.
 
-Keep review tied to acceptance: additional passes need a concrete change,
-unresolved risk, or required check. Verify real defects, then finish when the
-agreed criteria are met. Automatically adding reviewers or enlarging correction
-batches can prolong the loop without resolving its cause.
+Apply [result review and acceptance](#result-review-and-acceptance) to findings
+from supervision and completion. Automatically adding reviewers or enlarging
+correction batches can prolong the loop without resolving its cause.
 
 When progress is appropriate, continue without sending a steer. An empty page
 only means no normalized events were emitted in that interval. Use the
@@ -260,6 +260,12 @@ and pending guidance needed to continue without repeating work. Prefer the defau
 steerable mode for potentially long tasks. An explicitly requested `--one-shot`
 run lacks the steerable control interface: report this limitation, observe using
 the available execution output, and do not cancel solely to change modes.
+
+### Result review and acceptance
+
+Apply [review-acceptance.md](review-acceptance.md) before accepting delegated work
+or requesting corrections. Keep any required deviation journal complete,
+including dispositions of findings.
 
 ### Delegating to a less capable model
 
@@ -328,11 +334,13 @@ changes, and the anticipated pitfalls. Run or independently verify the relevant
 checks. Only then read the entire deviation journal and reconcile each entry
 against the code and check results; investigate discrepancies and unreported
 deviations. A missing journal is an incomplete deliverable, not evidence that
-there were no deviations. Obtain it before accepting the result. Fix or return
-defects for correction, then inspect the corrected code and reread the updated
-journal. Do not accept a worker's summary, passing tests, or exit code as a
-substitute for this review. For detached work, carry the task contract and journal
-path into the caller's handoff so the accepting agent performs the same checks.
+there were no deviations. Obtain it before accepting the result. Triage findings
+under the result-acceptance protocol; fix or return material defects for
+correction, then inspect the corrected code and reread the updated journal,
+including justified deferrals. Do not accept a worker's summary, passing tests,
+or exit code as a substitute for this review. For detached work, carry the task
+contract and journal path into the caller's handoff so the accepting agent
+performs the same checks.
 
 ### Changing approach and preserving work
 

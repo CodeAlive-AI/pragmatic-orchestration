@@ -2,9 +2,9 @@
 
 `pragmatic-orchestration` is a field-tested system for orchestrating coding agents across vendors. Its cross-agent skill turns any skill-capable harness into an orchestrator: Codex, Claude Code, Cursor, OpenCode, and others can call external agents through the `porch` CLI.
 
-[![Watch the demo in 1080p: delegate, steer, and verify](assets/pragmatic-orchestration-demo.gif)](https://github.com/CodeAlive-AI/pragmatic-orchestration/raw/refs/heads/main/assets/pragmatic-orchestration-demo.mp4)
+[![Watch Codex delegate to Devin, spot a mistake, and steer the running agent](assets/guest-checkout-steer.gif)](https://github.com/CodeAlive-AI/pragmatic-orchestration/raw/refs/heads/main/assets/guest-checkout-steer.mp4)
 
-*Click the demo to watch the 1080p MP4. Illustrative scenario; Astra quota only, worker usage separate.*
+*Click the demo to watch the MP4. Illustrative workflow: Codex spots a deviation and redirects Devin while the task is running.*
 
 In field use, frontier models such as Astra and Fable cover roughly 2–10× more work with practically no loss of quality when they orchestrate and cheaper executors implement. The best fit is autonomous work lasting hours or days, producing tens to hundreds of thousands of lines of code.
 

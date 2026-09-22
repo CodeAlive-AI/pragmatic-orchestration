@@ -1,7 +1,7 @@
 {
   "name": "pragmatic-orchestration",
   "description": "Multi-agent orchestration for coding agents: run external agent CLIs (Codex, Claude Code, OpenCode, Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or steerable single-agent implementers via the `porch` CLI. Review ask/code modes (read-only), delegate mode (full-access, steerable, detachable), session-history search, and subscription quota checks Ships a second skill, remote-agents, for provisioning and operating dedicated remote Linux/Windows agent hosts.",
-  "version": "1.5.0",
+  "version": "2.0.0-beta.1",
   "author": {
     "name": "CodeAlive-AI",
     "email": "contact@codealive.ai"

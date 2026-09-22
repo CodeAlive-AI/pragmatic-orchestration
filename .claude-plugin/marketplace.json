@@ -7,13 +7,13 @@
   },
   "metadata": {
     "description": "Pragmatic multi-agent orchestration: independent review and steerable delegation across Codex, Claude Code, OpenCode, Grok Build, Gemini, and Devin CLI \u2014 for any agent that supports the Agent Skills standard.",
-    "version": "1.1.0"
+    "version": "2.0.0-beta.1"
   },
   "plugins": [
     {
       "name": "pragmatic-orchestration",
       "description": "Multi-agent orchestration for coding agents: run external agent CLIs (Codex, Claude Code, OpenCode, Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or steerable single-agent implementers via the `porch` CLI Also ships remote-agents: dedicated remote Linux/Windows agent hosts (SSH-over-SSM, headless desktop, work bridge).",
-      "version": "1.5.0",
+      "version": "2.0.0-beta.1",
       "author": {
         "name": "CodeAlive-AI",
         "email": "contact@codealive.ai"
@@ -61,5 +61,5 @@
       ]
     }
   ],
-  "version": "1.5.0"
+  "version": "2.0.0-beta.1"
 }

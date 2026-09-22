@@ -5,6 +5,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import signal
 import shlex
 import shutil
@@ -63,23 +64,44 @@ def new_id(prefix: str = "") -> str:
     return f"{prefix}{u}" if prefix else u
 
 
-def new_run_id(prefix: str = "run_") -> str:
-    """Human-readable run id (`run_amber-otter-4f21`).
+_RUN_SLUG_MAX = 48
+
+
+def slugify_run_name(text: str, max_len: int = _RUN_SLUG_MAX) -> str:
+    """Normalize free text into a run-id-safe slug (`fix-auth-race`).
+
+    Only lowercase [a-z0-9-] survives — the slug becomes a registry directory
+    name and a CLI argument, so path separators, dots, and shell metacharacters
+    can never reach either. Returns "" when nothing usable remains.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return slug[:max_len].rstrip("-")
+
+
+def new_run_id(prefix: str = "run_", *, agent_id: str = "", name: str = "") -> str:
+    """Human-readable run id (`run_grok-fix-auth-race` or `run_grok-amber-otter-4f21`).
 
     Run ids are quoted back by agents and users — `delegate status <id>` is
-    typed from a transcript, not copy-pasted from a variable — so they are word
-    pairs rather than raw hex. Message / client ids stay opaque: nobody types
-    those. Falls back to the hex id if the word lists are unavailable, since a
-    missing module must never break a delegation.
+    typed from a transcript, not copy-pasted from a variable — so they carry the
+    agent id plus a semantic slug the caller derives from the task (`name`), or
+    a word pair when no name was supplied. Message / client ids stay opaque:
+    nobody types those. Falls back to the hex id if the word lists are
+    unavailable, since a missing module must never break a delegation.
     """
+    agent = slugify_run_name(agent_id)
+    stem = f"{prefix}{agent}-" if agent else prefix
+    slug = slugify_run_name(name)
+    if slug:
+        # No random tail: the registry resolves collisions with a counter.
+        return f"{stem}{slug}"
     lib_dir = str(Path(__file__).resolve().parent.parent)
     if lib_dir not in sys.path:
         sys.path.append(lib_dir)
     try:
         from human_id import human_id
     except Exception:
-        return new_id(prefix)
-    return human_id(prefix)
+        return new_id(stem)
+    return human_id(stem)
 
 
 def content_hash(text: str) -> str:

@@ -228,6 +228,17 @@ profile. It creates a new run using the saved native conversation. Only the late
 successful turn can continue; failed or ambiguous work is never replayed, and
 unavailable resume does not silently start over. Ordinary runs remain ephemeral.
 
+## Optional live UI
+
+[Porch UI](ui/README.md) attaches to already-running delegates and displays their
+output as it arrives. After its one-time optional build, run `porch ui --desktop`
+for an Electron window or `porch ui` for a local URL. Closing the UI never cancels
+workers. The existing headless commands need no frontend dependencies.
+When a user asks the calling agent to show its subagents, use
+`porch ui --desktop --mine`: it opens on active runs from the current agent
+session and selects the newest one. Add `--focus-run RUN_ID` when the current
+run is known.
+
 ## Session history search
 
 `sessions` reads the session stores your coding agents already write —

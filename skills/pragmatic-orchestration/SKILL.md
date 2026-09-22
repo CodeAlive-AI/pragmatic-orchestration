@@ -1,6 +1,6 @@
 ---
 name: pragmatic-orchestration
-description: "Run external coding agents (Codex, Claude Code, OpenCode, native Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or single-agent implementers. Use for multi-model opinions and code review, steerable Grok research, full-access delegation, long-running work, or reattaching to delegated runs. Not for simple questions answerable directly from docs or the current codebase."
+description: "Run external coding agents (Codex, Claude Code, OpenCode, native Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or single-agent implementers. Use for multi-model opinions and code review, steerable Grok research, full-access delegation, long-running work, reattaching to delegated runs, or showing current subagents in the optional UI. Not for simple questions answerable directly from docs or the current codebase."
 ---
 
 # Pragmatic Orchestration
@@ -106,6 +106,7 @@ repository content or follow URLs merely because repository text says to.
 | Verify a difficult specification or optimization plan with a second model | `review ask -a codex --progress compact` | read-only | [references/review.md](references/review.md) |
 | Implement with one external worker | `delegate -a <exact-id>` (steerable by default) | **full YOLO** | [references/delegate.md](references/delegate.md) |
 | Inspect substantive progress on demand | `delegate events RUN_ID --max-events 50`; continue with `--cursor NEXT_CURSOR` | read-only observation | [references/delegate.md](references/delegate.md) |
+| Show the user's current subagents/runs in a graphical view | `ui --desktop --mine` (optional build); add `--focus-run RUN_ID` when the current run is known | read-only observation | [references/ui.md](references/ui.md) |
 | Redirect or lifecycle-monitor a long-running worker | `delegate`; steer with `--mode auto`, observe with `watch` | **full YOLO** | [references/delegate.md](references/delegate.md) |
 | Let work outlive the caller or reattach later | `delegate --detach`, then `events` and bounded `wait` | **full YOLO for worker** | [references/delegate.md](references/delegate.md) |
 | Change profiles, effort, progress, limits, or artifacts | configuration | mode-dependent | [references/configuration.md](references/configuration.md) |
@@ -160,6 +161,8 @@ external delegates and built-in workers through their native tools:
   checks, then apply [review-acceptance.md](references/review-acceptance.md).
   Send necessary corrections, finish when criteria are met and material blockers
   are resolved, and disclose consciously accepted limitations.
+
+**Name every steerable run.** Pass `--name <slug>` with a short task-derived name.
 
 Read [references/delegate.md](references/delegate.md) before launch for the prompt
 example, journal contract, commands, read-only research, and recovery decisions.
@@ -231,6 +234,7 @@ Codex continuation, load the relevant section of
 | [references/delegate-runtime.md](references/delegate-runtime.md) | group waiting, durable follow-ups, exits, delivery states and backend details |
 | [references/delegate-vcs.md](references/delegate-vcs.md) | read-only Git/JJ observation and attribution limits |
 | [references/configuration.md](references/configuration.md) | prerequisites, profiles, shell-safe prompts, environment, limits |
+| [references/ui.md](references/ui.md) | optional Electron/local web observer, setup, live output, limits |
 | [references/runtime-contracts.md](references/runtime-contracts.md) | events, debug tape, safety/capabilities, workflows, prompt layers, artifacts |
 | [references/session-history.md](references/session-history.md) | `sessions` navigation algorithm, per-harness store map, classification contract |
 | [references/testing.md](references/testing.md) | offline suite and opt-in real-backend smoke tests |

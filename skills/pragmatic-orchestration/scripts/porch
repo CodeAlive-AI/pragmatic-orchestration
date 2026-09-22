@@ -46,6 +46,7 @@ Usage:
   porch delegate events RUN_ID [--cursor N] [--max-events N]
   porch delegate list [--active|--all] [--reap] [--json]
   porch quota [all|codex|grok]
+  porch ui [--desktop] [--port PORT] [--registry-root PATH]
   porch sessions roots [-a harness[,harness...]] [--store SUBSTR]
   porch sessions list [-a ...] [--store S] [--cwd S] [--since T] [--until T] [--limit N]
   porch sessions grep [-a ...] [--scope SCOPE] [-i] [--regex] [--limit N] PATTERN
@@ -218,6 +219,12 @@ case "$1" in
         shift
         exec bash "$LIB_DIR/delegate.sh" "$@"
         ;;
+    ui)
+        shift
+        PY=$(command -v python3 || command -v python) || exit "$EXIT_USAGE"
+        export PYTHONPATH="${LIB_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+        exec "$PY" -m ui "$@"
+        ;;
     quota|sessions|history)
         cmd=$1; shift
         # python3 on POSIX; Git Bash on Windows usually exposes only `python`
@@ -232,7 +239,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Error: unknown command: $1 (expected review|delegate|quota|sessions)" >&2
+        echo "Error: unknown command: $1 (expected review|delegate|quota|sessions|ui)" >&2
         usage >&2
         exit $EXIT_USAGE
         ;;

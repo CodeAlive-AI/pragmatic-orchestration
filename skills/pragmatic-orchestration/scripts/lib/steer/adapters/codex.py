@@ -259,6 +259,7 @@ class CodexAdapter(BackendAdapter):
         result = self.rpc.request(method, thread_params, timeout=60.0)
         thread = (result or {}).get("thread") or result or {}
         self._thread_id = thread.get("id") or (result or {}).get("threadId")
+        self.session_id = self._thread_id
         if not self._thread_id:
             raise RuntimeError(f"codex {method} missing thread id: {result}")
         if self.resume_thread_id and self._thread_id != self.resume_thread_id:

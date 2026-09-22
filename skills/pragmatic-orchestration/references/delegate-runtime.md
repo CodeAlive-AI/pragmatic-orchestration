@@ -85,11 +85,11 @@ choosing another action; see [exit codes](#wait-and-watch-exits).
 ## Durable Codex follow-ups
 
 ```bash
-RUN_ID=$("$PORCH" delegate -a codex --persist-session --detach "Implement the task")
+RUN_ID=$("$PORCH" delegate -a codex --persist-session --detach --name implement-task "Implement the task")
 # Supervise until terminal using delegate.md, then collect the result:
 "$PORCH" delegate wait "$RUN_ID"
 # After successful completion, review the code and deviation journal, then send only the follow-up:
-NEXT_ID=$("$PORCH" delegate -a codex --continue-run "$RUN_ID" --detach "Fix the reviewed edge case; keep the original constraints and journal path")
+NEXT_ID=$("$PORCH" delegate -a codex --continue-run "$RUN_ID" --detach --name fix-reviewed-edge-case "Fix the reviewed edge case; keep the original constraints and journal path")
 # Supervise the successor in the same way, then collect:
 "$PORCH" delegate wait "$NEXT_ID"
 ```

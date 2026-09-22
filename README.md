@@ -21,6 +21,13 @@ The repo also ships **`remote-agents`**: a companion skill for operating dedicat
 
 Full documentation: [skills/pragmatic-orchestration/README.md](skills/pragmatic-orchestration/README.md) and [SKILL.md](skills/pragmatic-orchestration/SKILL.md).
 
+## Optional live UI
+
+For an optional live view of existing delegates, see [Porch UI](skills/pragmatic-orchestration/ui/README.md).
+After its one-time build, `porch ui --desktop` opens an Electron window with run
+discovery, filters, streaming output, and saved final answers. Closing it leaves
+agents running. `porch ui` instead prints a local URL without opening a browser.
+
 ## Recommended combinations
 
 These combinations come from field use.

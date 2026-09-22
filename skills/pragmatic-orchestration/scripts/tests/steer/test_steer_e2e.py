@@ -430,6 +430,12 @@ def test_backend_e2e(agent: str, label: str, tmp: Path, extra_checks=None) -> No
     full_err = early + err
     assert_true(f"{label} exit 0", code == 0, f"code={code} err={full_err[-500:]}")
     assert_true(f"{label} clean final stdout", out.strip() != "", f"stdout={out!r}")
+    metrics = _meta(reg_root, run_id)
+    assert_true(f"{label} records at least the initial Porch turn",
+                metrics.get("turn_count", 0) >= 1, str(metrics.get("turn_count")))
+    if agent != "claude-code":
+        assert_true(f"{label} records executor native session ID",
+                    bool(metrics.get("native_session_id")), str(metrics.get("native_session_id")))
     # stdout should not contain progress tags
     assert_true(
         f"{label} stdout no progress tags",
@@ -490,6 +496,11 @@ def test_backend_e2e(agent: str, label: str, tmp: Path, extra_checks=None) -> No
         len(delivered) >= 1,
         f"steers={steers}",
     )
+    if any(s.get("mailbox_status", s.get("status")) in
+           ("request_sent", "queued", "awaiting_queue_resolution", "running", "merged", "completed", "applied")
+           for s in delivered):
+        assert_true(f"{label} counts accepted follow-up",
+                    metrics.get("turn_count", 0) >= 2, str(metrics.get("turn_count")))
     # At least one should have delivery_class if applied/delivered
     classes = [s.get("delivery_class") for s in delivered if s.get("delivery_class")]
     if classes:

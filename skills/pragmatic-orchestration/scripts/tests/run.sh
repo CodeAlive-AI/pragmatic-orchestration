@@ -930,6 +930,30 @@ absent_bin_rc=$?
 set -e
 assert_eq "missing bare binary still fails" "$absent_bin_rc" "3"
 
+# A missing .CMD path must not pick a different installation from PATH.
+set +e
+PATH="$SHIM_DIR:$PATH" PORCH_BIN_CODEX="$TMP/missing/shimcodex.CMD" \
+  PORCH_RUN_DIR="$TMP/run-ask-missing-cmd" \
+  "$PORCH" review ask --progress none -a codex "review this" \
+  >"$TMP/ask-missing-cmd.out" 2>"$TMP/ask-missing-cmd.err"
+missing_cmd_rc=$?
+set -e
+assert_eq "missing .CMD sibling fails instead of searching PATH" "$missing_cmd_rc" "3"
+assert_not_contains "missing .CMD sibling does not run another CLI" \
+  "$(cat "$TMP/ask-missing-cmd.out")" "FAKE_CODEX_OK"
+
+# Other extensions do not imply an npm shim, even when a sibling exists.
+set +e
+PATH="$SHIM_DIR:$PATH" PORCH_BIN_CODEX="$SHIM_DIR/shimcodex.exe" \
+  PORCH_RUN_DIR="$TMP/run-ask-missing-exe" \
+  "$PORCH" review ask --progress none -a codex "review this" \
+  >"$TMP/ask-missing-exe.out" 2>"$TMP/ask-missing-exe.err"
+missing_exe_rc=$?
+set -e
+assert_eq "missing non-.CMD binary still fails" "$missing_exe_rc" "3"
+assert_not_contains "missing non-.CMD binary does not run sibling" \
+  "$(cat "$TMP/ask-missing-exe.out")" "FAKE_CODEX_OK"
+
 echo "=== Delegate with fake ==="
 export PORCH_RUN_DIR="$TMP/run-del"
 mkdir -p "$PORCH_RUN_DIR"

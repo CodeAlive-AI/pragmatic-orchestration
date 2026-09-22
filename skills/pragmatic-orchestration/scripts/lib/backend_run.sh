@@ -297,18 +297,18 @@ bin_usable() {
     command -v "$1" &>/dev/null || [[ -x "$1" ]]
 }
 if ! bin_usable "$BIN"; then
-    # Windows fallback. The contract resolves binaries with Python's
-    # shutil.which, which walks PATHEXT and returns the `foo.CMD` sibling with
-    # backslashes. MSYS bash can neither `command -v` that path nor exec-test
-    # it (npm writes the .cmd shim without the executable bit); the launcher
-    # it can use is the extensionless name on its own PATH. Only retry when
-    # $BIN looks like a resolved path, so a missing bare name still fails here.
+    # Native Windows Python can resolve an npm .CMD shim that MSYS bash cannot
+    # execute. Use its extensionless sibling, keeping the resolved directory
+    # (and any explicit binary override) authoritative.
     _bin_fallback=""
-    if [[ "$BIN" == *[/\\]* ]]; then
-        _bin_fallback="${BIN##*[/\\]}"
-        _bin_fallback="${_bin_fallback%.*}"
+    if [[ "$BIN" == *[/\\]* && "$BIN" == *.[cC][mM][dD] ]]; then
+        _bin_fallback="${BIN%.*}"
+        _bin_fallback="${_bin_fallback//\\//}"
+        if command -v cygpath &>/dev/null; then
+            _bin_fallback="$(cygpath -u "$_bin_fallback" 2>/dev/null)" || _bin_fallback=""
+        fi
     fi
-    if [[ -n "$_bin_fallback" ]] && bin_usable "$_bin_fallback"; then
+    if [[ -n "$_bin_fallback" && -x "$_bin_fallback" ]]; then
         BIN="$_bin_fallback"
     else
         echo "Error: backend CLI not found: $BIN (backend=$BACKEND)" >&2

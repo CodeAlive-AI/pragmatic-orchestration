@@ -895,6 +895,41 @@ xml=$(CLAUDE_MODEL="claude-runtime" CLAUDE_EFFORT="max" \
 assert_contains "ask XML uses resolved model" "$xml" 'model="claude-runtime"'
 assert_contains "ask XML uses resolved effort" "$xml" 'effort="max"'
 
+echo "=== Windows .cmd shim binary resolution ==="
+# On Windows the contract resolves binaries with Python's shutil.which, which
+# walks PATHEXT and returns the `foo.CMD` sibling spelled with backslashes. npm
+# writes that shim without the executable bit, so bash can neither `command -v`
+# the path nor exec-test it, and every npm-installed backend was rejected with a
+# false "backend CLI not found". Reproduced here on any platform by pointing the
+# override at such a path; the extensionless launcher is the usable one.
+SHIM_DIR="$TMP/cmd-shim"
+mkdir -p "$SHIM_DIR"
+cp "$FAKES/fake-codex" "$SHIM_DIR/shimcodex"
+chmod +x "$SHIM_DIR/shimcodex"
+printf '@echo off\r\n' > "$SHIM_DIR/shimcodex.cmd"
+chmod 644 "$SHIM_DIR/shimcodex.cmd"
+
+export PORCH_RUN_DIR="$TMP/run-ask-cmd-shim"
+mkdir -p "$PORCH_RUN_DIR"
+set +e
+out=$(PATH="$SHIM_DIR:$PATH" PORCH_BIN_CODEX="$SHIM_DIR\\shimcodex.CMD" \
+  "$PORCH" review ask --progress none -a codex "review this" \
+  2>"$TMP/ask-cmd-shim.err")
+set -e
+assert_contains "windows .cmd path falls back to extensionless launcher" "$out" "FAKE_CODEX_OK"
+assert_not_contains "windows .cmd path is not reported missing" \
+  "$(cat "$TMP/ask-cmd-shim.err")" "backend CLI not found"
+
+# A bare name that resolves to nothing must still fail; the fallback only
+# applies to values that look like a resolved path.
+set +e
+PATH="$SHIM_DIR:$PATH" PORCH_BIN_CODEX="definitely-absent-cli" \
+  "$PORCH" review ask --progress none -a codex "review this" \
+  >"$TMP/ask-absent-bin.out" 2>"$TMP/ask-absent-bin.err"
+absent_bin_rc=$?
+set -e
+assert_eq "missing bare binary still fails" "$absent_bin_rc" "3"
+
 echo "=== Delegate with fake ==="
 export PORCH_RUN_DIR="$TMP/run-del"
 mkdir -p "$PORCH_RUN_DIR"

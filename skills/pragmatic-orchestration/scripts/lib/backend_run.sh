@@ -293,9 +293,28 @@ if [[ -z "$BIN" ]]; then
     echo "Error: unknown backend '$BACKEND' for agent $AGENT_ID" >&2
     exit $EXIT_CONFIG_ERROR
 fi
-if ! command -v "$BIN" &>/dev/null && [[ ! -x "$BIN" ]]; then
-    echo "Error: backend CLI not found: $BIN (backend=$BACKEND)" >&2
-    exit $EXIT_CONFIG_ERROR
+bin_usable() {
+    command -v "$1" &>/dev/null || [[ -x "$1" ]]
+}
+if ! bin_usable "$BIN"; then
+    # Windows fallback. The contract resolves binaries with Python's
+    # shutil.which, which walks PATHEXT and returns the `foo.CMD` sibling with
+    # backslashes. MSYS bash can neither `command -v` that path nor exec-test
+    # it (npm writes the .cmd shim without the executable bit); the launcher
+    # it can use is the extensionless name on its own PATH. Only retry when
+    # $BIN looks like a resolved path, so a missing bare name still fails here.
+    _bin_fallback=""
+    if [[ "$BIN" == *[/\\]* ]]; then
+        _bin_fallback="${BIN##*[/\\]}"
+        _bin_fallback="${_bin_fallback%.*}"
+    fi
+    if [[ -n "$_bin_fallback" ]] && bin_usable "$_bin_fallback"; then
+        BIN="$_bin_fallback"
+    else
+        echo "Error: backend CLI not found: $BIN (backend=$BACKEND)" >&2
+        exit $EXIT_CONFIG_ERROR
+    fi
+    unset _bin_fallback
 fi
 
 # Codex model alias + default efforts are already applied by backend_contract

@@ -117,6 +117,9 @@ scripts/porch review ask --progress compact -a codex \
   "Verify SPEC.md against the implementation and identify mismatches."
 ```
 
+Claude Code defaults to `claude-opus` (Opus 5.5, `medium` effort).
+Fable remains available by explicitly selecting `-a claude-fable`.
+
 ### Ask Claude Fable 5.1 for a plan
 
 ```bash

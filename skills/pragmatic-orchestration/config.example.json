@@ -124,21 +124,21 @@
     "claude-code": {
       "enabled": false,
       "backend": "claude-code",
-      "model": "claude-sonnet-5",
-      "effort": "high",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
       "role": "analyst",
-      "label": "Claude Sonnet 5"
+      "label": "Claude Opus 5.5"
     },
     "claude-opus": {
       "enabled": true,
       "backend": "claude-code",
-      "model": "claude-opus-5",
+      "model": "claude-opus-5-5",
       "effort": "medium",
       "role": "analyst",
-      "label": "Claude Opus 5"
+      "label": "Claude Opus 5.5"
     },
     "claude-fable": {
-      "enabled": true,
+      "enabled": false,
       "backend": "claude-code",
       "model": "claude-fable-5-1",
       "effort": "low",

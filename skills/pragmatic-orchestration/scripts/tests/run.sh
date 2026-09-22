@@ -122,8 +122,8 @@ assert_contains "skill-root default grok profile uses Grok 4.6" "$out" \
   'id="grok" label="Grok 4.6 (native)" backend="grok-build" model="grok-4.6" role="analyst" enabled="true"'
 assert_contains "Codex Astra remains selectable but disabled by default" "$out" \
   'id="codex" label="Codex GPT-6 Astra" backend="codex-cli" model="gpt-6-astra" role="analyst" enabled="false"'
-assert_contains "Claude Fable profile uses Fable 5.1" "$out" \
-  'id="claude-fable" label="Claude Fable 5.1" backend="claude-code" model="claude-fable-5-1" role="analyst" enabled="true"'
+assert_contains "Claude Fable remains selectable but disabled by default" "$out" \
+  'id="claude-fable" label="Claude Fable 5.1" backend="claude-code" model="claude-fable-5-1" role="analyst" enabled="false"'
 assert_contains "Muse Spark 1.3 Contributor is selectable but disabled by default" "$out" \
   'id="opencode-go-muse-spark-1.3-contributor" label="OC-Go Muse Spark 1.3 Contributor" backend="opencode" model="opencode-go/muse-spark-1.3-contributor" role="lateral" enabled="false"'
 assert_contains "DeepSeek V4.1 Flash is selectable but disabled by default" "$out" \
@@ -218,7 +218,7 @@ assert_contains "claude review preapproves Bash" "$argv" "Bash,WebSearch,WebFetc
 assert_contains "claude review disables subagents" "$argv" "Agent,Task"
 assert_contains "claude review keeps web research" "$argv" "WebSearch,WebFetch"
 assert_not_contains "claude review web approval is not a write approval" "$argv" "--allowedTools Edit"
-assert_contains "claude review selects Opus 5" "$argv" "--model claude-opus-5"
+assert_contains "claude review selects Opus 5.5" "$argv" "--model claude-opus-5-5"
 assert_contains "claude review uses medium effort" "$argv" "--effort medium"
 assert_not_contains "claude review no skip-permissions" "$argv" "--dangerously-skip-permissions"
 assert_contains "claude review disables customizations" "$argv" "--safe-mode"
@@ -881,7 +881,7 @@ out=$(CLAUDE_MODEL="claude-runtime" CLAUDE_EFFORT="max" \
   "$PORCH" review ask -a claude-code "What is 2+2?" 2>"$TMP/ask-override.err")
 assert_contains "ask heading uses resolved model" "$out" "claude-runtime"
 assert_contains "ask heading uses resolved effort" "$out" "effort=max"
-assert_not_contains "ask heading omits stale configured model" "$out" "claude-opus-5"
+assert_not_contains "ask heading omits stale configured model" "$out" "claude-opus-5-5"
 start_raw=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["raw"])' \
   "$PORCH_RUN_DIR/normalized/claude-code.jsonl")
 assert_contains "run_started persists resolved model" "$start_raw" "claude-runtime"

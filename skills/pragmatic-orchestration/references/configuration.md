@@ -41,7 +41,10 @@ Non-empty environment values override profile model/effort for one invocation:
 
 The built-in `codex` profile uses `gpt-6-astra` at `high` effort. Astra accepts
 `low`, `medium`, `high`, `xhigh`, and `max`; it does not accept `none`. The
-built-in `claude-fable` profile uses `claude-fable-5-1` at `low` effort and
+default Claude Code profile, `claude-opus`, uses `claude-opus-5-5` at
+`medium` effort. `claude-code` is a disabled alias with the same model and
+effort; `claude-sonnet` remains available explicitly. The disabled-by-default
+`claude-fable` profile uses `claude-fable-5-1` at `low` effort and
 supports the same five effort levels. Start Fable 5.1 at `high` for the hardest
 long-horizon work, or retain `low` when it is one reviewer in a larger pool.
 The disabled-by-default `opencode-go-muse-spark-1.3-contributor` and

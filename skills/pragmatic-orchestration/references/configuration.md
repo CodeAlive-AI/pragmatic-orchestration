@@ -39,7 +39,9 @@ Non-empty environment values override profile model/effort for one invocation:
 - `GEMINI_MODEL`
 - `DEVIN_MODEL`; `PORCH_BIN_DEVIN` overrides the `devin` binary
 
-The built-in `codex` profile uses `gpt-6-astra` at `high` effort. Astra accepts
+The enabled `codex` profile uses `gpt-6-sol` at `high` effort, and the enabled
+`codex-gpt-6-luna` profile uses `gpt-6-luna` at `low` effort.
+The opt-in `codex-gpt-6-astra` profile retains `gpt-6-astra` at `high` effort. Astra accepts
 `low`, `medium`, `high`, `xhigh`, and `max`; it does not accept `none`. The
 default Claude Code profile, `claude-opus`, uses `claude-opus-5-5` at
 `medium` effort. `claude-code` is a disabled alias with the same model and
@@ -117,3 +119,5 @@ in a temporary tmux session on `grok-aws`. Override the safe SSH alias with
 When both providers are requested, one failure does not discard the successful
 result. Exit `0` means all requested providers succeeded, `2` means partial
 success, and `3` means all requested providers failed.
+
+Current model IDs: [GPT-6 Sol and Luna](https://openai.com/index/introducing-gpt-6-sol-and-luna/) and [Grok 4.7](https://docs.x.ai/developers/models/grok-4.7). The default native `grok` profile uses `grok-4.7` at `high` effort. Existing user-local `config.json` files and environment overrides retain precedence; update them explicitly to adopt these defaults.

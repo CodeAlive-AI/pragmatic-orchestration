@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 MCP_NAME = os.environ.get('QA_MCP_NAME', 'windows-qa')
-MODEL = os.environ.get('QA_AGENT_MODEL', 'grok-4.6')
+MODEL = os.environ.get('QA_AGENT_MODEL', 'grok-4.7')
 
 def validate(root):
     root=Path(root)

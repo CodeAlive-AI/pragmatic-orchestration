@@ -52,7 +52,7 @@
     "grok": {
       "enabled": true,
       "backend": "grok-build",
-      "model": "grok-4.6",
+      "model": "grok-4.7",
       "effort": "high",
       "role": "analyst",
       "label": "Grok Test"

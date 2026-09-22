@@ -9,7 +9,7 @@ Environment overrides:
   QA_CHECK_ROOT   run directory (default <SystemDrive>/Work/qa-vision-check)
   QA_PYTHON       python for fixture + MCP server (required)
   QA_AGENT_BIN    agent CLI binary (default %USERPROFILE%/.grok/bin/grok.exe)
-  QA_AGENT_MODEL  agent model id (default grok-4.6)
+  QA_AGENT_MODEL  agent model id (default grok-4.7)
   QA_MCP_SERVER   absolute path of the QA MCP server script (required)
   QA_MCP_NAME     MCP server name / tool prefix (default windows-qa)
   QA_MCP_ENV      optional JSON dict of extra env for the MCP server
@@ -21,7 +21,7 @@ ROOT = Path(os.environ.get('QA_CHECK_ROOT', os.environ['SystemDrive'] + r'\Work\
 ROOT.mkdir(exist_ok=True)
 PYTHON = os.environ.get('QA_PYTHON') or sys.executable
 GROK = os.environ.get('QA_AGENT_BIN', str(Path.home() / '.grok' / 'bin' / 'grok.exe'))
-MODEL = os.environ.get('QA_AGENT_MODEL', 'grok-4.6')
+MODEL = os.environ.get('QA_AGENT_MODEL', 'grok-4.7')
 MCP_SERVER = os.environ.get('QA_MCP_SERVER')
 MCP_NAME = os.environ.get('QA_MCP_NAME', 'windows-qa')
 MCP_ENV = json.loads(os.environ.get('QA_MCP_ENV', '{}'))

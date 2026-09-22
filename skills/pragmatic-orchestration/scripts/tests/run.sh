@@ -111,17 +111,21 @@ assert_contains "removed explore command names supported modes" \
 out=$("$PORCH" --list-agents 2>/dev/null)
 assert_contains "list-agents has grok" "$out" 'id="grok"'
 assert_contains "list-agents has grok-build backend" "$out" 'backend="grok-build"'
-assert_contains "default grok profile uses Grok 4.6" "$out" \
-  'id="grok" label="Grok Test" backend="grok-build" model="grok-4.6" role="analyst" enabled="true"'
+assert_contains "default grok profile uses Grok 4.7" "$out" \
+  'id="grok" label="Grok Test" backend="grok-build" model="grok-4.7" role="analyst" enabled="true"'
 assert_contains "Grok 4.5 remains selectable as fast context model" "$out" \
   'id="grok-fast" label="Grok Fast Test" backend="grok-build" model="grok-4.5" role="analyst" enabled="false"'
 
-out=$(env -u PORCH_CONFIG "$PORCH" --list-agents 2>/dev/null)
-assert_contains "default config resolves from skill root" "$out" 'id="grok"'
-assert_contains "skill-root default grok profile uses Grok 4.6" "$out" \
-  'id="grok" label="Grok 4.6 (native)" backend="grok-build" model="grok-4.6" role="analyst" enabled="true"'
+out=$(env PORCH_CONFIG="$SKILL_DIR/config.example.json" "$PORCH" --list-agents 2>/dev/null)
+assert_contains "production config includes grok" "$out" 'id="grok"'
+assert_contains "skill-root default grok profile uses Grok 4.7" "$out" \
+  'id="grok" label="Grok 4.7 (native)" backend="grok-build" model="grok-4.7" role="analyst" enabled="true"'
 assert_contains "Codex Astra remains selectable but disabled by default" "$out" \
-  'id="codex" label="Codex GPT-6 Astra" backend="codex-cli" model="gpt-6-astra" role="analyst" enabled="false"'
+  'id="codex-gpt-6-astra" label="Codex GPT-6 Astra" backend="codex-cli" model="gpt-6-astra" role="analyst" enabled="false"'
+assert_contains "Codex Sol is enabled by default" "$out" \
+  'id="codex" label="Codex GPT-6 Sol" backend="codex-cli" model="gpt-6-sol" role="analyst" enabled="true"'
+assert_contains "Codex Luna is enabled by default" "$out" \
+  'id="codex-gpt-6-luna" label="Codex GPT-6 Luna" backend="codex-cli" model="gpt-6-luna" role="analyst" enabled="true"'
 assert_contains "Claude Fable remains selectable but disabled by default" "$out" \
   'id="claude-fable" label="Claude Fable 5.1" backend="claude-code" model="claude-fable-5-1" role="analyst" enabled="false"'
 assert_contains "Muse Spark 1.3 Contributor is selectable but disabled by default" "$out" \
@@ -158,25 +162,41 @@ TMP=$(mktemp -d)
 
 # Production profiles must reach their native harnesses with the exact current
 # model IDs, not merely appear correctly in --list-agents output.
-env -u PORCH_CONFIG PORCH_DUMP_ARGV="$TMP/astra-review.json" \
-  "$LIB_DIR/backend_run.sh" --mode review --agent-id codex --raw "hello" >/dev/null
+env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/astra-review.json" \
+  "$LIB_DIR/backend_run.sh" --mode review --agent-id codex-gpt-6-astra --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/astra-review.json"'"))["argv"]))')
 assert_contains "Codex production profile launches GPT-6 Astra" "$argv" "--model gpt-6-astra"
 assert_contains "Codex Astra production profile uses high effort" "$argv" 'model_reasoning_effort="high"'
 
-env -u PORCH_CONFIG PORCH_DUMP_ARGV="$TMP/fable51-review.json" \
+for spec in 'codex gpt-6-sol high' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high'; do
+  read -r profile model effort <<< "$spec"
+  for mode in review delegate; do
+    env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/current-model.json" \
+      "$LIB_DIR/backend_run.sh" --mode "$mode" --agent-id "$profile" --raw "hello" >/dev/null
+    argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/current-model.json")
+    if [[ "$profile" == grok ]]; then
+      assert_contains "$profile $mode launches current model" "$argv" "-m $model"
+      assert_contains "$profile $mode effort" "$argv" "--reasoning-effort $effort"
+    else
+      assert_contains "$profile $mode launches current model" "$argv" "--model $model"
+      assert_contains "$profile $mode effort" "$argv" "model_reasoning_effort=\"$effort\""
+    fi
+  done
+done
+
+env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/fable51-review.json" \
   "$LIB_DIR/backend_run.sh" --mode review --agent-id claude-fable --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/fable51-review.json"'"))["argv"]))')
 assert_contains "Claude production profile launches Fable 5.1" "$argv" "--model claude-fable-5-1"
 assert_contains "Claude Fable 5.1 production profile uses low effort" "$argv" "--effort low"
 
-env -u PORCH_CONFIG PORCH_DUMP_ARGV="$TMP/muse-spark-review.json" \
+env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/muse-spark-review.json" \
   "$LIB_DIR/backend_run.sh" --mode review --agent-id opencode-go-muse-spark-1.3-contributor --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/muse-spark-review.json"'"))["argv"]))')
 assert_contains "Muse Spark production profile uses exact model" "$argv" "-m opencode-go/muse-spark-1.3-contributor"
 assert_contains "Muse Spark production profile uses maximum effort" "$argv" "--variant xhigh"
 
-env -u PORCH_CONFIG PORCH_DUMP_ARGV="$TMP/deepseek-v41-flash-review.json" \
+env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/deepseek-v41-flash-review.json" \
   "$LIB_DIR/backend_run.sh" --mode review --agent-id opencode-go-deepseek-v4.1-flash --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/deepseek-v41-flash-review.json"'"))["argv"]))')
 assert_contains "DeepSeek V4.1 Flash production profile uses exact model" "$argv" "-m opencode-go/deepseek-v4.1-flash"

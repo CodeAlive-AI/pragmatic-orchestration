@@ -2,12 +2,12 @@
   "_comment": "Example porch config (v5). Copy over config.json or set PORCH_CONFIG. JSON ignores _comment.",
   "agents": {
     "codex": {
-      "enabled": false,
+      "enabled": true,
       "backend": "codex-cli",
-      "model": "gpt-6-astra",
+      "model": "gpt-6-sol",
       "effort": "high",
       "role": "analyst",
-      "label": "Codex GPT-6 Astra"
+      "label": "Codex GPT-6 Sol"
     },
     "codex-gpt-5.6": {
       "enabled": false,
@@ -52,10 +52,10 @@
     "grok": {
       "enabled": true,
       "backend": "grok-build",
-      "model": "grok-4.6",
+      "model": "grok-4.7",
       "effort": "high",
       "role": "analyst",
-      "label": "Grok 4.6 (native)"
+      "label": "Grok 4.7 (native)"
     },
     "grok-fast": {
       "enabled": false,
@@ -192,6 +192,22 @@
       "effort": "none",
       "role": "lateral",
       "label": "OC-Go Qwen3.7 Plus"
+    },
+    "codex-gpt-6-luna": {
+      "enabled": true,
+      "backend": "codex-cli",
+      "model": "gpt-6-luna",
+      "effort": "low",
+      "role": "analyst",
+      "label": "Codex GPT-6 Luna"
+    },
+    "codex-gpt-6-astra": {
+      "enabled": false,
+      "backend": "codex-cli",
+      "model": "gpt-6-astra",
+      "effort": "high",
+      "role": "analyst",
+      "label": "Codex GPT-6 Astra"
     }
   }
 }

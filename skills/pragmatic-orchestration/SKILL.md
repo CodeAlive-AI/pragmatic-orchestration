@@ -50,8 +50,9 @@ Use these unless the user asks for a different tradeoff:
 - High-risk or release-blocking review: `review code --depth super --progress compact`.
 - Use `specialists` only for a broader mid-cost review without an LLM judge. Use `ultra` only when the user explicitly prioritizes maximum coverage over cost and latency.
 - Repository research: `delegate -a grok` from the target repository root. Tell the worker whether the task is read-only, keep the default steerable session, and use `steer`/`wait` to continue incomplete work.
-- The `grok` profile is Grok 4.6 and is the default native Grok Build worker. Use the disabled-by-default `grok-fast` profile explicitly for fast context research with Grok 4.5.
-- GPT-6 Astra is an explicit Codex second opinion for difficult specification verification or optimization planning. Select it with `-a codex`; do not add it to routine research or the default review pool.
+- The `grok` profile is Grok 4.7 and is the default native Grok Build worker. Use the disabled-by-default `grok-fast` profile explicitly for fast context research with Grok 4.5.
+- The enabled `codex` and `codex-gpt-6-luna` profiles use GPT-6 Sol at `high` effort and GPT-6 Luna at `low` effort, respectively.
+- GPT-6 Astra is an explicit Codex second opinion for difficult specification verification or optimization planning. Select it with `-a codex-gpt-6-astra`; do not add it to routine research or the default review pool.
 - The default Claude Code profile is `claude-opus`: Claude Opus 5.5 (`claude-opus-5-5`) at `medium` effort. The `claude-code` profile is a disabled alias for the same model and effort.
 - The opt-in `claude-fable` profile runs Claude Fable 5.1 for demanding long-horizon review or delegation. Its default `low` effort is cost-conscious; override it with `CLAUDE_EFFORT=high`, `xhigh`, or `max` when capability matters more than latency and cost.
 - The `devin` profile runs Devin CLI SWE-2-high (`devin` on PATH, `devin auth login`) for review and delegate over `devin acp`. It is disabled by default and never joins the default review pool: select it with `-a devin` or enable the profile. Effort is versioned into the model id, so there is no effort override; `auto`/`queue` steer merges into the running turn and `interrupt` cancels and sends.
@@ -196,7 +197,7 @@ git diff HEAD | "$PORCH" review code --progress compact --diff
 "$PORCH" review code --depth ultra --progress compact path/to/file.py
 
 # Explicit GPT-6 Astra second opinion for difficult work
-"$PORCH" review ask --progress compact -a codex \
+"$PORCH" review ask --progress compact -a codex-gpt-6-astra \
   "Verify SPEC.md against the implementation and identify mismatches."
 
 # Read both quotas as JSON (or select codex/grok)

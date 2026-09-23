@@ -293,9 +293,28 @@ if [[ -z "$BIN" ]]; then
     echo "Error: unknown backend '$BACKEND' for agent $AGENT_ID" >&2
     exit $EXIT_CONFIG_ERROR
 fi
-if ! command -v "$BIN" &>/dev/null && [[ ! -x "$BIN" ]]; then
-    echo "Error: backend CLI not found: $BIN (backend=$BACKEND)" >&2
-    exit $EXIT_CONFIG_ERROR
+bin_usable() {
+    command -v "$1" &>/dev/null || [[ -x "$1" ]]
+}
+if ! bin_usable "$BIN"; then
+    # Native Windows Python can resolve an npm .CMD shim that MSYS bash cannot
+    # execute. Use its extensionless sibling, keeping the resolved directory
+    # (and any explicit binary override) authoritative.
+    _bin_fallback=""
+    if [[ "$BIN" == *[/\\]* && "$BIN" == *.[cC][mM][dD] ]]; then
+        _bin_fallback="${BIN%.*}"
+        _bin_fallback="${_bin_fallback//\\//}"
+        if command -v cygpath &>/dev/null; then
+            _bin_fallback="$(cygpath -u "$_bin_fallback" 2>/dev/null)" || _bin_fallback=""
+        fi
+    fi
+    if [[ -n "$_bin_fallback" && -x "$_bin_fallback" ]]; then
+        BIN="$_bin_fallback"
+    else
+        echo "Error: backend CLI not found: $BIN (backend=$BACKEND)" >&2
+        exit $EXIT_CONFIG_ERROR
+    fi
+    unset _bin_fallback
 fi
 
 # Codex model alias + default efforts are already applied by backend_contract

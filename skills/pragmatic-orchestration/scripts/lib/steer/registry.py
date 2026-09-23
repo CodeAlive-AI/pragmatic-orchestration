@@ -16,6 +16,7 @@ from .util import (
     pid_alive,
     progress,
     read_json,
+    slugify_run_name,
     utc_now_iso,
 )
 
@@ -91,13 +92,33 @@ class Registry:
         artifacts_dir: str,
         owner_uid: Optional[int] = None,
         extra: Optional[Dict[str, Any]] = None,
+        run_name: str = "",
     ) -> str:
         self.ensure_root()
-        run_id = new_run_id("run_")
+        named = bool(slugify_run_name(run_name))
+        base = new_run_id("run_", agent_id=agent_id, name=run_name)
+        # Atomic mkdir is the collision check: a reused caller-supplied name
+        # takes a counter suffix (`-2`, `-3`, …), an improbable word-pair redraw
+        # just draws again. A pre-check + ensure_dir would race a concurrent
+        # supervisor creating the same id.
+        run_id = base
         rdir = self.runs_dir / run_id
-        if rdir.exists() or rdir.is_symlink():
+        for attempt in range(2, 20):
+            try:
+                os.mkdir(rdir, DIR_MODE)
+                try:
+                    os.chmod(rdir, DIR_MODE)
+                except OSError:
+                    pass
+                break
+            except FileExistsError:
+                if named:
+                    run_id = f"{base}-{attempt}"
+                else:
+                    run_id = new_run_id("run_", agent_id=agent_id)
+                rdir = self.runs_dir / run_id
+        else:
             raise RegistryError(f"run id collision: {run_id}", exit_code=1)
-        ensure_dir(rdir, DIR_MODE)
         for sub in ("mailbox", "control", "steers", "turns"):
             ensure_dir(rdir / sub, DIR_MODE)
         uid = owner_uid if owner_uid is not None else current_uid()

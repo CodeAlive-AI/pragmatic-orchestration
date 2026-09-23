@@ -35,7 +35,7 @@ def main() -> int:
     if env_log:
         with open(env_log, "w", encoding="utf-8") as f:
             json.dump({key: os.environ.get(key) for key in
-                       ("PORCH_RUN_DIR", "PORCH_ARTIFACT_KEY", "PORCH_OUTPUT_DIR", "PORCH_STEER_DIR")}, f)
+                       ("PORCH_RUN_DIR", "PORCH_ARTIFACT_KEY", "PORCH_OUTPUT_DIR", "PORCH_STEER_DIR", "PORCH_LAUNCHER", "PORCH_LAUNCHER_RUN_ID")}, f)
     slow = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.4"))
     thread_id = "thread_" + uuid.uuid4().hex[:8]
     turn_counter = 0

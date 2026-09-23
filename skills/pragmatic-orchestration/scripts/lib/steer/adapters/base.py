@@ -57,6 +57,7 @@ class BackendAdapter:
         self.cwd = cwd
         self.artifacts_dir = artifacts_dir
         self.agent_id = agent_id
+        self.session_id: Optional[str] = None
         self._final_parts: List[str] = []
         self._done = False
         self._error: Optional[str] = None

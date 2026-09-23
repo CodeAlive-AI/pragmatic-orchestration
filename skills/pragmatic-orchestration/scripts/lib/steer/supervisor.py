@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Set
 
 from .adapters import make_adapter
 from .config_loader import agent_settings
+from .launcher import BACKEND_LAUNCHERS, launcher_metadata
 from .mailbox import Mailbox, MailboxError
 from .registry import Registry, RegistryError, TERMINAL_STATUSES
 from .session import SessionLease
@@ -109,12 +110,14 @@ class Supervisor:
         run_id_file: str = "",
         persist_session: bool = False,
         continue_run: str = "",
+        run_name: str = "",
     ):
         self.persist_session = persist_session or bool(continue_run)
         self.continue_run = continue_run
         self._session_lease = None
         self.run_id_file = run_id_file
         self.agent_id = agent_id
+        self.run_name = run_name
         self.task = task
         self.cwd = cwd
         self.artifacts_dir = artifacts_dir
@@ -155,7 +158,10 @@ class Supervisor:
             cwd=self.cwd,
             artifacts_dir=self.artifacts_dir,
             extra={"task_hash_prefix": _prefix_hash(self.task), "effort": effort,
+                   "created_at_ns": str(time.time_ns()),
+                   **launcher_metadata(os.environ),
                    "persist_session": self.persist_session, "continued_from": self.continue_run or None},
+            run_name=self.run_name,
         )
         self._registry_meta = self.registry.load_meta(self.run_id)
         progress("steer", f"run_id={self.run_id}", f"agent={self.agent_id}", f"backend={backend}")
@@ -249,7 +255,12 @@ class Supervisor:
             # Keep OUTPUT_DIR and registry/config routing for nested launches.
             os.environ.pop("PORCH_RUN_DIR", None)
             os.environ.pop("PORCH_ARTIFACT_KEY", None)
+            # Nested Porch runs belong to this worker, not its inherited caller.
+            os.environ["PORCH_LAUNCHER"] = BACKEND_LAUNCHERS[backend]
+            os.environ["PORCH_LAUNCHER_RUN_ID"] = self.run_id
             self.adapter.start(self.task)
+            self._update_registry_meta(turn_count=1)
+            self._record_native_session_id()
             child = self.adapter.child_pid()
             if child:
                 self._update_registry_meta(child_pid=child)
@@ -398,6 +409,7 @@ class Supervisor:
 
     def _handle_event(self, ev) -> None:
         assert self.run_id
+        self._record_native_session_id()
         run_dir = self.registry.run_path(self.run_id)
         # Persist via closed PorchEvent schema when mappable; retain adapter
         # kind for progress/audit. Unknown kinds are not silently written to
@@ -719,6 +731,8 @@ class Supervisor:
             error=result.error or None,
             meta={**(msg.get("meta") or {}), **(result.meta or {})},
         )
+        if result.ok and status not in {"failed", "rejected", "cancelled", "dropped", "abandoned", "superseded"}:
+            self._update_registry_meta(turn_count=int(self._registry_meta.get("turn_count") or 1) + 1)
         # Update state steers map
         state = dict(self._registry_state)
         steers = dict(state.get("steers") or {})
@@ -752,6 +766,12 @@ class Supervisor:
             f"class={dclass}",
             f"evidence={result.evidence}",
         )
+
+    def _record_native_session_id(self) -> None:
+        native_id = getattr(self.adapter, "session_id", None)
+        if (isinstance(native_id, str) and native_id
+                and native_id != self._registry_meta.get("native_session_id")):
+            self._update_registry_meta(native_session_id=native_id)
 
     def _finalize(
         self,
@@ -1112,6 +1132,8 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--registry-root", default="")
     p.add_argument("--log-file", default="", help="detached stdio log; relocated under the run dir")
     p.add_argument("--run-id-file", default="", help="handshake file the run id is written to")
+    p.add_argument("--run-name", default="",
+                   help="caller-supplied semantic slug; run id becomes run_<agent>-<slug>")
     p.add_argument(
         "--detach-setsid",
         action="store_true",
@@ -1153,6 +1175,7 @@ def main(argv: Optional[list] = None) -> int:
         run_id_file=args.run_id_file,
         persist_session=args.persist_session,
         continue_run=args.continue_run,
+        run_name=args.run_name,
     )
     return sup.run()
 

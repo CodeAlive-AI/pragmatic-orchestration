@@ -42,6 +42,7 @@ LAUNCH_MODE="default"
 DETACH=0
 PERSIST_SESSION=0
 CONTINUE_RUN=""
+RUN_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -99,10 +100,16 @@ while [[ $# -gt 0 ]]; do
         --prompt-file)
             shift; PROMPT_FILE="${1:-}"; shift
             ;;
+        --name)
+            shift
+            [[ -n "${1:-}" ]] || { echo "Error: --name requires a slug" >&2; exit $EXIT_USAGE; }
+            RUN_NAME="$1"
+            shift
+            ;;
         -h|--help)
             cat <<'EOF'
 Usage:
-  porch delegate -a <exact-agent-id> ["task"]
+  porch delegate -a <exact-agent-id> [--name <slug>] ["task"]
   porch delegate -a <exact-agent-id> --one-shot ["task"]
   porch delegate -a <exact-agent-id> --detach ["task"]
   porch delegate -a <codex-profile> --persist-session [--detach] "task"
@@ -151,6 +158,8 @@ list finds runs again when the run id was lost.
 
 Options:
   -a, --agent <id>       Exact agent id from config.json (required for start)
+  --name <slug>          Semantic run id suffix → run_<agent>-<slug>; derive a
+                         short kebab-case slug from the task (steerable only)
   --steerable            Explicit alias for the default steerable session
   --one-shot             Direct non-steerable run
   --detach               Start the steerable session detached; print run_id and exit
@@ -176,6 +185,12 @@ fi
 # one-shot path.
 if [[ "$DETACH" -eq 1 && "$STEERABLE" -ne 1 ]]; then
     echo "Error: --detach and --one-shot are mutually exclusive" >&2
+    exit $EXIT_USAGE
+fi
+
+# --name only exists to shape the steerable run id; a one-shot run has none.
+if [[ -n "$RUN_NAME" && "$STEERABLE" -ne 1 ]]; then
+    echo "Error: --name requires the default steerable mode (no run id with --one-shot)" >&2
     exit $EXIT_USAGE
 fi
 
@@ -252,6 +267,9 @@ if [[ "$STEERABLE" -eq 1 ]]; then
     REG_ARGS=()
     if [[ "$PERSIST_SESSION" -eq 1 ]]; then
         REG_ARGS+=(--persist-session)
+    fi
+    if [[ -n "$RUN_NAME" ]]; then
+        REG_ARGS+=(--run-name "$RUN_NAME")
     fi
     if [[ -n "$CONTINUE_RUN" ]]; then
         REG_ARGS+=(--continue-run "$CONTINUE_RUN")

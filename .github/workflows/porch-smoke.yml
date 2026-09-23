@@ -40,6 +40,9 @@ jobs:
       - name: Platform regressions with native Python
         run: python scripts/tests/platform_test.py -v
 
+      - name: Read-only UI observer boundary
+        run: python scripts/tests/ui_test.py -v
+
       - name: Config helpers emit LF-only agent ids
         run: |
           export PORCH_CONFIG="$PWD/scripts/tests/fixtures/test-config.json"
@@ -68,3 +71,26 @@ jobs:
       - name: Full offline regression suite
         if: runner.os != 'Windows'
         run: bash scripts/tests/run.sh
+
+  ui:
+    name: optional UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: skills/pragmatic-orchestration/ui
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.11'
+      - run: npm install --global pnpm@11.21.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - run: xvfb-run -a pnpm test:desktop

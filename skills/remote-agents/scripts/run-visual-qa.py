@@ -40,7 +40,7 @@ def main():
     parser.add_argument('--max-turns', type=int, default=120)
     parser.add_argument('--resume-session')
     parser.add_argument('--agent-bin', default=os.environ.get('QA_AGENT_BIN', DEFAULT_AGENT))
-    parser.add_argument('--model', default=os.environ.get('QA_AGENT_MODEL', 'grok-4.6'))
+    parser.add_argument('--model', default=os.environ.get('QA_AGENT_MODEL', 'grok-4.7'))
     parser.add_argument('--launcher', default=str(Path(os.environ['SystemDrive'] + '/') / 'Work' / 'desktop-helpers' / 'Start-Interactive.ps1'))
     args = parser.parse_args()
     if not 30 <= args.timeout <= 3600:

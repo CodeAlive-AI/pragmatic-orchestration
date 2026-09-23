@@ -1,5 +1,8 @@
 # macOS
 .DS_Store
+/.build/
+node_modules/
+skills/pragmatic-orchestration/ui/test-results/
 .AppleDouble
 .LSOverride
 

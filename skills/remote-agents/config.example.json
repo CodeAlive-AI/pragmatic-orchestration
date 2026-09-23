@@ -58,7 +58,7 @@
       },
       "qa": {
         "agentBin": "C:/Users/Administrator/.grok/bin/grok.exe",
-        "agentModel": "grok-4.6",
+        "agentModel": "grok-4.7",
         "python": "C:/Program Files/Python313/python.exe",
         "mcpServer": "C:/Users/Administrator/.agents/skills/windows-qa-engineer/scripts/windows_qa_mcp_server.py",
         "mcpName": "windows-qa",

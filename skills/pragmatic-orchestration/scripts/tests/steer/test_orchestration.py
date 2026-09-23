@@ -16,8 +16,10 @@ from unittest.mock import patch
 from test_steer_e2e import PORCH, env_base, extract_run_id
 from steer.adapters.opencode import OpenCodeAdapter
 from steer.adapters.codex import CodexAdapter
+from steer.adapters.claude import ClaudeAdapter
 from steer.control import _duration_seconds
 from steer.registry import Registry, RegistryError
+from steer.launcher import launcher_metadata
 from steer.session import SessionLease
 from steer.util import atomic_write_json, atomic_write_text
 from steer.waiter import wait_for_any, wait_for_terminal
@@ -57,6 +59,44 @@ class OrchestrationTests(unittest.TestCase):
     def rpc_calls(self):
         p = self.root / "rpc.jsonl"
         return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+    def test_named_run_ids_carry_agent_and_slug(self):
+        rid = self.reg.create_run(agent_id="grok", backend="grok-build", model="test",
+                                  cwd=str(self.root), artifacts_dir=str(self.root / "artifacts"),
+                                  run_name="Fix Auth Race!")
+        self.assertEqual(rid, "run_grok-fix-auth-race")
+
+    def test_named_run_id_collision_takes_counter_suffix(self):
+        kwargs = dict(agent_id="grok", backend="grok-build", model="test",
+                      cwd=str(self.root), artifacts_dir=str(self.root / "artifacts"))
+        first = self.reg.create_run(run_name="fix-auth-race", **kwargs)
+        second = self.reg.create_run(run_name="fix auth race", **kwargs)
+        third = self.reg.create_run(run_name="FIX_AUTH_RACE", **kwargs)
+        self.assertEqual(first, "run_grok-fix-auth-race")
+        self.assertEqual(second, "run_grok-fix-auth-race-2")
+        self.assertEqual(third, "run_grok-fix-auth-race-3")
+
+    def test_unnamed_run_id_keeps_agent_prefix_and_word_pair(self):
+        rid = self.reg.create_run(agent_id="codex", backend="codex-cli", model="test",
+                                  cwd=str(self.root), artifacts_dir=str(self.root / "artifacts"))
+        self.assertRegex(rid, r"^run_codex-[a-z]+-[a-z]+-[0-9a-f]{4}$")
+
+    def test_name_only_punctuation_falls_back_to_word_pair(self):
+        rid = self.reg.create_run(agent_id="codex", backend="codex-cli", model="test",
+                                  cwd=str(self.root), artifacts_dir=str(self.root / "artifacts"),
+                                  run_name="!!!")
+        self.assertRegex(rid, r"^run_codex-[a-z]+-[a-z]+-[0-9a-f]{4}$")
+
+    def test_delegate_name_flag_reaches_run_id(self):
+        p = self.cli("-a", "codex", "--detach", "--name", "E2E Named Run", "NAMED_TASK")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), "run_codex-e2e-named-run")
+        self.cli("cancel", "run_codex-e2e-named-run")
+
+    def test_name_rejected_with_one_shot(self):
+        p = self.cli("-a", "codex", "--one-shot", "--name", "x", "TASK")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("--name", p.stderr)
 
     def test_abort_failure_never_sends_replacement(self):
         a = OpenCodeAdapter(binary="fake", model="test", cwd=str(self.root), artifacts_dir=str(self.root))
@@ -153,6 +193,13 @@ class OrchestrationTests(unittest.TestCase):
         a._reset_turn_text_buffers()
         complete("a", "Hello")
         self.assertEqual([ev.data for ev in a.poll_events() if ev.kind == "text"], ["Hello"])
+
+    def test_claude_native_session_id_comes_from_stream(self):
+        a = ClaudeAdapter(binary="fake", model="test", cwd=str(self.root), artifacts_dir=str(self.root))
+        a._handle_obj({"type": "system", "subtype": "init", "session_id": "claude-native-1"})
+        self.assertEqual(a.session_id, "claude-native-1")
+        a._handle_obj({"type": "result", "session_id": "claude-native-2", "result": "done"})
+        self.assertEqual(a.session_id, "claude-native-1")
 
     def test_abort_idle_then_failure_does_not_leave_wait_hanging(self):
         a = OpenCodeAdapter(binary="fake", model="test", cwd=str(self.root), artifacts_dir=str(self.root))
@@ -474,8 +521,35 @@ class OrchestrationTests(unittest.TestCase):
         self.assertIsNone(observed["PORCH_ARTIFACT_KEY"])
         self.assertEqual(observed["PORCH_OUTPUT_DIR"], self.env["PORCH_OUTPUT_DIR"])
         self.assertEqual(observed["PORCH_STEER_DIR"], self.env["PORCH_STEER_DIR"])
+        self.assertEqual(observed["PORCH_LAUNCHER"], "codex")
         rid = extract_run_id(p.stderr)
+        self.assertEqual(observed["PORCH_LAUNCHER_RUN_ID"], rid)
         self.assertEqual(self.reg.load_meta(rid)["artifacts_dir"], self.env["PORCH_RUN_DIR"])
+
+    def test_launcher_is_caller_not_executor(self):
+        env = dict(self.env, PORCH_LAUNCHER="claude", CLAUDE_CODE_SESSION_ID="caller-session")
+        p = self.cli("-a", "codex", "CALLER_CHECK", env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        meta = self.reg.load_meta(extract_run_id(p.stderr))
+        self.assertEqual((meta["launcher"], meta["launcher_source"], meta["agent_id"]),
+                         ("claude", "explicit", "codex"))
+        self.assertTrue(meta["created_at_ns"].isdigit())
+        self.assertEqual(meta["launcher_instance"], launcher_metadata(env)["launcher_instance"])
+        self.assertEqual(meta["turn_count"], 1)
+        self.assertTrue(meta["native_session_id"])
+        self.assertNotIn("caller-session", str(meta))
+
+    def test_launcher_inference_rejects_ambiguity(self):
+        self.assertEqual(launcher_metadata({"CODEX_THREAD_ID": "t"})["launcher"], "codex")
+        self.assertEqual(launcher_metadata({"CLAUDECODE": "1"}),
+                         {"launcher": "claude", "launcher_source": "environment"})
+        self.assertEqual(launcher_metadata({"PORCH_LAUNCHER": "codex", "PORCH_LAUNCHER_RUN_ID": "run_parent"})["launcher_instance"], "run:run_parent")
+        self.assertEqual(launcher_metadata({"CODEX_THREAD_ID": "t", "CLAUDECODE": "1"}),
+                         {"launcher": "unknown", "launcher_source": "ambiguous"})
+        self.assertEqual(launcher_metadata({}),
+                         {"launcher": "unknown", "launcher_source": "unavailable"})
+        with self.assertRaises(ValueError):
+            launcher_metadata({"PORCH_LAUNCHER": "other"})
 
     def test_detached_wait_loop_timeout_then_collects_every_result(self):
         pending = []

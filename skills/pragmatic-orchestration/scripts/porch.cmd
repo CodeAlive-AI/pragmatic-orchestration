@@ -17,6 +17,7 @@ shift
 if /i "%CMD%"=="sessions" goto python_lib
 if /i "%CMD%"=="history" goto python_lib
 if /i "%CMD%"=="quota"   goto python_lib
+if /i "%CMD%"=="ui" goto python_ui
 if /i "%CMD%"=="review"   goto bash_passthrough
 if /i "%CMD%"=="delegate" goto bash_passthrough
 if /i "%CMD%"=="-h" goto usage
@@ -33,6 +34,12 @@ if /i "%CMD%"=="quota" (set "MOD=quota.py") else (set "MOD=sessions.py")
 "%PY%" "%LIB_DIR%\%MOD%" %*
 exit /b %ERRORLEVEL%
 
+:python_ui
+where python3 >nul 2>nul && (set "PY=python3") || (set "PY=python")
+set "PYTHONPATH=%LIB_DIR%;%PYTHONPATH%"
+"%PY%" -m ui %*
+exit /b %ERRORLEVEL%
+
 :bash_passthrough
 where bash >nul 2>nul || (
     echo Error: 'porch %CMD%' needs bash. Install Git for Windows ^(Git Bash^) 1>&2
@@ -47,6 +54,7 @@ echo porch — multi-agent review and session-history CLI (Windows shim)
 echo.
 echo   porch sessions roots^|list^|grep^|show^|turns^|flags^|stats [...]
 echo   porch quota [all^|codex^|grok]
+echo   porch ui [--desktop] [--registry-root PATH]
 echo   porch review^|delegate ...   (runs through bash: Git Bash / MSYS2 / WSL)
 echo.
 echo Full help: bash "%SCRIPT_DIR%porch" --help

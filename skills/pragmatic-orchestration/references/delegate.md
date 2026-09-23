@@ -67,9 +67,16 @@ Return changed files, verification results, and remaining limitations or blocker
   [durable continuation](delegate-runtime.md#durable-codex-follow-ups) and opt
   into `--persist-session` at launch.
 
+**Name every steerable run.** The run id always embeds the agent id. Pass `--name <slug>` — a short
+kebab-case slug derived from the task — so the id reads semantically:
+`run_grok-add-caching-layer`. The slug is normalized to `[a-z0-9-]` and capped
+at 48 characters; a reused name resolves with a `-2`, `-3`, … suffix. Without
+`--name` the id falls back to `run_<agent>-<word>-<word>-<hex>`. `--name` is
+rejected with `--one-shot`, which creates no run id.
+
 ```bash
 # task.md contains the contract above; run from the assigned repository root.
-RUN_ID=$("$PORCH" delegate -a grok --detach --prompt-file task.md)
+RUN_ID=$("$PORCH" delegate -a grok --detach --name implement-task --prompt-file task.md)
 # Inspect within the first minute, then follow the supervision guidance below.
 "$PORCH" delegate events "$RUN_ID" --max-events 50
 ```

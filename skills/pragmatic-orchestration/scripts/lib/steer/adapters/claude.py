@@ -127,6 +127,9 @@ class ClaudeAdapter(BackendAdapter):
                 self._events.put(AdapterEvent(kind="done", data=str(rc)))
 
     def _handle_obj(self, obj: Dict[str, Any]) -> None:
+        native_id = obj.get("session_id")
+        if isinstance(native_id, str) and native_id and not self.session_id:
+            self.session_id = native_id
         typ = obj.get("type")
         if typ == "user" or typ == "user_message" or obj.get("role") == "user":
             uuid = obj.get("uuid") or ""

@@ -8,7 +8,7 @@ Most coding agents can only spawn copies of themselves or a small built-in model
 
 For example:
 
-- send repository research to a stateful Grok 4.6 worker that can be steered and continued, with Grok 4.5 available as a fast context-research profile;
+- send repository research to a stateful Grok 4.7 worker that can be steered and continued, with Grok 4.5 available as a fast context-research profile;
 - ask Claude Fable to produce an independent plan;
 - delegate an implementation to Codex, Claude, Grok, OpenCode, or Devin;
 - review the same change with several unrelated model families and compare what they find.
@@ -110,12 +110,15 @@ For a remote repository, check it out into a user-approved working directory fir
 
 ### Ask GPT-6 Astra for a difficult second opinion
 
-GPT-6 Astra is disabled in the default review pool. Select it explicitly when a difficult specification or optimization plan benefits from an independent second view:
+GPT-6 Sol (`codex`, `high` effort) and GPT-6 Luna (`codex-gpt-6-luna`, `low` effort) join the default review pool. GPT-6 Astra (`codex-gpt-6-astra`) is disabled in the default review pool. Select it explicitly when a difficult specification or optimization plan benefits from an independent second view:
 
 ```bash
-scripts/porch review ask --progress compact -a codex \
+scripts/porch review ask --progress compact -a codex-gpt-6-astra \
   "Verify SPEC.md against the implementation and identify mismatches."
 ```
+
+Claude Code defaults to `claude-opus` (Opus 5.5, `medium` effort).
+Fable remains available by explicitly selecting `-a claude-fable`.
 
 ### Ask Claude Fable 5.1 for a plan
 
@@ -225,6 +228,17 @@ profile. It creates a new run using the saved native conversation. Only the late
 successful turn can continue; failed or ambiguous work is never replayed, and
 unavailable resume does not silently start over. Ordinary runs remain ephemeral.
 
+## Optional live UI
+
+[Porch UI](ui/README.md) attaches to already-running delegates and displays their
+output as it arrives. After its one-time optional build, run `porch ui --desktop`
+for an Electron window or `porch ui` for a local URL. Closing the UI never cancels
+workers. The existing headless commands need no frontend dependencies.
+When a user asks the calling agent to show its subagents, use
+`porch ui --desktop --mine`: it opens on active runs from the current agent
+session and selects the newest one. Add `--focus-run RUN_ID` when the current
+run is known.
+
 ## Session history search
 
 `sessions` reads the session stores your coding agents already write —
@@ -301,10 +315,10 @@ Agent profiles live in `config.json`. A profile chooses the harness, model, reas
     "grok": {
       "enabled": true,
       "backend": "grok-build",
-      "model": "grok-4.6",
+      "model": "grok-4.7",
       "effort": "high",
       "role": "analyst",
-      "label": "Grok 4.6 (native, high)"
+      "label": "Grok 4.7 (native, high)"
     },
     "grok-fast": {
       "enabled": false,

@@ -134,3 +134,20 @@ from steer.util import new_run_id
 print(new_run_id('run_'))
 ")
 assert_matches "steerable run id reads as words" "$steer_id" '^run_[a-z]+-[a-z]+-[0-9a-f]{4}$'
+
+# Caller-supplied --name makes the id semantic; the agent id always prefixes it.
+named_id=$(python3 -c "
+import sys
+sys.path.insert(0, '$LIB_DIR')
+from steer.util import new_run_id
+print(new_run_id('run_', agent_id='grok', name='Fix Auth Race!'))
+")
+assert_eq "named run id is run_<agent>-<slug>" "$named_id" "run_grok-fix-auth-race"
+
+agent_id=$(python3 -c "
+import sys
+sys.path.insert(0, '$LIB_DIR')
+from steer.util import new_run_id
+print(new_run_id('run_', agent_id='grok'))
+")
+assert_matches "unnamed run id keeps agent plus word pair" "$agent_id" '^run_grok-[a-z]+-[a-z]+-[0-9a-f]{4}$'

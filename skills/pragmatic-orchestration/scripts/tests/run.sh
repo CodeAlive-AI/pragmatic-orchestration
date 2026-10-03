@@ -123,7 +123,7 @@ assert_contains "skill-root default grok profile uses Grok 4.7" "$out" \
 assert_contains "Codex Astra remains selectable but disabled by default" "$out" \
   'id="codex-gpt-6-astra" label="Codex GPT-6 Astra" backend="codex-cli" model="gpt-6-astra" role="analyst" enabled="false"'
 assert_contains "Codex Sol is enabled by default" "$out" \
-  'id="codex" label="Codex GPT-6 Sol" backend="codex-cli" model="gpt-6-sol" role="analyst" enabled="true"'
+  'id="codex" label="Codex GPT-6.1 Sol" backend="codex-cli" model="gpt-6.1-sol" role="analyst" enabled="true"'
 assert_contains "Codex Luna is enabled by default" "$out" \
   'id="codex-gpt-6-luna" label="Codex GPT-6 Luna" backend="codex-cli" model="gpt-6-luna" role="analyst" enabled="true"'
 assert_contains "Claude Fable remains selectable but disabled by default" "$out" \
@@ -168,7 +168,7 @@ argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/astra-revi
 assert_contains "Codex production profile launches GPT-6 Astra" "$argv" "--model gpt-6-astra"
 assert_contains "Codex Astra production profile uses high effort" "$argv" 'model_reasoning_effort="high"'
 
-for spec in 'codex gpt-6-sol high' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high'; do
+for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high'; do
   read -r profile model effort <<< "$spec"
   for mode in review delegate; do
     env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/current-model.json" \

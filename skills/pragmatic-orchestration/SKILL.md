@@ -51,7 +51,7 @@ Use these unless the user asks for a different tradeoff:
 - Use `specialists` only for a broader mid-cost review without an LLM judge. Use `ultra` only when the user explicitly prioritizes maximum coverage over cost and latency.
 - Repository research: `delegate -a grok` from the target repository root. Tell the worker whether the task is read-only, keep the default steerable session, and use `steer`/`wait` to continue incomplete work.
 - The `grok` profile is Grok 4.7 and is the default native Grok Build worker. Use the disabled-by-default `grok-fast` profile explicitly for fast context research with Grok 4.5.
-- The enabled `codex` and `codex-gpt-6-luna` profiles use GPT-6 Sol at `high` effort and GPT-6 Luna at `low` effort, respectively.
+- The enabled `codex` and `codex-gpt-6-luna` profiles use GPT-6.1 Sol at `high` effort and GPT-6 Luna at `low` effort, respectively.
 - GPT-6 Astra is an explicit Codex second opinion for difficult specification verification or optimization planning. Select it with `-a codex-gpt-6-astra`; do not add it to routine research or the default review pool.
 - The default Claude Code profile is `claude-opus`: Claude Opus 5.5 (`claude-opus-5-5`) at `medium` effort. The `claude-code` profile is a disabled alias for the same model and effort.
 - The opt-in `claude-fable` profile runs Claude Fable 5.1 for demanding long-horizon review or delegation. Its default `low` effort is cost-conscious; override it with `CLAUDE_EFFORT=high`, `xhigh`, or `max` when capability matters more than latency and cost.

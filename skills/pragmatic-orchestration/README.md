@@ -110,7 +110,7 @@ For a remote repository, check it out into a user-approved working directory fir
 
 ### Ask GPT-6 Astra for a difficult second opinion
 
-GPT-6 Sol (`codex`, `high` effort) and GPT-6 Luna (`codex-gpt-6-luna`, `low` effort) join the default review pool. GPT-6 Astra (`codex-gpt-6-astra`) is disabled in the default review pool. Select it explicitly when a difficult specification or optimization plan benefits from an independent second view:
+GPT-6.1 Sol (`codex`, `high` effort) and GPT-6 Luna (`codex-gpt-6-luna`, `low` effort) join the default review pool. GPT-6 Astra (`codex-gpt-6-astra`) is disabled in the default review pool. Select it explicitly when a difficult specification or optimization plan benefits from an independent second view:
 
 ```bash
 scripts/porch review ask --progress compact -a codex-gpt-6-astra \

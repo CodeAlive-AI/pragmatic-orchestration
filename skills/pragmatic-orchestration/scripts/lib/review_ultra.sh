@@ -2,13 +2,13 @@
 #
 # ultrareview.sh — multi-stage code review based on the ultrareview-bench h3
 # preset (benchmarked with Codex gpt-5.5 broad-grid + probe; current Codex
-# binding is gpt-6-sol high).
+# binding is gpt-6.1-sol high).
 #
 # Pipeline (21 LLM calls total):
 #
 #   Stage 1: broad (parallel) — 4 frontier analysts
-#     • codex (gpt-6-sol high)     analyst       (uncapped)
-#     • claude-code (Sonnet 5 high)  analyst       (uncapped)
+#     • codex (gpt-6.1-sol high)     analyst       (uncapped)
+#     • claude-code (Sonnet 5.5 high)  analyst       (uncapped)
 #     • opencode (GLM-5.2)           lateral       (uncapped)
 #     • opencode-go-qwen37-max       analyst       (uncapped)
 #
@@ -23,7 +23,7 @@
 #
 #   Stage 4: dedup (deterministic) — union all findings
 #
-#   Stage 5: judge — claude-code (Sonnet 5) by default; on failure falls back to
+#   Stage 5: judge — claude-code (Sonnet 5.5) by default; on failure falls back to
 #     opencode (GLM-5.2).
 #
 # Output: filtered findings (VALID + DOWNGRADE) as markdown or XML.
@@ -40,7 +40,7 @@
 #   ultrareview.sh --keep-tmp <file>       # retain $RESP_DIR
 #   ultrareview.sh --help
 #
-# Cost expectation: ~$1.50-3.00 on a 12KB file. The Sonnet 5 judge is the
+# Cost expectation: ~$1.50-3.00 on a 12KB file. The Sonnet 5.5 judge is the
 # expensive component (~$0.50-1.00); fallback uses the default OpenCode model.
 #
 # Exit codes:

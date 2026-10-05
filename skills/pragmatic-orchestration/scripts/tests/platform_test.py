@@ -5,6 +5,7 @@ import importlib
 import json
 import os
 import pkgutil
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,92 @@ class PlatformTests(unittest.TestCase):
         for module in pkgutil.walk_packages(steer.__path__, steer.__name__ + "."):
             importlib.import_module(module.name)
         importlib.import_module("terminal_guard")
+
+    def test_backend_shell_assignments_are_lf_only_and_preserve_values(self):
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("backend shell assignments require Bash")
+        # Exercise the runner's actual emitter with native Windows-style
+        # stdout on every platform; text=True would hide the CRLF regression.
+        source = (LIB / "backend_run.sh").read_text(encoding="utf-8")
+        marker = 'RESOLVED_JSON="$RESOLVED_JSON" python3 - <<\'PY\'\n'
+        self.assertEqual(source.count(marker), 1)
+        emitter = source.split(marker, 1)[1].split("\nPY\n", 1)[0]
+        resolved = {
+            "backend": "codex-cli",
+            "model": "model 'quoted' $HOME ü",
+            "effort": "high",
+            "label": "Windows test",
+            "role": "analyst",
+            "binary": r"C:\Users\Test User ü\npm\codex.CMD",
+            "review_instructions": "Use 'quotes' and $HOME literally.\nSecond line.",
+            "access_class": "readonly",
+        }
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import sys\nsys.stdout.reconfigure(newline='\\r\\n')\n" + emitter],
+            env=dict(self.env, RESOLVED_JSON=json.dumps(resolved)),
+            capture_output=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(b"\r", result.stdout)
+        shell = subprocess.run(
+            [bash, "--noprofile", "--norc", "-c",
+             'set -eu; eval "$(cat)"; printf "%s\\0" '
+             '"$BACKEND" "$MODEL" "$EFFORT" "$LABEL" "$ROLE_ID" '
+             '"$BIN" "$REVIEW_INSTRUCTIONS" "$ACCESS_POLICY"'],
+            input=result.stdout, env=self.env, capture_output=True, timeout=15,
+        )
+        self.assertEqual(shell.returncode, 0, shell.stderr)
+        self.assertEqual(shell.stdout.decode("utf-8").split("\0"),
+                         [*resolved.values(), ""])
+
+    def test_backend_cmd_shim_uses_only_its_extensionless_sibling(self):
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("backend shim resolution requires Bash")
+        source = (LIB / "backend_run.sh").read_text(encoding="utf-8")
+        marker = "bin_usable() {\n"
+        self.assertEqual(source.count(marker), 1)
+        resolver = marker + source.split(marker, 1)[1].split(
+            "\n# Codex model alias", 1)[0]
+        launcher = self.root / "shimcodex"
+        launcher.write_bytes(b"#!/bin/sh\nprintf '%s\\n' 'CMD_SHIM_OK'\n")
+        launcher.chmod(0o755)
+        shim = launcher.with_suffix(".CMD")
+        shim.write_bytes(b"@echo off\r\n")
+        shim.chmod(0o644)
+        missing = self.root / "missing" / shim.name
+        missing.parent.mkdir()
+        missing.write_bytes(b"@echo off\r\n")
+        missing.chmod(0o644)
+        script = 'set -eu\nEXIT_CONFIG_ERROR=4\nBACKEND=codex-cli\n' + resolver + '\n"$BIN"\n'
+        # A same-named working launcher on PATH must not replace an explicitly
+        # selected installation whose extensionless sibling is missing.
+        env = dict(self.env, PATH=str(self.root) + os.pathsep + self.env["PATH"])
+        for name, binary, expected_rc in (
+            ("cmd sibling", shim, 0),
+            ("missing sibling", missing, 4),
+            ("non-cmd extension", launcher.with_suffix(".exe"), 4),
+        ):
+            with self.subTest(name=name):
+                if os.name == "nt" and binary.suffix == ".CMD":
+                    # Keep native Python's drive/backslash spelling so the
+                    # production resolver exercises cygpath under Git Bash.
+                    binary_path = shutil.which(str(binary))
+                    self.assertIsNotNone(binary_path)
+                else:
+                    binary_path = str(binary).replace("/", "\\")
+                result = subprocess.run(
+                    [bash, "--noprofile", "--norc", "-c", script],
+                    env=dict(env, BIN=binary_path), capture_output=True, timeout=15,
+                )
+                self.assertEqual(result.returncode, expected_rc, result.stderr)
+                if expected_rc == 0:
+                    self.assertEqual(result.stdout, b"CMD_SHIM_OK\n")
+                else:
+                    self.assertIn(b"backend CLI not found", result.stderr)
+                    self.assertNotIn(b"CMD_SHIM_OK", result.stdout)
 
     def test_steer_guidance_after_flags_and_root_option(self):
         from steer import control

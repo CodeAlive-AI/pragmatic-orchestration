@@ -125,7 +125,9 @@ unset _RESOLVE_ARGS
 if [[ -n "$RESOLVED_JSON" ]]; then
     eval "$(
         RESOLVED_JSON="$RESOLVED_JSON" python3 - <<'PY'
-import json, os, shlex
+import json, os, shlex, sys
+# Native Windows Python must not add CR characters to shell assignments.
+sys.stdout.reconfigure(newline='\n')
 d = json.loads(os.environ["RESOLVED_JSON"])
 def emit(k, v):
     print(f"{k}={shlex.quote('' if v is None else str(v))}")

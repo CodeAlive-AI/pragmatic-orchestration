@@ -4,10 +4,10 @@
     "codex": {
       "enabled": true,
       "backend": "codex-cli",
-      "model": "gpt-6-sol",
+      "model": "gpt-6.1-sol",
       "effort": "high",
       "role": "analyst",
-      "label": "Codex GPT-6 Sol"
+      "label": "Codex GPT-6.1 Sol"
     },
     "codex-gpt-5.6": {
       "enabled": false,
@@ -148,10 +148,10 @@
     "claude-sonnet": {
       "enabled": false,
       "backend": "claude-code",
-      "model": "claude-sonnet-5",
+      "model": "claude-sonnet-5-5",
       "effort": "high",
       "role": "lateral",
-      "label": "Claude Sonnet 5"
+      "label": "Claude Sonnet 5.5"
     },
     "opencode-go-minimax": {
       "enabled": false,
@@ -192,6 +192,14 @@
       "effort": "none",
       "role": "lateral",
       "label": "OC-Go Qwen3.7 Plus"
+    },
+    "codex-gpt-6-sol": {
+      "enabled": false,
+      "backend": "codex-cli",
+      "model": "gpt-6-sol",
+      "effort": "high",
+      "role": "analyst",
+      "label": "Codex GPT-6 Sol"
     },
     "codex-gpt-6-luna": {
       "enabled": true,

@@ -55,6 +55,15 @@ effort; `claude-sonnet` remains available explicitly. The disabled-by-default
 `claude-fable` profile uses `claude-fable-5-1` at `low` effort and
 supports the same five effort levels. Start Fable 5.1 at `high` for the hardest
 long-horizon work, or retain `low` when it is one reviewer in a larger pool.
+The opt-in `opencode-go-gemini-4-argon-contributor` profile uses
+`opencode-go/gemini-4-argon-contributor` with `high` effort for review and
+delegate. Select it with `-a opencode-go-gemini-4-argon-contributor`.
+OpenCode 1.19.0 exposes `low`, `medium`, and `high` variants; `OPENCODE_EFFORT`
+overrides the default. Copy this profile into an existing user-local config
+to use the new id. OpenCode Go lists this as Gemini 4 Argon **Contributor**:
+prompts and completions may be used to train Google models, and it is not ZDR.
+See the [Go catalog and privacy terms](https://dev.opencode.ai/v2/docs/console/go/).
+
 The disabled-by-default `opencode-go-muse-spark-1.3-contributor` and
 `opencode-go-deepseek-v4.1-flash` profiles use the OpenCode Go catalog at
 their maximum effort (`xhigh` for Muse and `max` for DeepSeek). Select either

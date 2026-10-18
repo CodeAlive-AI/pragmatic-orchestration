@@ -130,6 +130,8 @@ assert_contains "Codex Luna is enabled by default" "$out" \
   'id="codex-gpt-6-luna" label="Codex GPT-6 Luna" backend="codex-cli" model="gpt-6-luna" role="analyst" enabled="true"'
 assert_contains "Claude Fable remains selectable but disabled by default" "$out" \
   'id="claude-fable" label="Claude Fable 5.1" backend="claude-code" model="claude-fable-5-1" role="analyst" enabled="false"'
+assert_contains "Gemini 4 Argon Contributor is selectable but disabled by default" "$out" \
+  'id="opencode-go-gemini-4-argon-contributor" label="OC-Go Gemini 4 Argon Contributor" backend="opencode" model="opencode-go/gemini-4-argon-contributor" role="lateral" enabled="false"'
 assert_contains "Muse Spark 1.3 Contributor is selectable but disabled by default" "$out" \
   'id="opencode-go-muse-spark-1.3-contributor" label="OC-Go Muse Spark 1.3 Contributor" backend="opencode" model="opencode-go/muse-spark-1.3-contributor" role="lateral" enabled="false"'
 assert_contains "DeepSeek V4.1 Flash is selectable but disabled by default" "$out" \
@@ -203,6 +205,29 @@ env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/deepseek
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/deepseek-v41-flash-review.json"'"))["argv"]))')
 assert_contains "DeepSeek V4.1 Flash production profile uses exact model" "$argv" "-m opencode-go/deepseek-v4.1-flash"
 assert_contains "DeepSeek V4.1 Flash production profile uses maximum effort" "$argv" "--variant max"
+
+for mode in review delegate; do
+  env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/argon-$mode.json" \
+    "$LIB_DIR/backend_run.sh" --mode "$mode" --agent-id opencode-go-gemini-4-argon-contributor --raw "hello" >/dev/null
+  argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/argon-$mode.json")
+  assert_contains "Gemini 4 Argon $mode uses exact Go model" "$argv" "-m opencode-go/gemini-4-argon-contributor"
+  assert_contains "Gemini 4 Argon $mode defaults to high effort" "$argv" "--variant high"
+done
+
+for mode in review delegate; do
+  argon_log="$TMP/argon-$mode-runtime.jsonl"
+  if [[ "$mode" == review ]]; then
+    out=$(PORCH_FAKE_ARGV_LOG="$argon_log" PORCH_RUN_DIR="$TMP/argon-review-run" \
+      "$PORCH" review ask --progress none -a opencode-go-gemini-4-argon-contributor "Review this")
+  else
+    out=$(PORCH_FAKE_ARGV_LOG="$argon_log" PORCH_RUN_DIR="$TMP/argon-delegate-run" \
+      "$PORCH" delegate --one-shot -a opencode-go-gemini-4-argon-contributor "Implement this")
+  fi
+  assert_contains "Gemini 4 Argon $mode completes with fake OpenCode" "$out" "FAKE_OPENCODE_OK"
+  argv=$(python3 -c 'import json,sys; print(" ".join(json.loads(open(sys.argv[1]).readline())["argv"]))' "$argon_log")
+  assert_contains "Gemini 4 Argon $mode runtime uses Go catalog id" "$argv" "-m opencode-go/gemini-4-argon-contributor"
+  assert_contains "Gemini 4 Argon $mode runtime uses high variant" "$argv" "--variant high"
+done
 
 # Codex review: sandbox read-only, never full-bypass
 dump_review codex "$TMP/codex-review.json"

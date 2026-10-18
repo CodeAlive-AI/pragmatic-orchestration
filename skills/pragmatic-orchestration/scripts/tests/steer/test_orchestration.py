@@ -17,6 +17,7 @@ from test_steer_e2e import PORCH, env_base, extract_run_id
 from steer.adapters.opencode import OpenCodeAdapter
 from steer.adapters.codex import CodexAdapter
 from steer.adapters.claude import ClaudeAdapter
+from steer.config_loader import agent_settings
 from steer.control import _duration_seconds
 from steer.registry import Registry, RegistryError
 from steer.launcher import launcher_metadata
@@ -97,6 +98,29 @@ class OrchestrationTests(unittest.TestCase):
         p = self.cli("-a", "codex", "--one-shot", "--name", "x", "TASK")
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("--name", p.stderr)
+
+    def test_argon_go_profile_defaults_to_high_in_steerable_payload(self):
+        for config in (PORCH.parents[1] / "config.example.json", Path(self.env["PORCH_CONFIG"])):
+            with self.subTest(config=config), patch.dict(os.environ, self.env):
+                os.environ["PORCH_CONFIG"] = str(config)
+                os.environ.pop("OPENCODE_MODEL", None)
+                os.environ.pop("OPENCODE_EFFORT", None)
+                agent, backend, model, binary = agent_settings("opencode-go-gemini-4-argon-contributor")
+                self.assertEqual(backend, "opencode")
+                self.assertEqual(model, "opencode-go/gemini-4-argon-contributor")
+                self.assertEqual(agent["effort"], "high")
+                self.assertFalse(agent["enabled"])
+                adapter = OpenCodeAdapter(binary=binary, model=model, effort=agent["effort"],
+                                          cwd=str(self.root), artifacts_dir=str(self.root))
+                adapter.session_id = "argon-test"
+                with patch.object(adapter, "_http_json", return_value=None) as request:
+                    adapter._prompt_async("QUESTION", "argon-client")
+                payload = request.call_args.kwargs["body"]
+                self.assertEqual(payload["model"], {"providerID": "opencode-go",
+                                                   "modelID": "gemini-4-argon-contributor"})
+                self.assertEqual(payload["variant"], "high")
+                os.environ["OPENCODE_EFFORT"] = "low"
+                self.assertEqual(agent_settings("opencode-go-gemini-4-argon-contributor")[0]["effort"], "low")
 
     def test_abort_failure_never_sends_replacement(self):
         a = OpenCodeAdapter(binary="fake", model="test", cwd=str(self.root), artifacts_dir=str(self.root))

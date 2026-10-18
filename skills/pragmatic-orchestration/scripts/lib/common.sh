@@ -236,6 +236,7 @@ list_roles() {
 
 # Build prompt: principles + role + output template + user prompt + optional context.
 # Usage: build_prompt "role_text" "$PROMPT" "$CONTEXT_FILE"
+# All input is explicit. This builder must never consume the caller's stdin.
 # Set PORCH_SKIP_OUTPUT_TEMPLATE=1 to omit the default Assessment/Findings
 # template — used by code-review mode which provides its own XML schema.
 # Set PORCH_RAW_PROMPT=1 to send the user prompt verbatim — no principles,
@@ -249,14 +250,7 @@ build_prompt() {
     if [[ -n "${PORCH_RAW_PROMPT:-}" ]]; then
         local full="$prompt"
         if [[ -n "$context_file" && -f "$context_file" ]]; then
-            full+=$'\n\n--- Context ---\n'"$(cat "$context_file")"
-        fi
-        if [[ ! -t 0 ]]; then
-            local stdin_content
-            stdin_content=$(cat)
-            if [[ -n "$stdin_content" ]]; then
-                full+=$'\n\n--- Input ---\n'"$stdin_content"
-            fi
+            full+=$'\n\n--- Context ---\n'"$(cat < "$context_file")"
         fi
         printf '%s' "$full"
         return 0
@@ -273,15 +267,7 @@ ${template}
 ${prompt}"
 
     if [[ -n "$context_file" && -f "$context_file" ]]; then
-        full+=$'\n\n--- Context ---\n'"$(cat "$context_file")"
-    fi
-
-    if [[ ! -t 0 ]]; then
-        local stdin_content
-        stdin_content=$(cat)
-        if [[ -n "$stdin_content" ]]; then
-            full+=$'\n\n--- Input ---\n'"$stdin_content"
-        fi
+        full+=$'\n\n--- Context ---\n'"$(cat < "$context_file")"
     fi
 
     full+=$'\n\n---\n\n'"$PORCH_RECAP"

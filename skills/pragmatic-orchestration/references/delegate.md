@@ -74,6 +74,11 @@ at 48 characters; a reused name resolves with a `-2`, `-3`, … suffix. Without
 `--name` the id falls back to `run_<agent>-<word>-<word>-<hex>`. `--name` is
 rejected with `--one-shot`, which creates no run id.
 
+Pass the task or steering guidance as a positional argument, `--prompt-file`,
+or stdin. A selected argument/file must contain non-whitespace text; empty
+input fails immediately rather than falling back to stdin. Argument and file
+sources cannot be combined. Stdin is read only when neither is selected.
+
 ```bash
 # task.md contains the contract above; run from the assigned repository root.
 RUN_ID=$("$PORCH" delegate -a grok --detach --name implement-task --prompt-file task.md)

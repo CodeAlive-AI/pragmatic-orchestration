@@ -166,8 +166,8 @@ if [[ "$INPUT_KIND" == "diff" ]]; then
     INPUT_LABEL="${INPUT_PATH:-(stdin diff)}"
 elif [[ -n "$INPUT_PATH" ]]; then
     [[ -f "$INPUT_PATH" ]] || { echo -e "${RED}Error: file not found: $INPUT_PATH${NC}" >&2; exit 5; }
-    cp "$INPUT_PATH" "$SOURCE_FILE"
-    awk '{printf "%4d  %s\n", NR, $0}' "$INPUT_PATH" > "$INPUT_BODY_FILE"
+    cp -- "$INPUT_PATH" "$SOURCE_FILE"
+    awk '{printf "%4d  %s\n", NR, $0}' < "$SOURCE_FILE" > "$INPUT_BODY_FILE"
     INPUT_LABEL="$INPUT_PATH"
 else
     echo -e "${RED}Error: no input (provide a file path or --diff with stdin)${NC}" >&2

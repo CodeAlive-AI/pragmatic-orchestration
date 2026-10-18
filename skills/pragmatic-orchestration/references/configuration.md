@@ -89,6 +89,16 @@ EOF
 
 The shell-interpolation warning applies only to positional prompts that still contain backticks or `$()`; file/stdin content is not warned.
 
+Prompt sources are selected explicitly, independently of their contents. An
+empty or whitespace-only positional prompt or prompt file is a usage error;
+it never switches to inherited stdin. Do not combine a positional prompt with
+`--prompt-file`. Stdin supplies the prompt only when neither source is selected.
+This applies to review, delegate, and steering guidance. File-based backend
+transports receive closed stdin; stream-based transports receive the staged
+prompt file. The internal prompt builders do not append ambient stdin.
+File paths are read literally, including a file named `-`; file-reading tools
+must not reinterpret such a path as an instruction to read stdin.
+
 ## Environment variables
 
 | Variable | Purpose |

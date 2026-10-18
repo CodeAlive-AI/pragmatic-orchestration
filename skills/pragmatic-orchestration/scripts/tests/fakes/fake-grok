@@ -59,7 +59,10 @@ fi
 MODE="${PORCH_FAKE_GROK_MODE:-ok}"
 
 case "$MODE" in
-  ok)
+  ok|read-stdin)
+    if [[ "$MODE" == "read-stdin" ]]; then
+      cat >/dev/null
+    fi
     echo '{"type":"thought","data":"thinking..."}'
     echo '{"type":"text","data":"FAKE_"}'
     echo '{"type":"text","data":"GROK_OK"}'

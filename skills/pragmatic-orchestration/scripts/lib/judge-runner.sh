@@ -107,15 +107,15 @@ INPUT_LABEL="$SOURCE"
 INPUT_BODY_FILE="$TMP_DIR/input-body.txt"
 if [[ -f "$SOURCE" ]]; then
     if [[ "$INPUT_KIND" == "file" ]]; then
-        awk '{printf "%4d  %s\n", NR, $0}' "$SOURCE" > "$INPUT_BODY_FILE"
+        awk '{printf "%4d  %s\n", NR, $0}' < "$SOURCE" > "$INPUT_BODY_FILE"
     else
-        cat "$SOURCE" > "$INPUT_BODY_FILE"
+        cat < "$SOURCE" > "$INPUT_BODY_FILE"
     fi
 else
     # SOURCE is a raw label (e.g. "(stdin diff)") — body from optional file
     # or small env path pointer, not the body itself.
     if [[ -n "${JUDGE_INPUT_BODY_FILE:-}" && -f "$JUDGE_INPUT_BODY_FILE" ]]; then
-        cat "$JUDGE_INPUT_BODY_FILE" > "$INPUT_BODY_FILE"
+        cat < "$JUDGE_INPUT_BODY_FILE" > "$INPUT_BODY_FILE"
     elif [[ -n "${JUDGE_INPUT_BODY:-}" ]]; then
         # Legacy: materialize then drop from env. Prefer JUDGE_INPUT_BODY_FILE.
         printf '%s' "$JUDGE_INPUT_BODY" > "$INPUT_BODY_FILE"
@@ -129,7 +129,7 @@ fi
 unset JUDGE_INPUT_BODY JR_INPUT_BODY JR_FINDINGS_BODY
 
 FINDINGS_BODY_FILE="$TMP_DIR/findings-body.txt"
-cat "$FINDINGS" > "$FINDINGS_BODY_FILE"
+cat < "$FINDINGS" > "$FINDINGS_BODY_FILE"
 
 # Substitute placeholders via python — paths (small) in env/argv, bodies on disk.
 export JR_INPUT_KIND="$INPUT_KIND"

@@ -37,6 +37,7 @@ esac
 AGENT_ID=""
 PROMPT=""
 PROMPT_FILE=""
+PROMPT_SOURCE=""  # positional | file | stdin
 STEERABLE=1
 LAUNCH_MODE="default"
 DETACH=0
@@ -98,7 +99,8 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --prompt-file)
-            shift; PROMPT_FILE="${1:-}"; shift
+            [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --prompt-file requires a path" >&2; exit $EXIT_USAGE; }
+            PROMPT_FILE="$2"; PROMPT_SOURCE="file"; shift 2
             ;;
         --name)
             shift
@@ -170,9 +172,9 @@ Options:
 EOF
             exit $EXIT_OK
             ;;
-        --) shift; PROMPT="${1:-}"; break ;;
+        --) shift; PROMPT="${1:-}"; PROMPT_SOURCE="positional"; break ;;
         -*) echo "Error: unknown flag: $1" >&2; exit $EXIT_USAGE ;;
-        *)  PROMPT="$1"; shift; break ;;
+        *)  PROMPT="$1"; PROMPT_SOURCE="positional"; shift; break ;;
     esac
 done
 
@@ -204,18 +206,19 @@ cleanup_delegate_prompt() { rm -f "$_del_prompt_tmp"; }
 trap cleanup_delegate_prompt EXIT
 
 if [[ -n "$PROMPT_FILE" ]]; then
+    [[ "$PROMPT_SOURCE" != "positional" ]] || { echo "Error: cannot combine --prompt-file with a positional prompt" >&2; exit $EXIT_USAGE; }
     [[ -r "$PROMPT_FILE" ]] || { echo "Error: prompt source not readable: $PROMPT_FILE" >&2; exit $EXIT_USAGE; }
-    if ! cat -- "$PROMPT_FILE" > "$_del_prompt_tmp"; then
+    if ! cat < "$PROMPT_FILE" > "$_del_prompt_tmp"; then
         echo "Error: failed to read prompt source: $PROMPT_FILE" >&2
         exit $EXIT_USAGE
     fi
-elif [[ -n "$PROMPT" ]]; then
+elif [[ "$PROMPT_SOURCE" == "positional" ]]; then
     printf '%s' "$PROMPT" > "$_del_prompt_tmp"
 elif [[ ! -t 0 ]]; then
     cat > "$_del_prompt_tmp"
 fi
 
-if [[ ! -s "$_del_prompt_tmp" ]]; then
+if [[ ! -s "$_del_prompt_tmp" ]] || ! LC_ALL=C grep -q '[^[:space:]]' "$_del_prompt_tmp"; then
     echo "Error: no task prompt provided" >&2
     exit $EXIT_USAGE
 fi

@@ -36,7 +36,9 @@ while [[ $# -gt 0 ]]; do
         --progress)     shift; PROGRESS="${1:-}"; shift ;;
         --progress=*)   PROGRESS="${1#--progress=}"; shift ;;
         --list-agents)  LIST_ONLY=true; shift ;;
-        --prompt-file)  shift; PROMPT_FILE="${1:-}"; PROMPT_SOURCE="file"; shift ;;
+        --prompt-file)
+            [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --prompt-file requires a path" >&2; exit $EXIT_USAGE; }
+            PROMPT_FILE="$2"; PROMPT_SOURCE="file"; shift 2 ;;
         --context-stdin) CONTEXT_STDIN=true; shift ;;
         -a|--agents|--agent)
                         shift
@@ -90,11 +92,11 @@ if [[ -n "$PROMPT_FILE" ]]; then
         echo -e "${RED}Error: prompt file not found: $PROMPT_FILE${NC}" >&2
         exit $EXIT_USAGE
     fi
-    if [[ -n "$PROMPT" ]]; then
+    if [[ "$PROMPT_SOURCE" == "positional" ]]; then
         echo -e "${RED}Error: cannot combine --prompt-file with a positional prompt${NC}" >&2
         exit $EXIT_USAGE
     fi
-    PROMPT="$(cat "$PROMPT_FILE")"
+    PROMPT="$(cat < "$PROMPT_FILE")"
     PROMPT_SOURCE="file"
 fi
 
@@ -115,24 +117,24 @@ fi
 STDIN_CONTENT=""
 # An inherited non-TTY can remain open indefinitely. Read it only when it is
 # the selected prompt transport or the caller explicitly requests context.
-if $CONTEXT_STDIN && [[ -z "${PROMPT//[[:space:]]/}" || -t 0 ]]; then
+if $CONTEXT_STDIN && { [[ ! "$PROMPT" =~ [^[:space:]] ]] || [[ -t 0 ]]; }; then
     echo -e "${RED}Error: --context-stdin requires a non-empty explicit prompt and piped context${NC}" >&2
     exit $EXIT_USAGE
 fi
 if [[ ! -t 0 ]] && { [[ -z "$PROMPT_SOURCE" ]] || $CONTEXT_STDIN; }; then
     STDIN_CONTENT=$(cat)
 fi
-if $CONTEXT_STDIN && [[ -z "${STDIN_CONTENT//[[:space:]]/}" ]]; then
+if $CONTEXT_STDIN && [[ ! "$STDIN_CONTENT" =~ [^[:space:]] ]]; then
     echo -e "${RED}Error: --context-stdin requires non-empty context on stdin${NC}" >&2
     exit $EXIT_USAGE
 fi
-if [[ -z "$PROMPT_SOURCE" && -n "${STDIN_CONTENT//[[:space:]]/}" ]]; then
+if [[ -z "$PROMPT_SOURCE" && "$STDIN_CONTENT" =~ [^[:space:]] ]]; then
     PROMPT="$STDIN_CONTENT"
     STDIN_CONTENT=""
     PROMPT_SOURCE="stdin"
     progress_info "note" "using stdin as the prompt"
 fi
-if [[ -z "${PROMPT//[[:space:]]/}" ]]; then
+if [[ ! "$PROMPT" =~ [^[:space:]] ]]; then
     echo -e "${RED}Error: No prompt provided; pass it as a positional argument, pipe it to stdin, or use --prompt-file FILE${NC}" >&2
     exit $EXIT_USAGE
 fi

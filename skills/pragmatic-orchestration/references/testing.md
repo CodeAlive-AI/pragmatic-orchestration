@@ -8,16 +8,21 @@ scripts/tests/run.sh
 
 It covers backend argv safety, exact profile selection, model/effort resolution, stdout/stderr separation, artifacts, Grok streaming success/failure, live progress, credential redaction, prompt purity, all review progress styles, invocation-specific keys, human-readable ids, steerable adapters/mailbox lifecycle, concurrent Grok queue/sendNow behavior, a Devin ACP fake covering one-shot and steerable paths (same-turn merge, cancel), cancel/idempotency/cleanup, and shared runtime contracts.
 
-Review input regressions keep an inherited stdin pipe open while exercising
-positional questions and prompt files, including blank explicit questions.
-They also verify stdin-only questions and explicit `--context-stdin` context.
+Input regressions keep an inherited stdin pipe open while exercising review,
+delegate, steering, backend launchers, and both prompt builders. They cover
+empty/whitespace explicit sources, conflicting sources, empty file-option
+values, stdin-only questions, explicit `--context-stdin` context, and EOF on
+unused stdin for file-based backends. Literal `-` filenames are checked in
+prompt transports and all code-review depths (super/ultra use dry runs).
+Large file prompts guard against slow shell whitespace validation.
 Run them alone with `python3 scripts/tests/review_input_test.py -v` from the skill
 directory. Current-model checks cover the explicit `codex-gpt-6.1-sol` profile
 in both review and delegate argv.
 
 Quota parsing is tested offline for Codex multi-bucket limits, Grok `/usage`
 fields, fail-closed display drift, shell-safe remote paths, and one bounded retry
-after a transient Grok transport failure.
+after a transient Grok transport failure. Fake Codex RPC tests verify that a
+partial response line obeys the quota timeout and stderr is drained concurrently.
 
 The shared-runtime checks include the closed event schema and protocol-drift rejection, backend capability resolution, declarative workflow plans and concurrency defaults, prompt-layer purity, fail-closed mode policy, and debug tape bounds.
 

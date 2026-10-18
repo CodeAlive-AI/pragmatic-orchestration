@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import re
-import select
 import shlex
 import subprocess
 import sys
@@ -15,6 +14,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any
+
+from steer.jsonrpc import JsonRpcProcess
 
 
 class PorchArgumentParser(argparse.ArgumentParser):
@@ -77,54 +78,25 @@ def parse_grok_screen(screen: str) -> dict[str, Any]:
 
 def read_codex(timeout: float = 15.0) -> dict[str, Any]:
     binary = os.environ.get("PORCH_BIN_CODEX", "codex")
-    process = subprocess.Popen(
-        [binary, "app-server"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
-    assert process.stdin is not None and process.stdout is not None
+    # Reuse the concurrent RPC reader: select() followed by TextIO.readline()
+    # can block forever on a partial line and does not drain backend stderr.
+    rpc = JsonRpcProcess([binary, "app-server"])
     deadline = time.monotonic() + timeout
     try:
-        process.stdin.write(json.dumps({
-            "id": 1,
-            "method": "initialize",
-            "params": {"clientInfo": {"name": "pragmatic-orchestration-quota", "version": "1.0.0"}},
-        }) + "\n")
-        process.stdin.flush()
-        initialized = False
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([process.stdout], [], [], min(0.5, deadline - time.monotonic()))
-            if not ready:
-                if process.poll() is not None:
-                    break
-                continue
-            line = process.stdout.readline()
-            if not line:
-                break
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if message.get("id") == 1 and not initialized:
-                initialized = True
-                process.stdin.write(json.dumps({"method": "initialized"}) + "\n")
-                process.stdin.write(json.dumps({"id": 2, "method": "account/rateLimits/read"}) + "\n")
-                process.stdin.flush()
-            elif message.get("id") == 2:
-                if message.get("error"):
-                    raise RuntimeError(message["error"].get("message", "Codex quota query failed"))
-                return normalize_codex(message["result"])
-        stderr = process.stderr.read() if process.stderr and process.poll() is not None else ""
-        raise RuntimeError(f"Codex quota query timed out or exited: {stderr.strip()}")
+        rpc.start()
+        rpc.request(
+            "initialize",
+            {"clientInfo": {"name": "pragmatic-orchestration-quota", "version": "1.0.0"}},
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+        rpc.notify("initialized")
+        result = rpc.request(
+            "account/rateLimits/read",
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+        return normalize_codex(result)
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        rpc.terminate()
 
 
 def _grok_remote_script(cwd: str) -> str:

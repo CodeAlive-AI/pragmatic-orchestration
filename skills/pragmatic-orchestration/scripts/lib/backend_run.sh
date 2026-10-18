@@ -61,7 +61,9 @@ while [[ $# -gt 0 ]]; do
         --mode)        MODE="${2:-}"; shift 2 ;;
         --agent-id)    AGENT_ID="${2:-}"; shift 2 ;;
         --role)        ROLE_OVERRIDE="${2:-}"; shift 2 ;;
-        --prompt-file) PROMPT_FILE="${2:-}"; PROMPT_SOURCE="file"; shift 2 ;;
+        --prompt-file)
+            [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --prompt-file requires a path" >&2; exit $EXIT_USAGE; }
+            PROMPT_FILE="$2"; PROMPT_SOURCE="file"; shift 2 ;;
         --raw|--no-wrap) RAW_MODE=1; shift ;;
         --debug-events)
             if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
@@ -197,17 +199,18 @@ if [[ "$MODE" == "delegate" ]]; then
 fi
 
 if [[ -n "$PROMPT_FILE" ]]; then
+    [[ "$PROMPT_SOURCE" != "positional" ]] || { echo "Error: cannot combine --prompt-file with a positional prompt" >&2; exit $EXIT_USAGE; }
     [[ -f "$PROMPT_FILE" ]] || { echo "Error: prompt file not found: $PROMPT_FILE" >&2; exit $EXIT_USAGE; }
-    PROMPT="$(cat "$PROMPT_FILE")"
+    PROMPT="$(cat < "$PROMPT_FILE")"
     RAW_MODE=1
     PROMPT_SOURCE="file"
 fi
 
-if [[ -z "$PROMPT" && ! -t 0 ]]; then
+if [[ -z "$PROMPT_SOURCE" && ! -t 0 ]]; then
     PROMPT="$(cat)"
     PROMPT_SOURCE="stdin"
 fi
-[[ -n "$PROMPT" ]] || { echo "Error: no prompt provided" >&2; exit $EXIT_USAGE; }
+[[ "$PROMPT" =~ [^[:space:]] ]] || { echo "Error: no prompt provided" >&2; exit $EXIT_USAGE; }
 
 # Only warn for unsafe positional-prompt usage. File/stdin content often
 # legitimately contains backticks / $(...) from code samples.
@@ -671,7 +674,9 @@ run_streamed() {
             | "${norm_argv[@]}" >"$NORM_STREAM"
         _ps=("${PIPESTATUS[@]}")
     else
-        "${run_argv[@]}" 2>"$BACKEND_ERR" \
+        # File-based transports have no stdin payload. Do not pass a live
+        # caller pipe to a backend that already received its prompt file.
+        "${run_argv[@]}" </dev/null 2>"$BACKEND_ERR" \
             | "${norm_argv[@]}" >"$NORM_STREAM"
         _ps=("${PIPESTATUS[@]}")
     fi

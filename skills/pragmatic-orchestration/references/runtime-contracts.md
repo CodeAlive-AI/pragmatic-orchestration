@@ -113,6 +113,12 @@ Raw delegate tasks remain raw except for optional trusted metadata. In review mo
 blast-radius policies are still layered around its contents. The shell
 `build_prompt` path remains a fallback.
 
+Prompt builders consume only their explicit user input and context files.
+The CLI pipeline reads stdin only when neither `--user-file` nor `--user-text`
+is selected; an explicitly empty source fails. Backend and delegate launchers
+likewise distinguish a missing source from empty content. File-based backend
+transports receive EOF on stdin instead of inheriting a caller pipe.
+
 Repository-backed review also carries an initial relevant-file seed. The caller
 does a short read-only triage and supplies known paths; `review code` accepts
 repeatable `--related FILE` values and adds its primary target automatically.

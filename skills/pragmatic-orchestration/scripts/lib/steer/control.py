@@ -29,15 +29,18 @@ from .waiter import (
 def cmd_steer(args: argparse.Namespace) -> int:
     reg = Registry(Path(args.registry_root) if args.registry_root else None)
     content = args.guidance or ""
-    if args.prompt_file:
+    if args.prompt_file is not None:
+        if args.guidance is not None:
+            sys.stderr.write("Error: cannot combine --prompt-file with positional guidance\n")
+            return 5
         path = Path(args.prompt_file)
         if not path.is_file():
             sys.stderr.write(f"Error: prompt file not found: {path}\n")
             return 5
         content = path.read_text(encoding="utf-8")
-    if not content and not sys.stdin.isatty():
+    if args.prompt_file is None and args.guidance is None and not sys.stdin.isatty():
         content = sys.stdin.read()
-    if not content:
+    if not content.strip():
         sys.stderr.write("Error: no guidance provided\n")
         return 5
 
@@ -851,9 +854,9 @@ def main(argv: Optional[list] = None) -> int:
 
     s = sub.add_parser("steer")
     s.add_argument("run_id")
-    s.add_argument("guidance", nargs="?", default="")
+    s.add_argument("guidance", nargs="?", default=None)
     s.add_argument("--mode", default="auto", choices=["auto", "queue", "interrupt"])
-    s.add_argument("--prompt-file", default="")
+    s.add_argument("--prompt-file", default=None)
     s.add_argument("--client-id", default="")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_steer)

@@ -409,8 +409,9 @@ def _main() -> int:
     ap.add_argument("--mode", required=True)
     ap.add_argument("--role-file", default="")
     ap.add_argument("--role-text", default="")
-    ap.add_argument("--user-file", default="")
-    ap.add_argument("--user-text", default="")
+    user_source = ap.add_mutually_exclusive_group()
+    user_source.add_argument("--user-file", default=None)
+    user_source.add_argument("--user-text", default=None)
     ap.add_argument("--facts-file", default="")
     ap.add_argument("--schema-file", default="")
     ap.add_argument("--raw", action="store_true")
@@ -424,9 +425,17 @@ def _main() -> int:
             return Path(path).read_text(encoding="utf-8")
         return fallback
 
-    user = _read(args.user_file, args.user_text)
-    if not user and not sys.stdin.isatty():
-        user = sys.stdin.read()
+    try:
+        user = (Path(args.user_file).read_text(encoding="utf-8")
+                if args.user_file is not None else args.user_text)
+        if user is None:
+            user = "" if sys.stdin.isatty() else sys.stdin.read()
+    except (OSError, UnicodeError) as error:
+        print(f"Error: cannot read user prompt: {error}", file=sys.stderr)
+        return 5
+    if not user.strip():
+        print("Error: no user prompt provided", file=sys.stderr)
+        return 5
     role = _read(args.role_file, args.role_text)
     facts = _read(args.facts_file, "")
     schema = _read(args.schema_file, "")

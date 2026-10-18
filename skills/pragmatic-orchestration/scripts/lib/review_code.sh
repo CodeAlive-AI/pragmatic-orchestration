@@ -194,7 +194,7 @@ elif [[ -n "$INPUT_PATH" ]]; then
         echo -e "${RED}Error: file not found: $INPUT_PATH${NC}" >&2
         exit $EXIT_USAGE
     fi
-    CODE_CONTENT=$(cat "$INPUT_PATH")
+    CODE_CONTENT=$(cat < "$INPUT_PATH")
     INPUT_SOURCE_LABEL="$INPUT_PATH"
 else
     echo -e "${RED}Error: no input (provide a file path or --diff with stdin)${NC}" >&2

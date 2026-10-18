@@ -8,6 +8,13 @@ scripts/tests/run.sh
 
 It covers backend argv safety, exact profile selection, model/effort resolution, stdout/stderr separation, artifacts, Grok streaming success/failure, live progress, credential redaction, prompt purity, all review progress styles, invocation-specific keys, human-readable ids, steerable adapters/mailbox lifecycle, concurrent Grok queue/sendNow behavior, a Devin ACP fake covering one-shot and steerable paths (same-turn merge, cancel), cancel/idempotency/cleanup, and shared runtime contracts.
 
+Review input regressions keep an inherited stdin pipe open while exercising
+positional questions and prompt files, including blank explicit questions.
+They also verify stdin-only questions and explicit `--context-stdin` context.
+Run them alone with `python3 scripts/tests/review_input_test.py -v` from the skill
+directory. Current-model checks cover the explicit `codex-gpt-6.1-sol` profile
+in both review and delegate argv.
+
 Quota parsing is tested offline for Codex multi-bucket limits, Grok `/usage`
 fields, fail-closed display drift, shell-safe remote paths, and one bounded retry
 after a transient Grok transport failure.

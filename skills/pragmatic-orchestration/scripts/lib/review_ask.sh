@@ -25,6 +25,7 @@ LIST_ONLY=false
 PROMPT=""
 PROMPT_FILE=""
 PROMPT_SOURCE=""   # positional | file | stdin
+CONTEXT_STDIN=false
 INCLUDE_PATTERNS=()
 EXCLUDE_PATTERNS=()
 PROGRESS="${PORCH_PROGRESS:-full}"
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         --progress=*)   PROGRESS="${1#--progress=}"; shift ;;
         --list-agents)  LIST_ONLY=true; shift ;;
         --prompt-file)  shift; PROMPT_FILE="${1:-}"; PROMPT_SOURCE="file"; shift ;;
+        --context-stdin) CONTEXT_STDIN=true; shift ;;
         -a|--agents|--agent)
                         shift
                         IFS=',' read -ra _parts <<< "${1:-}"
@@ -60,11 +62,13 @@ Options:
                         none = silent.
   --list-agents         Print agent plan as XML and exit
   --prompt-file <path>  Read the question from a file (review policy still applies)
+  --context-stdin       Append stdin as context to an explicit question; wait for EOF
   -a, --agents <ID|GLOB>  Include agents (repeatable; globs ok)
   -x, --exclude <ID|GLOB> Exclude agents
   -h, --help
 
 Prompt may also come from stdin when no positional is given.
+With an explicit question, stdin is ignored unless --context-stdin is set.
 EOF
             exit $EXIT_OK
             ;;
@@ -109,10 +113,20 @@ if $LIST_ONLY; then
 fi
 
 STDIN_CONTENT=""
-if [[ ! -t 0 ]]; then
+# An inherited non-TTY can remain open indefinitely. Read it only when it is
+# the selected prompt transport or the caller explicitly requests context.
+if $CONTEXT_STDIN && [[ -z "${PROMPT//[[:space:]]/}" || -t 0 ]]; then
+    echo -e "${RED}Error: --context-stdin requires a non-empty explicit prompt and piped context${NC}" >&2
+    exit $EXIT_USAGE
+fi
+if [[ ! -t 0 ]] && { [[ -z "$PROMPT_SOURCE" ]] || $CONTEXT_STDIN; }; then
     STDIN_CONTENT=$(cat)
 fi
-if [[ -z "$PROMPT" && -n "${STDIN_CONTENT//[[:space:]]/}" ]]; then
+if $CONTEXT_STDIN && [[ -z "${STDIN_CONTENT//[[:space:]]/}" ]]; then
+    echo -e "${RED}Error: --context-stdin requires non-empty context on stdin${NC}" >&2
+    exit $EXIT_USAGE
+fi
+if [[ -z "$PROMPT_SOURCE" && -n "${STDIN_CONTENT//[[:space:]]/}" ]]; then
     PROMPT="$STDIN_CONTENT"
     STDIN_CONTENT=""
     PROMPT_SOURCE="stdin"

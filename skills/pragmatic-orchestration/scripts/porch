@@ -62,7 +62,7 @@ review ask
   Fan-out independent opinions across enabled (or selected) agents. Read-only.
   Every agent's answer is returned separately — this skill never synthesizes a
   verdict; the calling agent is the judge.
-  Options: --xml, --list-agents, --prompt-file, -a/--agents, -x/--exclude,
+  Options: --xml, --list-agents, --prompt-file, --context-stdin, -a/--agents, -x/--exclude,
            --progress full|compact|none
 
 review code

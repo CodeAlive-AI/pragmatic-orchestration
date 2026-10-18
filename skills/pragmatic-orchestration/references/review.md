@@ -17,6 +17,7 @@ user's acceptance criteria.
 "$PORCH" review ask -a codex,grok "Review this approach"
 "$PORCH" review ask -a 'opencode-go-*' -x opencode-go-minimax "Q"
 "$PORCH" review ask --progress compact -a codex,grok "Q"
+git diff HEAD | "$PORCH" review ask --context-stdin -a codex "Review this diff"
 ```
 
 Each agent's answer is returned under its own heading.
@@ -26,6 +27,13 @@ positional prompt, an explicit stdin pipe/heredoc, or `--prompt-file FILE`.
 Commentary and surrounding agent context are not implicitly connected to the
 command's stdin; a bare `review ask` with only options is always a usage error
 and starts no reviewer.
+
+An explicit question (positional or `--prompt-file`) does not read stdin, even
+when an inherited pipe remains open. With no explicit question, stdin supplies
+the question and is read through EOF. To append context to an explicit question,
+use `--context-stdin`; this deliberately waits for EOF and rejects empty context.
+Existing commands such as `cat code.py | "$PORCH" review ask "Review this"`
+must add `--context-stdin` to include that context.
 
 For a repository-backed question, the calling agent must first do a short
 read-only triage and include an `<initial_relevant_files

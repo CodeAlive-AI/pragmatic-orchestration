@@ -41,6 +41,12 @@ Non-empty environment values override profile model/effort for one invocation:
 
 The enabled `codex` profile uses `gpt-6.1-sol` at `high` effort, and the enabled
 `codex-gpt-6-luna` profile uses `gpt-6-luna` at `low` effort.
+The opt-in `codex-gpt-6.1-sol` profile selects the same GPT-6.1 Sol model and
+`high` effort explicitly in review and delegate. If you maintain a user-local
+`config.json` or `PORCH_CONFIG`, copy this profile from `config.example.json`
+to make the new id available there; user configurations are not merged with
+the shipped example. The model id is documented in the
+[official Codex model guide](https://developers.openai.com/codex/models#gpt-6.1-sol).
 The opt-in `codex-gpt-6-astra` profile retains `gpt-6-astra` at `high` effort. Astra accepts
 `low`, `medium`, `high`, `xhigh`, and `max`; it does not accept `none`. The
 default Claude Code profile, `claude-opus`, uses `claude-opus-5-5` at

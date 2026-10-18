@@ -124,6 +124,8 @@ assert_contains "Codex Astra remains selectable but disabled by default" "$out" 
   'id="codex-gpt-6-astra" label="Codex GPT-6 Astra" backend="codex-cli" model="gpt-6-astra" role="analyst" enabled="false"'
 assert_contains "Codex Sol is enabled by default" "$out" \
   'id="codex" label="Codex GPT-6.1 Sol" backend="codex-cli" model="gpt-6.1-sol" role="analyst" enabled="true"'
+assert_contains "Codex GPT-6.1 Sol is explicitly selectable without duplicating the default pool" "$out" \
+  'id="codex-gpt-6.1-sol" label="Codex GPT-6.1 Sol" backend="codex-cli" model="gpt-6.1-sol" role="analyst" enabled="false"'
 assert_contains "Codex Luna is enabled by default" "$out" \
   'id="codex-gpt-6-luna" label="Codex GPT-6 Luna" backend="codex-cli" model="gpt-6-luna" role="analyst" enabled="true"'
 assert_contains "Claude Fable remains selectable but disabled by default" "$out" \
@@ -168,7 +170,7 @@ argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/astra-revi
 assert_contains "Codex production profile launches GPT-6 Astra" "$argv" "--model gpt-6-astra"
 assert_contains "Codex Astra production profile uses high effort" "$argv" 'model_reasoning_effort="high"'
 
-for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high'; do
+for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high'; do
   read -r profile model effort <<< "$spec"
   for mode in review delegate; do
     env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/current-model.json" \
@@ -1797,6 +1799,13 @@ assert_contains "judge-runner missing required diagnostics" \
 # First missing among AGENT FINDINGS SOURCE OUT is --findings when only --agent set
 assert_contains "judge-runner missing required names flag" \
   "$(cat "$TMP/judge-miss.err")" "--findings"
+
+echo "=== Review ask input transport (offline) ==="
+if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/review_input_test.py" -v; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
 
 echo "=== Shared runtime contracts (offline) ==="
 set +e

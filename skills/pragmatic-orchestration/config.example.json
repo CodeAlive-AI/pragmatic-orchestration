@@ -193,6 +193,14 @@
       "role": "lateral",
       "label": "OC-Go Qwen3.7 Plus"
     },
+    "codex-gpt-6.1-sol": {
+      "enabled": false,
+      "backend": "codex-cli",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "role": "analyst",
+      "label": "Codex GPT-6.1 Sol"
+    },
     "codex-gpt-6-sol": {
       "enabled": false,
       "backend": "codex-cli",

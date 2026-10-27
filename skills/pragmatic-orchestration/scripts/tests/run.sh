@@ -126,6 +126,10 @@ assert_contains "Codex Sol is enabled by default" "$out" \
   'id="codex" label="Codex GPT-6.1 Sol" backend="codex-cli" model="gpt-6.1-sol" role="analyst" enabled="true"'
 assert_contains "Codex GPT-6.1 Sol is explicitly selectable without duplicating the default pool" "$out" \
   'id="codex-gpt-6.1-sol" label="Codex GPT-6.1 Sol" backend="codex-cli" model="gpt-6.1-sol" role="analyst" enabled="false"'
+assert_contains "Codex GPT-6.1 Terra is selectable but disabled by default" "$out" \
+  'id="codex-gpt-6.1-terra" label="Codex GPT-6.1 Terra" backend="codex-cli" model="gpt-6.1-terra" role="analyst" enabled="false"'
+assert_contains "Devin Gemini 4 Argon is selectable but disabled by default" "$out" \
+  'id="devin-gemini-4-argon" label="Devin Gemini 4 Argon High" backend="devin-cli" model="gemini-4-argon-high" role="lateral" enabled="false"'
 assert_contains "Codex Luna is enabled by default" "$out" \
   'id="codex-gpt-6-luna" label="Codex GPT-6 Luna" backend="codex-cli" model="gpt-6-luna" role="analyst" enabled="true"'
 assert_contains "Claude Fable remains selectable but disabled by default" "$out" \
@@ -172,7 +176,7 @@ argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/astra-revi
 assert_contains "Codex production profile launches GPT-6 Astra" "$argv" "--model gpt-6-astra"
 assert_contains "Codex Astra production profile uses high effort" "$argv" 'model_reasoning_effort="high"'
 
-for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high'; do
+for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex-gpt-6.1-terra gpt-6.1-terra xhigh' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high'; do
   read -r profile model effort <<< "$spec"
   for mode in review delegate; do
     env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/current-model.json" \
@@ -186,6 +190,14 @@ for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex
       assert_contains "$profile $mode effort" "$argv" "model_reasoning_effort=\"$effort\""
     fi
   done
+done
+
+# Devin's reasoning level is encoded in the model id, including over ACP.
+for mode in review delegate; do
+  env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/devin-argon-$mode.json" \
+    "$LIB_DIR/backend_run.sh" --mode "$mode" --agent-id devin-gemini-4-argon --raw "hello" >/dev/null
+  argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/devin-argon-$mode.json")
+  assert_contains "Devin Gemini 4 Argon $mode uses high model id" "$argv" "--model gemini-4-argon-high"
 done
 
 env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/fable51-review.json" \
@@ -227,6 +239,27 @@ for mode in review delegate; do
   argv=$(python3 -c 'import json,sys; print(" ".join(json.loads(open(sys.argv[1]).readline())["argv"]))' "$argon_log")
   assert_contains "Gemini 4 Argon $mode runtime uses Go catalog id" "$argv" "-m opencode-go/gemini-4-argon-contributor"
   assert_contains "Gemini 4 Argon $mode runtime uses high variant" "$argv" "--variant high"
+done
+
+# Exercise profile selection through public review and one-shot delegate paths.
+for spec in 'devin-gemini-4-argon gemini-4-argon-high FAKE_DEVIN_OK' 'codex-gpt-6.1-terra gpt-6.1-terra FAKE_CODEX_OK'; do
+  read -r profile model answer <<< "$spec"
+  for mode in review delegate; do
+    profile_log="$TMP/$profile-$mode-runtime.jsonl"
+    if [[ "$mode" == review ]]; then
+      out=$(PORCH_FAKE_ARGV_LOG="$profile_log" PORCH_RUN_DIR="$TMP/$profile-review-run" \
+        "$PORCH" review ask --progress none -a "$profile" "Review this")
+    else
+      out=$(PORCH_FAKE_ARGV_LOG="$profile_log" PORCH_RUN_DIR="$TMP/$profile-delegate-run" \
+        "$PORCH" delegate --one-shot -a "$profile" "Implement this")
+    fi
+    assert_contains "$profile $mode completes with fake backend" "$out" "$answer"
+    argv=$(python3 -c 'import json,sys; print(" ".join(json.loads(open(sys.argv[1]).readline())["argv"]))' "$profile_log")
+    assert_contains "$profile $mode runtime uses exact model" "$argv" "--model $model"
+    if [[ "$profile" == codex-gpt-6.1-terra ]]; then
+      assert_contains "$profile $mode defaults to xhigh effort" "$argv" 'model_reasoning_effort="xhigh"'
+    fi
+  done
 done
 
 # Codex review: sandbox read-only, never full-bypass

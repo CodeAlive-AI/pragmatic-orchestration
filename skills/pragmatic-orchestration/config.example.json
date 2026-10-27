@@ -25,6 +25,14 @@
       "role": "analyst",
       "label": "Codex GPT-5.6 Terra"
     },
+    "codex-gpt-6.1-terra": {
+      "enabled": false,
+      "backend": "codex-cli",
+      "model": "gpt-6.1-terra",
+      "effort": "xhigh",
+      "role": "analyst",
+      "label": "Codex GPT-6.1 Terra"
+    },
     "codex-gpt-5.6-luna": {
       "enabled": false,
       "backend": "codex-cli",
@@ -71,6 +79,13 @@
       "model": "swe-2-high",
       "role": "analyst",
       "label": "Devin SWE-2"
+    },
+    "devin-gemini-4-argon": {
+      "enabled": false,
+      "backend": "devin-cli",
+      "model": "gemini-4-argon-high",
+      "role": "lateral",
+      "label": "Devin Gemini 4 Argon High"
     },
     "opencode-xai-grok45": {
       "enabled": false,

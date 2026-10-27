@@ -47,6 +47,11 @@ The opt-in `codex-gpt-6.1-sol` profile selects the same GPT-6.1 Sol model and
 to make the new id available there; user configurations are not merged with
 the shipped example. The model id is documented in the
 [official Codex model guide](https://developers.openai.com/codex/models#gpt-6.1-sol).
+The opt-in `codex-gpt-6.1-terra` profile uses `gpt-6.1-terra` at `xhigh`
+effort for review and delegate. `CODEX_EFFORT` overrides this default.
+It requires Codex CLI 0.159.0 or later; see the
+[official OpenAI model guide](https://learn.chatgpt.com/docs/models).
+Copy this profile into existing user-local configs to make the new id available.
 The opt-in `codex-gpt-6-astra` profile retains `gpt-6-astra` at `high` effort. Astra accepts
 `low`, `medium`, `high`, `xhigh`, and `max`; it does not accept `none`. The
 default Claude Code profile, `claude-opus`, uses `claude-opus-5-5` at
@@ -83,6 +88,14 @@ confirmation-required tool call silently cancels the session without final
 text. Review runs `devin acp --agent-type review`, an agent with no write/edit
 tools; yolo delegate runs the default agent type under `session/set_mode
 bypass`. The helper strips inherited `ACP_BACKEND` from the child environment.
+
+The opt-in `devin-gemini-4-argon` profile selects Gemini 4 Argon with `high`
+effort for review and delegate through the same ACP paths. Its exact Devin model
+id is `gemini-4-argon-high`; do not use the OpenCode Go Contributor id here.
+Verified with `devin models list` on CLI 3000.11.92, which also lists
+`gemini-4-argon-low` and `gemini-4-argon-medium`. Use `DEVIN_MODEL` with an
+exact model id to override it; there is no separate Devin effort flag.
+Copy this profile into existing user-local configs to select the new id.
 
 ## Shell-safe prompts
 

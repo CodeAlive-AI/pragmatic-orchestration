@@ -57,11 +57,13 @@ Use these unless the user asks for a different tradeoff:
 - The `grok` profile is Grok 4.7 and is the default native Grok Build worker. Use the disabled-by-default `grok-fast` profile explicitly for fast context research with Grok 4.5.
 - The enabled `codex` and `codex-gpt-6-luna` profiles use GPT-6.1 Sol at `high` effort and GPT-6 Luna at `low` effort, respectively.
 - Use `-a codex-gpt-6.1-sol` to select GPT-6.1 Sol explicitly in review or delegate. This alias is disabled in the default pool to avoid duplicate Sol runs.
+- Use `-a codex-gpt-6.1-terra` for GPT-6.1 Terra with `xhigh` effort by default in review or delegate. This opt-in profile requires Codex CLI 0.159.0 or later.
 - GPT-6 Astra is an explicit Codex second opinion for difficult specification verification or optimization planning. Select it with `-a codex-gpt-6-astra`; do not add it to routine research or the default review pool.
 - The default Claude Code profile is `claude-opus`: Claude Opus 5.5 (`claude-opus-5-5`) at `medium` effort. The `claude-code` profile is a disabled alias for the same model and effort.
 - The opt-in `claude-fable` profile runs Claude Fable 5.1 for demanding long-horizon review or delegation. Its default `low` effort is cost-conscious; override it with `CLAUDE_EFFORT=high`, `xhigh`, or `max` when capability matters more than latency and cost.
 - The opt-in `opencode-go-gemini-4-argon-contributor` profile runs Gemini 4 Argon Contributor through OpenCode Go with `high` effort by default, for both review and delegate. See the Contributor privacy terms in [configuration.md](references/configuration.md).
 - The `devin` profile runs Devin CLI SWE-2-high (`devin` on PATH, `devin auth login`) for review and delegate over `devin acp`. It is disabled by default and never joins the default review pool: select it with `-a devin` or enable the profile. Effort is versioned into the model id, so there is no effort override; `auto`/`queue` steer merges into the running turn and `interrupt` cancels and sends.
+- Use `-a devin-gemini-4-argon` for Gemini 4 Argon through Devin CLI in review or delegate. This opt-in profile defaults to `high` through the exact model id `gemini-4-argon-high`.
 
 Choose one review depth; do not run `basic`, `specialists`, `super`, and `ultra` sequentially. Do not call `--list-agents` routinely: enabled profiles are already the default pool for `review ask`, and code-review pass count is fixed by depth.
 

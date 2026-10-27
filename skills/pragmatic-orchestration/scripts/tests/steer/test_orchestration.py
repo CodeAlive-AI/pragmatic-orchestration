@@ -122,6 +122,35 @@ class OrchestrationTests(unittest.TestCase):
                 os.environ["OPENCODE_EFFORT"] = "low"
                 self.assertEqual(agent_settings("opencode-go-gemini-4-argon-contributor")[0]["effort"], "low")
 
+    def test_native_argon_and_terra_profiles_reach_steerable_backends(self):
+        configs = (PORCH.parents[1] / "config.example.json", Path(self.env["PORCH_CONFIG"]))
+        profiles = (("devin-gemini-4-argon", "devin-cli", "gemini-4-argon-high", ""),
+                    ("codex-gpt-6.1-terra", "codex-cli", "gpt-6.1-terra", "xhigh"))
+        for index, config in enumerate(configs):
+            for profile, backend, model, effort in profiles:
+                with self.subTest(config=config, profile=profile):
+                    argv_log = self.root / f"{index}-{profile}-argv.jsonl"
+                    rpc_log = self.root / f"{index}-{profile}-rpc.jsonl"
+                    env = dict(self.env, PORCH_CONFIG=str(config),
+                               PORCH_FAKE_ARGV_LOG=str(argv_log), PORCH_FAKE_RPC_LOG=str(rpc_log))
+                    for key in ("CODEX_MODEL", "CODEX_EFFORT", "DEVIN_MODEL"):
+                        env.pop(key, None)
+                    p = self.cli("-a", profile, "PROFILE_TASK", env=env)
+                    self.assertEqual(p.returncode, 0, p.stderr)
+                    meta = self.reg.load_meta(extract_run_id(p.stderr))
+                    self.assertEqual((meta["backend"], meta["model"], meta["effort"]),
+                                     (backend, model, effort))
+                    self.assertIn("FAKE_", p.stdout)
+                    if backend == "devin-cli":
+                        launch = json.loads(argv_log.read_text().splitlines()[0])
+                        self.assertEqual(launch["argv"], ["acp", "--model", model])
+                    else:
+                        calls = [json.loads(line) for line in rpc_log.read_text().splitlines()]
+                        thread = next(c["params"] for c in calls if c["method"] == "thread/start")
+                        turn = next(c["params"] for c in calls if c["method"] == "turn/start")
+                        self.assertEqual(thread["model"], model)
+                        self.assertEqual((turn["model"], turn["effort"]), (model, effort))
+
     def test_abort_failure_never_sends_replacement(self):
         a = OpenCodeAdapter(binary="fake", model="test", cwd=str(self.root), artifacts_dir=str(self.root))
         a.session_id = "test"

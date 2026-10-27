@@ -8,6 +8,14 @@
       "role": "analyst",
       "label": "Codex Test"
     },
+    "codex-gpt-6.1-terra": {
+      "enabled": false,
+      "backend": "codex-cli",
+      "model": "gpt-6.1-terra",
+      "effort": "xhigh",
+      "role": "analyst",
+      "label": "Codex GPT-6.1 Terra Test"
+    },
     "claude-code": {
       "enabled": true,
       "backend": "claude-code",
@@ -79,6 +87,13 @@
       "model": "swe-2-high",
       "role": "analyst",
       "label": "Devin SWE-2 Test"
+    },
+    "devin-gemini-4-argon": {
+      "enabled": false,
+      "backend": "devin-cli",
+      "model": "gemini-4-argon-high",
+      "role": "lateral",
+      "label": "Devin Gemini 4 Argon High Test"
     },
     "gemini-cli": {
       "enabled": false,

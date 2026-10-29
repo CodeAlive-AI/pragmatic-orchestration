@@ -275,6 +275,10 @@ scripts/porch sessions roots
 # Recent Codex sessions in a project
 scripts/porch sessions list -a codex --since 2026-01-01 --cwd my-project
 
+# Find a title or group matching fragments by session
+scripts/porch sessions list --title "retry"
+scripts/porch sessions grep --cwd /work/repo --cwd-exact --group-by-session "retry"
+
 # What did the human actually ask? (prompts only, all harnesses)
 scripts/porch sessions grep --scope prompts -i "rollback"
 

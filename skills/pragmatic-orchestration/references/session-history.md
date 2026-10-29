@@ -15,8 +15,8 @@ delegate/review runs.
 
 ```bash
 porch sessions roots  [-a h1,h2] [--store SUBSTR]
-porch sessions list   [-a h1,h2] [--store S] [--cwd S] [--since T] [--until T] [--limit N]
-porch sessions grep   [-a h1,h2] [--scope S] [-i] [--regex] [--limit N] PATTERN
+porch sessions list   [-a h1,h2] [--store S] [--cwd S] [--cwd-exact] [--title S] [--since T] [--until T] [--limit N]
+porch sessions grep   [-a h1,h2] [--scope S] [-i] [--regex] [--group-by-session] [--limit N] PATTERN
 porch sessions show   <harness:session-id> [--scope S] [--limit N]
 porch sessions show   <harness:session-id> --around SEQ [--context N]
 porch sessions show   --file PATH          # sniff a single file/db
@@ -81,6 +81,10 @@ data — do not grep before you know which sessions exist.
    Matching scans the full fragment; `--max-chars` limits only the emitted
    excerpt around the first match. `text_offset` is the excerpt's character
    offset in the full fragment. Use `--max-chars 0` to emit the full text.
+   `list --title` filters recorded titles case-insensitively. For `list` or
+   `grep`, combine `--cwd` and `--cwd-exact` to distinguish similarly named
+   project paths. `grep --group-by-session` emits one object per source
+   session with a `matches` array; `--limit` still counts matching fragments.
 4. **Read around a hit** — `sessions show <harness:id> --around SEQ --context N`.
    `seq` is the fragment's native sequence position within its session;
    `--context` emits N *emitted* fragments on each side — counted after

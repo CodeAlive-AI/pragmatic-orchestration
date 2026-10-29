@@ -275,7 +275,8 @@ def iter_jsonl(path: Path, stats: dict[str, int], max_lines: int | None = None) 
         stats["unreadable"] = stats.get("unreadable", 0) + 1
         if path.name.endswith(".jsonl.zst"):
             stats["compressed_errors"] = stats.get("compressed_errors", 0) + 1
-            print(f"cannot read compressed session {path}: {exc}; Zstandard requires Python 3.14+", file=sys.stderr)
+            detail = "Zstandard requires Python 3.14+" if isinstance(exc, ImportError) else str(exc)
+            print(f"cannot read compressed session {path}: {detail}", file=sys.stderr)
         return
     if not data.endswith("\n") and data.strip() and max_lines is None:
         stats["truncated_tail"] = stats.get("truncated_tail", 0) + 1
@@ -2611,13 +2612,15 @@ def selected_stores(harnesses: list[str], store_filter: str | None = None) -> li
     return out
 
 
-def iter_all_sessions(store: Store, cwd: str | None, since: float | None, until: float | None) -> Iterator[SessionRef]:
+def iter_all_sessions(store: Store, cwd: str | None, since: float | None, until: float | None, *, cwd_exact: bool = False) -> Iterator[SessionRef]:
     if store.status != "ok":
         return
     iter_sessions, _ = READERS[store.harness]
     try:
         for ref in iter_sessions(store):
-            if ref.matches(cwd, since, until):
+            if cwd_exact and cwd is not None and ref.cwd != cwd:
+                continue
+            if ref.matches(None if cwd_exact else cwd, since, until):
                 yield ref
     except (OSError, sqlite3.Error) as e:
         store.status, store.error = "unavailable", str(e)
@@ -2692,7 +2695,9 @@ def cmd_list(args: argparse.Namespace) -> int:
     stats: dict[str, int] = {}
     truncated = False
     for store in stores:
-        for ref in iter_all_sessions(store, args.cwd, since, until):
+        for ref in iter_all_sessions(store, args.cwd, since, until, cwd_exact=args.cwd_exact):
+            if args.title and args.title.lower() not in (ref.title or "").lower():
+                continue
             scanned += 1
             if args.limit and emitted >= args.limit:
                 truncated = True
@@ -2741,8 +2746,9 @@ def cmd_grep(args: argparse.Namespace) -> int:
     for store in stores:
         if store.status != "ok":
             continue
-        for ref in iter_all_sessions(store, args.cwd, None, None):
+        for ref in iter_all_sessions(store, args.cwd, None, None, cwd_exact=args.cwd_exact):
             scanned += 1
+            grouped = []
             # Match the entire decoded fragment; --max-chars limits output only.
             for f in iter_all_fragments(store, ref, 0, stats):
                 if not in_scope(f, args.scope) or not in_window(f, since, until):
@@ -2758,11 +2764,16 @@ def cmd_grep(args: argparse.Namespace) -> int:
                     f["text_offset"] = start
                     f["truncated"] = True
                 f["session"] = {k: v for k, v in ref.as_dict().items() if k in ("session_id", "title", "cwd", "created", "parent", "agent")}
-                emit(f)
+                if args.group_by_session:
+                    grouped.append(f)
+                else:
+                    emit(f)
                 emitted += 1
                 if args.limit and emitted >= args.limit:
                     truncated = True
                     break
+            if grouped:
+                emit({"_session": ref.as_dict(), "matches": grouped})
             if truncated:
                 break
         if truncated:
@@ -3120,12 +3131,16 @@ def main() -> int:
 
     p = sub.add_parser("list", help="list sessions (id, title, cwd, dates, models)")
     _add_common(p)
+    p.add_argument("--cwd-exact", action="store_true", help="match --cwd exactly")
+    p.add_argument("--title", help="case-insensitive substring of the session title")
 
     p = sub.add_parser("grep", help="literal/regex search over decoded fragment text")
     _add_common(p)
+    p.add_argument("--cwd-exact", action="store_true", help="match --cwd exactly")
     p.add_argument("pattern")
     p.add_argument("-i", "--ignore-case", action="store_true")
     p.add_argument("--regex", action="store_true", help="treat pattern as a regex")
+    p.add_argument("--group-by-session", action="store_true", help="emit matches grouped by session")
 
     p = sub.add_parser("show", help="dump one session's fragments with locators")
     _add_common(p)
@@ -3148,6 +3163,8 @@ def main() -> int:
     p.add_argument("--by", choices=("model", "harness", "cwd", "day"), default="model")
 
     args = parser.parse_args()
+    if getattr(args, "cwd_exact", False) and not args.cwd:
+        parser.error("--cwd-exact requires --cwd")
     args.max_chars = getattr(args, "max_chars", 400) or 0
     if getattr(args, "limit", 200) == 0:
         args.limit = 0

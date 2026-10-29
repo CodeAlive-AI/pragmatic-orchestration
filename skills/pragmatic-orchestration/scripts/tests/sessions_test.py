@@ -1313,6 +1313,26 @@ class CliTests(FixtureMixin, unittest.TestCase):
                             env_extra={"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)})
         self.assertFalse(self.lines(proc)[-1]["scan_complete"])
 
+    def test_title_exact_cwd_and_grouped_search(self):
+        root, sid = self.make_claude()
+        write_jsonl(root / "other" / "other.jsonl", [
+            {"type": "user", "cwd": "/work/repo-copy", "message": {"role": "user", "content": "needle"}},
+        ])
+        env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)}
+        proc = self.run_cli("list", "-a", "claude-code", "--title", "cli TEST", env_extra=env)
+        rows = self.lines(proc)
+        self.assertEqual(rows[0]["session_id"], f"-work-repo/{sid}")
+        self.assertEqual(len(rows), 2)
+        proc = self.run_cli("grep", "-a", "claude-code", "--cwd", "/work/repo", "--cwd-exact",
+                            "--group-by-session", "needle", env_extra=env)
+        rows = self.lines(proc)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["_session"]["session_id"], f"-work-repo/{sid}")
+        self.assertEqual(rows[0]["matches"][0]["text"], "needle in the haystack")
+        self.assertTrue(rows[-1]["scan_complete"])
+        proc = self.run_cli("grep", "--cwd-exact", "needle", env_extra=env)
+        self.assertNotEqual(proc.returncode, 0)
+
     def test_grep_searches_full_text_and_returns_match_excerpt(self):
         root = self.root / "claude"
         write_jsonl(root / "project" / "long.jsonl", [

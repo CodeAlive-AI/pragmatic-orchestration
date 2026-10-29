@@ -476,6 +476,60 @@ class CursorTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(out[1]["kind"], "assistant")
 
 
+class CursorACPTests(FixtureMixin, unittest.TestCase):
+    def test_graph_and_incomplete_nodes(self):
+        sid = "11111111-2222-3333-4444-555555555555"
+        root = self.root / "acp-sessions"
+        folder = root / sid
+        folder.mkdir(parents=True)
+        write_json(folder / "meta.json", {"schemaVersion": 1, "cwd": "/work"})
+        def field(n, data):
+            self.assertLess(len(data), 128)
+            return bytes([n * 8 + 2, len(data)]) + data
+        ids = [bytes([n]) * 32 for n in range(1, 6)]
+        root_id, turn_id, user_id, step_id, answer_id = ids
+        nodes = {
+            root_id: field(8, turn_id),
+            turn_id: field(1, field(1, user_id) + field(2, step_id)),
+            user_id: field(1, b"user prompt"),
+            step_id: field(1, answer_id),
+            answer_id: field(1, b"assistant response"),
+        }
+        db = folder / "store.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("CREATE TABLE meta (key TEXT, value TEXT); CREATE TABLE blobs (id TEXT, data BLOB);")
+        meta = {"agentId": sid, "latestRootBlobId": root_id.hex(), "name": "ACP"}
+        conn.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps(meta).encode().hex(),))
+        conn.executemany("INSERT INTO blobs VALUES (?, ?)", [(key.hex(), value) for key, value in nodes.items()])
+        conn.commit()
+        conn.close()
+        store = sessions.Store("cursor", "acp", root, "session_dirs")
+        refs = list(sessions.cursor_iter_sessions(store))
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0].session_id, "cursor-acp:" + sid)
+        fragments = list(sessions.cursor_iter_fragments(store, refs[0], 400, {}))
+        self.assertEqual([f["text"] for f in fragments], ["user prompt", "assistant response"])
+        self.assertEqual(fragments[1]["locator"]["key"], answer_id.hex())
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE blobs SET data=? WHERE id=?", (field(2, b"tool payload"), step_id.hex()))
+        conn.commit()
+        conn.close()
+        stats = {}
+        fragments = list(sessions.cursor_iter_fragments(store, refs[0], 400, stats))
+        self.assertEqual([f["text"] for f in fragments], ["user prompt"])
+        self.assertEqual(stats["unsupported_fragments"], 1)
+        self.assertFalse(sessions.coverage_summary([store], 1, 1, stats)["scan_complete"])
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE blobs SET data=? WHERE id=?", (nodes[step_id], step_id.hex()))
+        conn.execute("DELETE FROM blobs WHERE id=?", (answer_id.hex(),))
+        conn.commit()
+        conn.close()
+        stats = {}
+        self.assertEqual(list(sessions.cursor_iter_fragments(store, refs[0], 400, stats)), [])
+        self.assertEqual(stats["unreadable"], 1)
+        self.assertFalse(sessions.coverage_summary([store], 1, 0, stats)["scan_complete"])
+
+
 class CodexIndexTests(FixtureMixin, unittest.TestCase):
     """Codex App/Desktop layers: state index, UI catalog, summaries, history."""
 

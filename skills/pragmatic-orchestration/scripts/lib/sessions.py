@@ -21,6 +21,7 @@ import re
 import sqlite3
 import sys
 import urllib.parse
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -485,11 +486,13 @@ def stores_for(harness: str) -> list[Store]:
         ]
     if harness == "cursor":
         if ov:
-            return [Store(harness, "custom", ov, "sqlite")]
+            return [Store(harness, "acp" if ov.is_dir() else "custom", ov,
+                          "session_dirs" if ov.is_dir() else "sqlite")]
         base = (_win_appdata() / "Cursor" / "User" if IS_WINDOWS
                 else HOME / ".config" / "Cursor" / "User" if not IS_MACOS
                 else HOME / "Library" / "Application Support" / "Cursor" / "User")
         out = [Store(harness, "globalStorage", base / "globalStorage" / "state.vscdb", "sqlite")]
+        out.append(Store(harness, "acp", HOME / ".cursor" / "acp-sessions", "session_dirs"))
         ws = base / "workspaceStorage"
         if ws.is_dir():
             for sub in sorted(ws.iterdir()):
@@ -1850,6 +1853,138 @@ def claude_desktop_iter_fragments(store: Store, ref: SessionRef, max_chars: int,
 # cursor (state.vscdb)
 # ---------------------------------------------------------------------------
 
+def _proto_fields(data: bytes) -> dict[int, list[bytes]]:
+    """Decode protobuf wire fields used by Cursor ACP; reject malformed nodes."""
+    offset = 0
+    fields: dict[int, list[bytes]] = {}
+    def varint() -> int:
+        nonlocal offset
+        value = 0
+        for index in range(10):
+            if offset >= len(data):
+                raise ValueError("truncated protobuf varint")
+            byte = data[offset]
+            offset += 1
+            if index == 9 and byte > 1:
+                raise ValueError("invalid protobuf varint")
+            value |= (byte & 127) << (index * 7)
+            if byte < 128:
+                return value
+        raise ValueError("invalid protobuf varint")
+    while offset < len(data):
+        key = varint()
+        number, wire = key >> 3, key & 7
+        if not number:
+            raise ValueError("invalid protobuf field")
+        if wire == 0:
+            varint()
+        elif wire == 2:
+            length = varint()
+            if length > len(data) - offset:
+                raise ValueError("truncated protobuf field")
+            fields.setdefault(number, []).append(data[offset:offset + length])
+            offset += length
+        elif wire in (1, 5):
+            offset += 8 if wire == 1 else 4
+            if offset > len(data):
+                raise ValueError("truncated protobuf field")
+        else:
+            raise ValueError("unsupported protobuf wire type")
+    return fields
+
+
+def _cursor_acp_read(path: Path) -> tuple[dict[str, Any], dict[str, Any], list[tuple[str, str, str]], int]:
+    # Validate the full graph before emitting any text. One SQLite read
+    # transaction keeps the root and referenced blobs on the same snapshot.
+    if path.is_symlink() or path.parent.is_symlink() or path.parent.parent.is_symlink():
+        raise ValueError("symlinked ACP session path")
+    session_id = str(uuid.UUID(path.parent.name))
+    sidecar_path = path.parent / "meta.json"
+    if sidecar_path.is_symlink():
+        raise ValueError("symlinked ACP metadata")
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    if not isinstance(sidecar, dict) or sidecar.get("schemaVersion") != 1:
+        raise ValueError("unsupported ACP metadata version")
+    conn = open_sqlite_ro(path)
+    try:
+        conn.execute("BEGIN")
+        row = conn.execute("SELECT value FROM meta WHERE key='0'").fetchone()
+        if not row:
+            raise ValueError("missing ACP root")
+        metadata = json.loads(bytes.fromhex(row[0]))
+        if str(uuid.UUID(metadata["agentId"])) != session_id:
+            raise ValueError("ACP session identity mismatch")
+        def blob(key: bytes) -> bytes:
+            if len(key) != 32:
+                raise ValueError("invalid ACP blob id")
+            row = conn.execute("SELECT data FROM blobs WHERE id=?", (key.hex(),)).fetchone()
+            if not row or not isinstance(row[0], bytes):
+                raise ValueError("missing ACP blob")
+            return row[0]
+        root = _proto_fields(blob(bytes.fromhex(metadata["latestRootBlobId"])))
+        result: list[tuple[str, str, str]] = []
+        omitted = 0
+        for turn_id in root.get(8, []):
+            turn = _proto_fields(blob(turn_id))
+            agents, shells = turn.get(1, []), turn.get(2, [])
+            if len(agents) + len(shells) != 1:
+                raise ValueError("invalid ACP turn")
+            if shells:
+                _proto_fields(shells[0])
+                omitted += 1
+                continue
+            agent = _proto_fields(agents[0])
+            users = agent.get(1, [])
+            if len(users) != 1:
+                raise ValueError("invalid ACP user reference")
+            user = _proto_fields(blob(users[0])).get(1, [])
+            if not user or not user[0]:
+                raise ValueError("missing ACP user text")
+            result.append(("prompt", user[0].decode("utf-8"), users[0].hex()))
+            for step_id in agent.get(2, []):
+                step = _proto_fields(blob(step_id))
+                variants = [field for field in (1, 2, 3) if step.get(field)]
+                if len(variants) != 1 or len(step[variants[0]]) != 1:
+                    raise ValueError("invalid ACP step")
+                if variants[0] != 1:
+                    omitted += 1
+                    continue
+                assistant_id = step[1][0]
+                assistant = _proto_fields(blob(assistant_id)).get(1, [])
+                if not assistant or not assistant[0]:
+                    raise ValueError("missing ACP assistant text")
+                result.append(("assistant", assistant[0].decode("utf-8"), assistant_id.hex()))
+        return sidecar, metadata, result, omitted
+    finally:
+        conn.close()
+
+
+def cursor_acp_sessions(store: Store) -> Iterator[SessionRef]:
+    for path in sorted(store.path.glob("*/store.db")):
+        try:
+            sidecar, meta, _, _ = _cursor_acp_read(path)
+            sid = "cursor-acp:" + str(uuid.UUID(path.parent.name))
+            yield SessionRef("cursor", "acp", sid, locator={"db": str(path), "table": "meta", "key": "0"},
+                             title=meta.get("name"), cwd=sidecar.get("cwd"), created=meta.get("createdAt"))
+        except (OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+            store.status, store.error = "unavailable", f"ACP store {path}: {exc}"
+
+
+def cursor_acp_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    path = Path(ref.locator["db"])
+    try:
+        _, _, records, omitted = _cursor_acp_read(path)
+    except (OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+        store.status, store.error = "unavailable", f"ACP store {path}: {exc}"
+        stats["unreadable"] = stats.get("unreadable", 0) + 1
+        return
+    stats["unsupported_fragments"] = stats.get("unsupported_fragments", 0) + omitted
+    for seq, (kind, text_value, blob_id) in enumerate(records, 1):
+        yield frag("cursor", "acp", ref.session_id, seq, kind, "acp." + kind,
+                   {"db": str(path), "table": "blobs", "key": blob_id}, text=text_value,
+                   authorship="unknown" if kind == "prompt" else "agent", visible=True,
+                   basis="Cursor ACP text projection", cwd=ref.cwd, max_chars=max_chars)
+
 def _folder_uri_to_path(uri: Any) -> str | None:
     """'file:///Users/x/proj' -> '/Users/x/proj'; plain paths pass through."""
     if not isinstance(uri, str) or not uri:
@@ -1861,6 +1996,9 @@ def _folder_uri_to_path(uri: Any) -> str | None:
 
 
 def cursor_iter_sessions(store: Store) -> Iterator[SessionRef]:
+    if store.name == "acp":
+        yield from cursor_acp_sessions(store)
+        return
     try:
         conn = open_sqlite_ro(store.path)
     except sqlite3.Error as e:
@@ -1911,6 +2049,9 @@ def cursor_iter_sessions(store: Store) -> Iterator[SessionRef]:
 
 
 def cursor_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    if store.name == "acp":
+        yield from cursor_acp_fragments(store, ref, max_chars, stats)
+        return
     conn = open_sqlite_ro(store.path)
     try:
         key = ref.locator["key"]
@@ -2523,7 +2664,8 @@ def coverage_summary(stores: list[Store], scanned: int, matched: int, stats: dic
         "truncated_tail_files": stats.get("truncated_tail", 0),
         "unreadable_files": stats.get("unreadable", 0),
         "compressed_errors": stats.get("compressed_errors", 0),
-        "scan_complete": not truncated and not stats.get("unreadable") and all(s.status != "unavailable" for s in stores),
+        "unsupported_fragments": stats.get("unsupported_fragments", 0),
+        "scan_complete": not truncated and not stats.get("unreadable") and not stats.get("unsupported_fragments") and all(s.status != "unavailable" for s in stores),
         "note": "empty result means: no matches AND scan_complete — check stores[].status for missing/unavailable",
     }
 
@@ -2556,7 +2698,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             emit(ref.as_dict())
             emitted += 1
     emit(coverage_summary(stores, scanned, emitted, stats))
-    return EXIT_OK if all(s.status != "unavailable" for s in stores) and not stats.get("unreadable") else EXIT_PARTIAL
+    return EXIT_OK if all(s.status != "unavailable" for s in stores) and not stats.get("unreadable") and not stats.get("unsupported_fragments") else EXIT_PARTIAL
 
 
 def cmd_grep(args: argparse.Namespace) -> int:
@@ -2606,7 +2748,7 @@ def cmd_grep(args: argparse.Namespace) -> int:
         if truncated:
             break
     emit(coverage_summary(stores, scanned, emitted, stats, truncated=truncated))
-    return EXIT_OK if all(s.status != "unavailable" for s in stores) and not stats.get("unreadable") else EXIT_PARTIAL
+    return EXIT_OK if all(s.status != "unavailable" for s in stores) and not stats.get("unreadable") and not stats.get("unsupported_fragments") else EXIT_PARTIAL
 
 
 def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
@@ -2857,7 +2999,7 @@ def cmd_show(args: argparse.Namespace) -> int:
             f"seq {target} {'exists but was filtered out by --scope/--since/--until — retry with --scope all' if around_seen else 'does not exist in this session'}"
         )
     emit(summary)
-    return EXIT_PARTIAL if stats.get("unreadable") or store.status == "unavailable" else EXIT_OK
+    return EXIT_PARTIAL if stats.get("unreadable") or stats.get("unsupported_fragments") or store.status == "unavailable" else EXIT_OK
 
 
 def _store_for_file(path: Path) -> tuple[Store, SessionRef]:

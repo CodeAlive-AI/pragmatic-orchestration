@@ -264,6 +264,12 @@ Codex stores the same threads in several layers with different authority.
 
 ### cursor — `~/Library/Application Support/Cursor/User/{globalStorage,workspaceStorage/*/}state.vscdb`
 
+- ACP sessions under `~/.cursor/acp-sessions/<uuid>/store.db` are read as a
+  validated SQLite/protobuf graph. User and assistant text includes blob
+  locators; shell, tool and reasoning nodes are not decoded. When such nodes
+  occur, `unsupported_fragments` makes the scan explicitly incomplete.
+- ACP support is fixture-verified; malformed graphs are reported unavailable,
+  and never produce a partial transcript as a complete result.
 - VS Code KV sqlite (`cursorDiskKV` table). Sessions are `composerData:<id>`
   keys: `name` (title), `createdAt`, `lastUpdatedAt`, `usageData` (per-model
   token counters).

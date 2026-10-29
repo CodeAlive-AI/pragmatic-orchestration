@@ -1923,6 +1923,12 @@ else
 fi
 
 # Portable locking, process lifetime, launchers, and native supervisor checks.
+if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/fleet_test.py"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
 if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/platform_test.py"; then
   PASS=$((PASS + 1))
 else

@@ -50,6 +50,7 @@ scripts auto-detect the OS via `scripts/lib/devlocal.py`.
 | Configure host identity | [configuration.md](references/configuration.md) |
 | SSH config, file transfer, SMB mount | [bridge.md](references/bridge.md) |
 | Run agents on the host | [porch-remote.md](references/porch-remote.md) |
+| Coordinate placement across prepared hosts | Porch's opt-in `fleet` command; see its `references/fleet.md`. Keep one coordinator, explicit host capacity, and isolated workspaces. Cloud provisioning is not implemented yet. |
 | Linux host operations | [linux-host.md](references/linux-host.md) |
 | Windows host inventory/recovery | [windows-host.md](references/windows-host.md) |
 | Headless interactive desktop | [windows-desktop.md](references/windows-desktop.md) |

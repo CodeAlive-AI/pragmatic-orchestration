@@ -151,6 +151,13 @@ class Supervisor:
         self.artifacts_dir = self._resolve_artifacts_dir(self.artifacts_dir)
 
         # Early run id before any long work
+        # Fleet correlation is consumed here, never inherited by nested workers.
+        fleet_request_id = os.environ.pop("PORCH_FLEET_REQUEST_ID", "")
+        fleet_fingerprint = os.environ.pop("PORCH_FLEET_FINGERPRINT", "")
+        fleet_workspace = os.environ.pop("PORCH_FLEET_WORKSPACE", "")
+        fleet_metadata = ({"fleet_request": {"id": fleet_request_id, "fingerprint": fleet_fingerprint,
+                                              "workspace_path": fleet_workspace}}
+                          if fleet_request_id and fleet_fingerprint else {})
         self.run_id = self.registry.create_run(
             agent_id=self.agent_id,
             backend=backend,
@@ -160,6 +167,7 @@ class Supervisor:
             extra={"task_hash_prefix": _prefix_hash(self.task), "effort": effort,
                    "created_at_ns": str(time.time_ns()),
                    **launcher_metadata(os.environ),
+                   **fleet_metadata,
                    "persist_session": self.persist_session, "continued_from": self.continue_run or None},
             run_name=self.run_name,
         )

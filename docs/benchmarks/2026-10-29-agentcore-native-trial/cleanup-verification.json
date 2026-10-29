@@ -1,0 +1,24 @@
+{
+  "checked_at": "2026-10-29T15:43:07.788818+00:00",
+  "checks": {
+    "no_live_instances": true,
+    "no_managed_volumes": true,
+    "no_vpc_interfaces": true,
+    "runtime_absent": true,
+    "capacity_absent": true,
+    "workload_identity_absent": true,
+    "vpc_absent": true,
+    "eip_released": true,
+    "nat_deleted": true,
+    "repository_absent": true,
+    "profile_absent": true,
+    "no_log_groups": true,
+    "no_autoscaling_group": true,
+    "no_launch_templates": true,
+    "instance_role_absent": true,
+    "execution_role_absent": true,
+    "operator_role_absent": true,
+    "no_previously_observed_volumes": true
+  },
+  "passed": true
+}

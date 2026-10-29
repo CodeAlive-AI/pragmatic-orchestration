@@ -27,8 +27,15 @@ Porch's own canonical skill is installed by one symlink; no third-party or perso
 skill bundle is implicitly installed. Curated project dependencies/skills remain
 a separate versioned profile input.
 
-Run as the nonroot image user with a persistent `/work` volume, prepared task
-checkout and a private `/work/fleet.json`. It must contain one local host whose
+Run as the nonroot image user with a prepared task checkout and a private fleet
+configuration. `/work` is the logical workspace path. AgentCore Instances mounts
+EBS volumes at `/mnt/<name>`, so derive an Instances profile that maps `/work` to
+`/mnt/work` and prepares UID/GID 1000 ownership **during the image build**. Start
+directly as `USER 1000:1000`; runtime `chown`, sudo and UID changes fail without
+Linux capabilities. The native trial recipe in the repository's
+`docs/benchmarks/2026-10-29-agentcore-native-trial/` demonstrates this packaging.
+The configuration may be supplied by `PORCH_FLEET_CONFIG`; its default remains
+`/work/fleet.json`. It must contain one local host whose
 Porch path is the resolved executable under `/opt/porch`. Choose the existing exact profiles:
 `codex` (GPT-6.1 Sol/high) or `codex-gpt-6.1-terra` (GPT-6.1 Terra/xhigh).
 The guest does not support Claude in its current environment profile.
@@ -39,6 +46,11 @@ native Codex home into an image or export it with task results. Do not share one
 SQLite file across machines or mount the same mutable task checkout in two guests.
 
 ## Invocation protocol
+
+The HTTP boundary accepts both Content-Length and chunked request bodies. Chunk
+extensions and trailers are decoded before JSON parsing; an incomplete frame is
+an explicit request error. AWS invocation can use chunked framing even when the
+caller supplies a complete JSON byte string.
 
 ```json
 {"protocol":1,"session_id":"porch-00000000-0000-0000-0000-000000000001","operation":"ready"}

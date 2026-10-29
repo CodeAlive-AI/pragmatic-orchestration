@@ -1,7 +1,8 @@
 # Execution placement MVP
 
 Status: incremental implementation authorized by the owner on 2026-10-29.
-The existing-host slice is implemented; cloud provisioning remains planned.
+The existing-host slice is implemented; the native AgentCore guest passed a
+bounded qualification trial. Automatic cloud provisioning remains planned.
 See the implementation checkpoint and execution-placement-verification.md for evidence.
 Updated: 2026-10-29.
 
@@ -495,3 +496,38 @@ hide it by changing flags or calling a different platform's result an ARM pass.
 A native ARM cloud trial is the next decision-changing experiment. Cloud lifecycle,
 passive inventory, object exchange and unattended Codex subscription bootstrap are
 still required before VM-busy → automatic AgentCore overflow can be advertised.
+
+## Implementation checkpoint: native ARM trial, 2026-10-29
+
+The owner approved the separate disposable stand described in
+`agentcore-native-trial.md`: "да" to the private ECR push, one m7g.xlarge at a
+time, two-hour experiment window and USD 10 AWS budget, followed by removal.
+There were no model calls or production changes. This is authorization for the
+experiment, not a new production runtime/concurrency limit or permanent pool.
+
+Native ARM Chromium returned the expected DOM with exit 0. The corrected guest
+also passed AWS HTTP readiness, stable session/boot identity and a UID-1000
+work-volume write/read, while reporting subscription readiness false. This
+supersedes the earlier lack of native browser evidence; the QEMU failure remains
+a failed emulation result. It does not qualify a real project's browser suite.
+
+Two concrete integration defects were resolved: runtime root ownership/UID
+changes fail on capability-free Instances, so ownership belongs in the build;
+AWS chunked request framing needs explicit decoding at the HTTP boundary. Eight
+guest/channel tests passed. The native trial's final overlay, source hashes,
+failed variants and cleanup verification live in
+`docs/benchmarks/2026-10-29-agentcore-native-trial/`.
+
+The final StopRuntimeSession attempt returned an internal service error. Its
+outcome was treated as unknown, never as confirmation of a stop. The synthetic
+stand was retired through DeleteCapacityProviderSession and passive resource
+inspection. Stop/resume behavior and an interruption deadline remain unqualified.
+
+The next useful slice is supported unattended native subscription bootstrap in a
+separate trusted configuration; reuse the ARAI broker design only after examining
+its source, without its production credentials or services. Then connect passive
+inventory, idempotent acquisition/release and repository/result exchange through
+one small provider adapter. Keep AWS SDK/lifecycle code outside placement and
+agent adapters, and keep the existing originating chats and two-skill boundary.
+Automatic enrollment still needs its own concrete operational configuration;
+the disposable trial does not establish it.

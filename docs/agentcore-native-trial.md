@@ -1,7 +1,13 @@
-# Proposed native ARM AgentCore trial
+# Native ARM AgentCore trial
 
-Status: ready for the owner's cloud-spending/deployment decision; not authorized
-or provisioned by this document. Prepared 2026-10-29.
+Status: native guest/tool/browser checks passed; all 18 cleanup checks passed.
+Prepared and approved 2026-10-29.
+
+**Owner's approval, 2026-10-29:** "да", answering the request to create a separate
+native ARM AgentCore stand, privately push the image, run one m7g.xlarge for up to
+two hours within a USD 10 AWS budget, then remove the stand. No model calls or
+ARAI production changes were included. This approves those experiment controls;
+it introduces no limit on the eventual user's task concurrency or runtime.
 
 ## Question this trial resolves
 
@@ -10,7 +16,7 @@ AgentCore Instances? The x86 dev VM built and booted the image, but the browser
 failed under QEMU. Native ARM evidence changes the next implementation decision;
 another emulation retry does not.
 
-## Concrete scope to approve
+## Approved scope
 
 - Push the already built qualification image to a new **private** ECR repository
   dedicated to Porch; do not publish a Git branch/release or alter ARAI images.
@@ -20,7 +26,7 @@ another emulation retry does not.
   Existing ARAI production resources and its subscription proxy are out of scope.
 - Run one synthetic native ARM session at a time for this experiment, with an
   experiment window of at most two hours and an owner-approved AWS spending budget
-  of **up to USD 10**. These are proposed experiment controls, not new limits on
+  of **up to USD 10**. These are approved experiment controls, not new limits on
   the eventual user's task parallelism or runtime.
 - Use the existing authorized operator identity with short-lived role sessions.
   No new IAM users or long-lived keys, no credential copies to the guest.
@@ -41,15 +47,25 @@ cannot fit the approved scope/budget, stop before that new commitment and explai
 The local qualification tag is recorded in `agentcore-image-verification.md` with
 its manifest digests, exact inspected tool versions and failed browser evidence.
 The code under `skills/pragmatic-orchestration/scripts/lib/agentcore` and image
-recipe are independent of ARAI's application services. AWS HTTP requirements are
-implemented, but actual AWS acceptance remains unverified.
+recipe are independent of ARAI's application services. Native AWS acceptance of
+the corrected guest, browser and writable work volume passed; the complete cloud
+dispatcher is still unimplemented. The exact outcomes and failed earlier variants
+are in [the verification record](benchmarks/2026-10-29-agentcore-native-trial/README.md).
 
-This approval would authorize this bounded infrastructure experiment and its
-private image push. It would not authorize general automatic cloud overflow,
+This approval authorized this bounded infrastructure experiment and its
+private image push. It did not authorize general automatic cloud overflow,
 permanent infrastructure, model API billing, credential inspection/copying,
 production changes or Git publication.
 
 ## Acceptance and next decision
+
+The final native image passed the expected DOM, HTTP/session identity,
+subscription-readiness-false and writable-volume checks. Independent passive
+verification at 2026-10-29 15:43 UTC passed all 18 cleanup checks: no owned live
+compute, volumes, interfaces, runtime/capacity/identity records, network, IAM
+roles/profile, repository, log groups, autoscaling group or launch template
+remained. See `cleanup-verification.json` in the verification record. Exact billed
+cost is not yet available; the approved budget is not a bill estimate.
 
 Pass only after a native ARM guest returns the expected browser DOM, reports
 honest subscription readiness false, preserves session/boot identity, and can be

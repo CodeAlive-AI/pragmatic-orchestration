@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "state_path": "/work/porch/fleet.sqlite3",
+  "hosts": [{
+    "id": "trial", "transport": "local", "porch": "/opt/porch/scripts/porch",
+    "automatic": true, "capacity": 1, "request_timeout_seconds": 30,
+    "agents": ["codex", "codex-gpt-6.1-terra"],
+    "workspaces": {"task": "/work/task"}
+  }]
+}

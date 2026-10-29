@@ -1,0 +1,267 @@
+[
+  {
+    "chunk": {
+      "contentStart": {}
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stdout": "1000\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stdout": "aarch64\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stdout": "Python 3.14.10\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stdout": "v24.22.2\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stdout": "codex-cli 0.165.0\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stdout": "Chromium 156.0.8078.47 built on Debian GNU/Linux 12 (bookworm)\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stdout": "PORCH_NATIVE_VOLUME_OK\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.149001:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.149427:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.162007:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.162470:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.162545:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.162579:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.162607:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.166292:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.192318:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.272521:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.272726:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.272910:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.273020:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.273196:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.277531:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.278729:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.289174:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.289665:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.289824:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/dbus/system_bus_socket: No such file or directory\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.291781:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.291950:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.293747:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.306085:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.Properties.GetAll: object_path= /org/freedesktop/UPower/devices/DisplayDevice: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.306297:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.306458:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.322272:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:133:1029/153634.322444:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stderr": "[105:105:1029/153634.337894:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentDelta": {
+        "stdout": "<html><head><title>PORCH_NATIVE_ARM_BROWSER_OK</title></head><body></body></html>\n"
+      }
+    }
+  },
+  {
+    "chunk": {
+      "contentStop": {
+        "exitCode": 0,
+        "status": "COMPLETED"
+      }
+    }
+  }
+]

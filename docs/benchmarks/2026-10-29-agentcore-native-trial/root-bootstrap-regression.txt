@@ -1,0 +1,14 @@
+Expected failure: original v2 root bootstrap, remote ARM64 emulation,
+--cap-drop ALL --security-opt no-new-privileges --network none.
+No browser or model turn was run by this regression.
+
+PORCH_BOOT uid=0 gid=0
+install: cannot change owner and permissions of '/mnt/work': Operation not permitted
+install: cannot change owner and permissions of '/mnt/work/porch': Operation not permitted
+install: cannot change owner and permissions of '/mnt/work/codex': Operation not permitted
+install: cannot change owner and permissions of '/mnt/work/task': Operation not permitted
+PORCH_BOOT failed at line 7
+Exit code: 1
+
+Corrected UID-1000 v4 boot under the same capability restrictions returned
+HTTP health Healthy, runner_ready true, subscription_ready false; exit code 0.

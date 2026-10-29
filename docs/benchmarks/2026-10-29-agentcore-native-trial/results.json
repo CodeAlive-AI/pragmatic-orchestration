@@ -1,0 +1,638 @@
+{
+  "date": "2026-10-29",
+  "region": "eu-central-1",
+  "instance_type": "m7g.xlarge",
+  "platform": "linux/arm64",
+  "uid": 1000,
+  "status": "passed",
+  "owner_approval": {
+    "date": "2026-10-29",
+    "quote": "да",
+    "scope": "Isolated native ARM trial; private ECR push; one m7g.xlarge at a time; two hours; USD 10 AWS budget; remove the stand; no model calls or production changes"
+  },
+  "source_commit_for_guest": "e31e789",
+  "parent_manifest_index": "sha256:201e5c16cdd05e22a706018e07e835ad2ae74a5d7106825036a3d78c3188a799",
+  "final_image_manifest": "sha256:3b1ef8d0fede93853c0c5412ac9b4eb30784a3b119b92155d93e7930594cf0c0",
+  "variants": [
+    {
+      "variant": "v1",
+      "digest": "sha256:ee6aa4da1648ee07c24ffdcbaec4fea7441bd4db7a5c664faacfe49cfa4d7cd0",
+      "result": "startup_failed",
+      "detail": "Runtime root chown/setuid assumptions are incompatible with capability-free Instances"
+    },
+    {
+      "variant": "v2",
+      "digest": "sha256:2aa565ab407debd0601e80d5d5364848cba254debe2563cd7916c844d2f1d97d",
+      "result": "startup_failed",
+      "detail": "Changing startup cwd did not resolve the root privilege mismatch"
+    },
+    {
+      "variant": "v3",
+      "digest": "sha256:5692499bf44df0e399adcbe7dcedffd892f6bb7e3f695034ececdcf63de72ddc",
+      "result": "not_invoked",
+      "detail": "Built/pushed numeric-root diagnostic; superseded before cloud invocation after finding prior ARAI evidence"
+    },
+    {
+      "variant": "v4",
+      "digest": "sha256:4059f1a61f463691450d2c47f72637605a0288441877c8fdb03f8d7b86e71ddc",
+      "result": "browser_passed_http_failed",
+      "detail": "UID 1000 startup works; ready invocation returned HTTP 400; chunked framing was reproduced in a failing test"
+    },
+    {
+      "variant": "v5",
+      "digest": "sha256:3b1ef8d0fede93853c0c5412ac9b4eb30784a3b119b92155d93e7930594cf0c0",
+      "result": "native_checks_passed",
+      "detail": "Chunked HTTP ready, stable session/boot identity, Codex subscription readiness false, native browser DOM and volume write/read passed"
+    }
+  ],
+  "native_stdout": "1000\naarch64\nPython 3.14.10\nv24.22.2\ncodex-cli 0.165.0\nChromium 156.0.8078.47 built on Debian GNU/Linux 12 (bookworm)\nPORCH_NATIVE_VOLUME_OK\n<html><head><title>PORCH_NATIVE_ARM_BROWSER_OK</title></head><body></body></html>\n",
+  "native_exit": {
+    "exitCode": 0,
+    "status": "COMPLETED"
+  },
+  "session_checks": {
+    "same_boot_id": true,
+    "same_session_id": true,
+    "runner_ready": true,
+    "subscription_ready_false": true
+  },
+  "offline_tests": {
+    "suite": "agentcore_guest_test.py",
+    "passed": 8,
+    "failed": 0
+  },
+  "model_calls": 0,
+  "production_changes": false,
+  "stop_runtime_session_qualified": false,
+  "observed_control_errors": [
+    {
+      "operation": "StopRuntimeSession",
+      "error": "InternalServerException",
+      "outcome": "unknown",
+      "action": "No blind stop retry; delete the owner-approved synthetic session and verify resource removal passively"
+    }
+  ],
+  "full_cloud_overflow_qualified": false,
+  "unqualified": [
+    "Native subscription bootstrap",
+    "Automatic provisioning/placement",
+    "Repository/result exchange",
+    "Real project browser suites",
+    "Stop/resume filesystem recovery",
+    "Performance/concurrency calibration"
+  ],
+  "exact_billed_cost_usd": null,
+  "cleanup": {
+    "checked_at": "2026-10-29T15:43:07.788818+00:00",
+    "checks": {
+      "no_live_instances": true,
+      "no_managed_volumes": true,
+      "no_vpc_interfaces": true,
+      "runtime_absent": true,
+      "capacity_absent": true,
+      "workload_identity_absent": true,
+      "vpc_absent": true,
+      "eip_released": true,
+      "nat_deleted": true,
+      "repository_absent": true,
+      "profile_absent": true,
+      "no_log_groups": true,
+      "no_autoscaling_group": true,
+      "no_launch_templates": true,
+      "instance_role_absent": true,
+      "execution_role_absent": true,
+      "operator_role_absent": true,
+      "no_previously_observed_volumes": true
+    },
+    "passed": true
+  },
+  "experiment_elapsed_seconds": 2408.955,
+  "source_sha256": {
+    "skills/pragmatic-orchestration/scripts/lib/agentcore/server.py": "1a38c8fb3d08415bd6c3d8751a8915f94c979239c07b6c72ace231d7c892262d",
+    "docs/benchmarks/2026-10-29-agentcore-native-trial/Dockerfile": "aec31fbc0fc78dfbd99495111701139edf746be81e391ef790f16eacc01a5485",
+    "docs/benchmarks/2026-10-29-agentcore-native-trial/entrypoint.sh": "d9fffe2dee8e1a570428a0649eb592100f2e2be336a4305c753c804fa632026e",
+    "docs/benchmarks/2026-10-29-agentcore-native-trial/fleet.json": "8180fe4fb697ab0d6351fc36cc44e3c2cc5bcbb62925e00522757e44b9488bbc"
+  },
+  "events": [
+    {
+      "at": "2026-10-29T15:03:00.448104+00:00",
+      "event": "intent_vpc"
+    },
+    {
+      "at": "2026-10-29T15:03:01.519971+00:00",
+      "event": "created_vpc"
+    },
+    {
+      "at": "2026-10-29T15:03:02.716047+00:00",
+      "event": "intent_public_subnet"
+    },
+    {
+      "at": "2026-10-29T15:03:03.252277+00:00",
+      "event": "created_public_subnet"
+    },
+    {
+      "at": "2026-10-29T15:03:03.252519+00:00",
+      "event": "intent_private_subnet"
+    },
+    {
+      "at": "2026-10-29T15:03:03.742302+00:00",
+      "event": "created_private_subnet"
+    },
+    {
+      "at": "2026-10-29T15:03:03.743398+00:00",
+      "event": "intent_igw"
+    },
+    {
+      "at": "2026-10-29T15:03:04.047313+00:00",
+      "event": "created_igw"
+    },
+    {
+      "at": "2026-10-29T15:03:04.400067+00:00",
+      "event": "intent_public_route_table"
+    },
+    {
+      "at": "2026-10-29T15:03:04.826108+00:00",
+      "event": "created_public_route_table"
+    },
+    {
+      "at": "2026-10-29T15:03:04.827683+00:00",
+      "event": "intent_public_route"
+    },
+    {
+      "at": "2026-10-29T15:03:05.195196+00:00",
+      "event": "created_public_route"
+    },
+    {
+      "at": "2026-10-29T15:03:05.195991+00:00",
+      "event": "intent_public_association"
+    },
+    {
+      "at": "2026-10-29T15:03:05.589019+00:00",
+      "event": "created_public_association"
+    },
+    {
+      "at": "2026-10-29T15:03:05.590543+00:00",
+      "event": "intent_eip"
+    },
+    {
+      "at": "2026-10-29T15:03:06.348892+00:00",
+      "event": "created_eip"
+    },
+    {
+      "at": "2026-10-29T15:03:06.350810+00:00",
+      "event": "intent_nat"
+    },
+    {
+      "at": "2026-10-29T15:03:07.121063+00:00",
+      "event": "created_nat"
+    },
+    {
+      "at": "2026-10-29T15:04:51.938172+00:00",
+      "event": "nat_ready"
+    },
+    {
+      "at": "2026-10-29T15:04:51.939607+00:00",
+      "event": "intent_private_route_table"
+    },
+    {
+      "at": "2026-10-29T15:04:52.303243+00:00",
+      "event": "created_private_route_table"
+    },
+    {
+      "at": "2026-10-29T15:04:52.303561+00:00",
+      "event": "intent_private_route"
+    },
+    {
+      "at": "2026-10-29T15:04:52.725157+00:00",
+      "event": "created_private_route"
+    },
+    {
+      "at": "2026-10-29T15:04:52.725442+00:00",
+      "event": "intent_private_association"
+    },
+    {
+      "at": "2026-10-29T15:04:53.107243+00:00",
+      "event": "created_private_association"
+    },
+    {
+      "at": "2026-10-29T15:04:53.108530+00:00",
+      "event": "intent_s3_endpoint"
+    },
+    {
+      "at": "2026-10-29T15:04:54.896491+00:00",
+      "event": "created_s3_endpoint"
+    },
+    {
+      "at": "2026-10-29T15:04:54.897846+00:00",
+      "event": "intent_security_group"
+    },
+    {
+      "at": "2026-10-29T15:04:55.402666+00:00",
+      "event": "created_security_group"
+    },
+    {
+      "at": "2026-10-29T15:04:55.404716+00:00",
+      "event": "intent_repository"
+    },
+    {
+      "at": "2026-10-29T15:04:57.515948+00:00",
+      "event": "created_repository"
+    },
+    {
+      "at": "2026-10-29T15:04:57.517109+00:00",
+      "event": "intent_role_instance"
+    },
+    {
+      "at": "2026-10-29T15:04:58.881584+00:00",
+      "event": "created_role_instance"
+    },
+    {
+      "at": "2026-10-29T15:04:58.882994+00:00",
+      "event": "intent_policy_instance"
+    },
+    {
+      "at": "2026-10-29T15:04:59.240151+00:00",
+      "event": "created_policy_instance"
+    },
+    {
+      "at": "2026-10-29T15:04:59.241952+00:00",
+      "event": "intent_instance_profile"
+    },
+    {
+      "at": "2026-10-29T15:04:59.586800+00:00",
+      "event": "created_instance_profile"
+    },
+    {
+      "at": "2026-10-29T15:04:59.587998+00:00",
+      "event": "intent_profile_role"
+    },
+    {
+      "at": "2026-10-29T15:04:59.944810+00:00",
+      "event": "created_profile_role"
+    },
+    {
+      "at": "2026-10-29T15:04:59.946230+00:00",
+      "event": "intent_role_execution"
+    },
+    {
+      "at": "2026-10-29T15:05:00.342182+00:00",
+      "event": "created_role_execution"
+    },
+    {
+      "at": "2026-10-29T15:05:00.343336+00:00",
+      "event": "intent_policy_execution"
+    },
+    {
+      "at": "2026-10-29T15:05:00.721598+00:00",
+      "event": "created_policy_execution"
+    },
+    {
+      "at": "2026-10-29T15:05:00.723322+00:00",
+      "event": "intent_role_operator"
+    },
+    {
+      "at": "2026-10-29T15:05:01.105938+00:00",
+      "event": "created_role_operator"
+    },
+    {
+      "at": "2026-10-29T15:05:01.108611+00:00",
+      "event": "intent_policy_operator"
+    },
+    {
+      "at": "2026-10-29T15:05:01.474023+00:00",
+      "event": "created_policy_operator"
+    },
+    {
+      "at": "2026-10-29T15:05:01.476829+00:00",
+      "event": "setup_complete"
+    },
+    {
+      "at": "2026-10-29T15:05:55.827835+00:00",
+      "event": "intent_capacity"
+    },
+    {
+      "at": "2026-10-29T15:05:59.923633+00:00",
+      "event": "created_capacity"
+    },
+    {
+      "at": "2026-10-29T15:10:12.802807+00:00",
+      "event": "intent_runtime"
+    },
+    {
+      "at": "2026-10-29T15:10:13.912780+00:00",
+      "event": "created_runtime"
+    },
+    {
+      "at": "2026-10-29T15:10:33.869500+00:00",
+      "event": "invoke_ready_started"
+    },
+    {
+      "at": "2026-10-29T15:12:39.666473+00:00",
+      "event": "native_browser_probe_started"
+    },
+    {
+      "at": "2026-10-29T15:14:56.776381+00:00",
+      "event": "stop_intent"
+    },
+    {
+      "at": "2026-10-29T15:16:00.837487+00:00",
+      "event": "delete_synthetic_session_intent"
+    },
+    {
+      "at": "2026-10-29T15:16:54.757582+00:00",
+      "event": "intent_runtime_update_v2"
+    },
+    {
+      "at": "2026-10-29T15:16:56.078254+00:00",
+      "event": "created_runtime_update_v2"
+    },
+    {
+      "at": "2026-10-29T15:17:17.993760+00:00",
+      "event": "invoke_ready_started"
+    },
+    {
+      "at": "2026-10-29T15:20:51.146358+00:00",
+      "event": "delete_synthetic_session_intent"
+    },
+    {
+      "at": "2026-10-29T15:25:08.995225+00:00",
+      "event": "intent_runtime_update_v4"
+    },
+    {
+      "at": "2026-10-29T15:25:10.955538+00:00",
+      "event": "created_runtime_update_v4"
+    },
+    {
+      "at": "2026-10-29T15:25:55.529978+00:00",
+      "event": "invoke_ready_started"
+    },
+    {
+      "at": "2026-10-29T15:27:26.892170+00:00",
+      "event": "native_browser_probe_started"
+    },
+    {
+      "at": "2026-10-29T15:27:28.457300+00:00",
+      "event": "native_browser_probe_finished"
+    },
+    {
+      "at": "2026-10-29T15:28:22.223547+00:00",
+      "event": "delete_synthetic_session_intent"
+    },
+    {
+      "at": "2026-10-29T15:32:03.674511+00:00",
+      "event": "passive_session_removal_ready"
+    },
+    {
+      "at": "2026-10-29T15:32:58.973874+00:00",
+      "event": "intent_runtime_update_v5"
+    },
+    {
+      "at": "2026-10-29T15:33:00.241878+00:00",
+      "event": "created_runtime_update_v5"
+    },
+    {
+      "at": "2026-10-29T15:34:32.337299+00:00",
+      "event": "invoke_ready_started"
+    },
+    {
+      "at": "2026-10-29T15:35:36.099565+00:00",
+      "event": "invoke_ready_completed"
+    },
+    {
+      "at": "2026-10-29T15:36:33.126932+00:00",
+      "event": "native_browser_probe_started"
+    },
+    {
+      "at": "2026-10-29T15:36:34.950695+00:00",
+      "event": "native_browser_probe_finished"
+    },
+    {
+      "at": "2026-10-29T15:40:37.733551+00:00",
+      "event": "passive_session_removal_ready"
+    },
+    {
+      "at": "2026-10-29T15:40:38.428735+00:00",
+      "event": "remove_intent_runtime"
+    },
+    {
+      "at": "2026-10-29T15:40:39.296389+00:00",
+      "event": "removed_runtime"
+    },
+    {
+      "at": "2026-10-29T15:40:49.865046+00:00",
+      "event": "runtime_absent_ready"
+    },
+    {
+      "at": "2026-10-29T15:40:49.866976+00:00",
+      "event": "remove_intent_workload_identity"
+    },
+    {
+      "at": "2026-10-29T15:40:50.120712+00:00",
+      "event": "removed_workload_identity"
+    },
+    {
+      "at": "2026-10-29T15:40:50.364919+00:00",
+      "event": "workload_identity_absent_ready"
+    },
+    {
+      "at": "2026-10-29T15:40:50.367733+00:00",
+      "event": "remove_intent_capacity"
+    },
+    {
+      "at": "2026-10-29T15:40:51.000988+00:00",
+      "event": "removed_capacity"
+    },
+    {
+      "at": "2026-10-29T15:41:01.531886+00:00",
+      "event": "capacity_absent_ready"
+    },
+    {
+      "at": "2026-10-29T15:41:01.534742+00:00",
+      "event": "remove_intent_nat"
+    },
+    {
+      "at": "2026-10-29T15:41:01.882769+00:00",
+      "event": "removed_nat"
+    },
+    {
+      "at": "2026-10-29T15:41:43.500009+00:00",
+      "event": "nat_deleted_ready"
+    },
+    {
+      "at": "2026-10-29T15:41:43.501919+00:00",
+      "event": "remove_intent_s3_endpoint"
+    },
+    {
+      "at": "2026-10-29T15:41:44.759774+00:00",
+      "event": "removed_s3_endpoint"
+    },
+    {
+      "at": "2026-10-29T15:41:44.761646+00:00",
+      "event": "remove_intent_private_association"
+    },
+    {
+      "at": "2026-10-29T15:41:45.166651+00:00",
+      "event": "removed_private_association"
+    },
+    {
+      "at": "2026-10-29T15:41:45.168538+00:00",
+      "event": "remove_intent_private_route_table"
+    },
+    {
+      "at": "2026-10-29T15:41:45.552577+00:00",
+      "event": "removed_private_route_table"
+    },
+    {
+      "at": "2026-10-29T15:41:45.554103+00:00",
+      "event": "remove_intent_private_subnet"
+    },
+    {
+      "at": "2026-10-29T15:41:46.213832+00:00",
+      "event": "removed_private_subnet"
+    },
+    {
+      "at": "2026-10-29T15:41:46.215451+00:00",
+      "event": "remove_intent_public_association"
+    },
+    {
+      "at": "2026-10-29T15:41:46.624915+00:00",
+      "event": "removed_public_association"
+    },
+    {
+      "at": "2026-10-29T15:41:46.626858+00:00",
+      "event": "remove_intent_public_route_table"
+    },
+    {
+      "at": "2026-10-29T15:41:47.006551+00:00",
+      "event": "removed_public_route_table"
+    },
+    {
+      "at": "2026-10-29T15:41:47.008645+00:00",
+      "event": "remove_intent_public_subnet"
+    },
+    {
+      "at": "2026-10-29T15:41:47.626282+00:00",
+      "event": "removed_public_subnet"
+    },
+    {
+      "at": "2026-10-29T15:41:47.626698+00:00",
+      "event": "remove_intent_security_group"
+    },
+    {
+      "at": "2026-10-29T15:41:48.119308+00:00",
+      "event": "removed_security_group"
+    },
+    {
+      "at": "2026-10-29T15:41:48.120556+00:00",
+      "event": "remove_intent_igw_attachment"
+    },
+    {
+      "at": "2026-10-29T15:41:48.553571+00:00",
+      "event": "removed_igw_attachment"
+    },
+    {
+      "at": "2026-10-29T15:41:48.554040+00:00",
+      "event": "remove_intent_igw"
+    },
+    {
+      "at": "2026-10-29T15:41:48.873968+00:00",
+      "event": "removed_igw"
+    },
+    {
+      "at": "2026-10-29T15:41:48.874394+00:00",
+      "event": "remove_intent_eip"
+    },
+    {
+      "at": "2026-10-29T15:41:49.525270+00:00",
+      "event": "removed_eip"
+    },
+    {
+      "at": "2026-10-29T15:41:49.527495+00:00",
+      "event": "remove_intent_vpc"
+    },
+    {
+      "at": "2026-10-29T15:41:50.185961+00:00",
+      "event": "removed_vpc"
+    },
+    {
+      "at": "2026-10-29T15:41:50.187996+00:00",
+      "event": "remove_intent_profile_role"
+    },
+    {
+      "at": "2026-10-29T15:41:51.531254+00:00",
+      "event": "removed_profile_role"
+    },
+    {
+      "at": "2026-10-29T15:41:51.533259+00:00",
+      "event": "remove_intent_profile"
+    },
+    {
+      "at": "2026-10-29T15:41:51.880525+00:00",
+      "event": "removed_profile"
+    },
+    {
+      "at": "2026-10-29T15:41:51.883201+00:00",
+      "event": "remove_intent_policy_operator"
+    },
+    {
+      "at": "2026-10-29T15:41:52.208841+00:00",
+      "event": "removed_policy_operator"
+    },
+    {
+      "at": "2026-10-29T15:41:52.209300+00:00",
+      "event": "remove_intent_role_operator"
+    },
+    {
+      "at": "2026-10-29T15:41:52.574936+00:00",
+      "event": "removed_role_operator"
+    },
+    {
+      "at": "2026-10-29T15:41:52.576245+00:00",
+      "event": "remove_intent_policy_execution"
+    },
+    {
+      "at": "2026-10-29T15:41:52.904853+00:00",
+      "event": "removed_policy_execution"
+    },
+    {
+      "at": "2026-10-29T15:41:52.906891+00:00",
+      "event": "remove_intent_role_execution"
+    },
+    {
+      "at": "2026-10-29T15:41:53.264226+00:00",
+      "event": "removed_role_execution"
+    },
+    {
+      "at": "2026-10-29T15:41:53.265754+00:00",
+      "event": "remove_intent_policy_instance"
+    },
+    {
+      "at": "2026-10-29T15:41:53.605918+00:00",
+      "event": "removed_policy_instance"
+    },
+    {
+      "at": "2026-10-29T15:41:53.607780+00:00",
+      "event": "remove_intent_role_instance"
+    },
+    {
+      "at": "2026-10-29T15:41:53.955957+00:00",
+      "event": "removed_role_instance"
+    },
+    {
+      "at": "2026-10-29T15:41:53.957890+00:00",
+      "event": "remove_intent_repository"
+    },
+    {
+      "at": "2026-10-29T15:41:56.519065+00:00",
+      "event": "removed_repository"
+    },
+    {
+      "at": "2026-10-29T15:41:57.213579+00:00",
+      "event": "remove_intent_logs_trial_runtime"
+    },
+    {
+      "at": "2026-10-29T15:41:57.459549+00:00",
+      "event": "removed_logs_trial_runtime"
+    }
+  ]
+}

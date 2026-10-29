@@ -157,6 +157,26 @@ class CodexTests(FixtureMixin, unittest.TestCase):
         # malformed interior line counted, not dropped silently
         self.assertEqual(stats.get("malformed"), 1)
 
+    @unittest.skipUnless(sys.version_info >= (3, 14), "stdlib Zstandard requires Python 3.14")
+    def test_compressed_rollout_and_corruption(self):
+        from compression import zstd
+        root, sid = self.make()
+        path = next(root.rglob("*.jsonl"))
+        compressed = path.with_name(path.name + ".zst")
+        compressed.write_bytes(zstd.compress(path.read_bytes()))
+        path.unlink()
+        store = sessions.Store("codex", "sessions", root, "jsonl_dir")
+        refs = list(sessions.codex_iter_sessions(store))
+        self.assertEqual([r.session_id for r in refs], [sid])
+        stats = {}
+        fragments = list(sessions.codex_iter_fragments(store, refs[0], 0, stats))
+        self.assertTrue(any(f.get("text") == "add a retry loop" for f in fragments))
+        self.assertEqual(fragments[0]["locator"]["file"], str(compressed))
+        compressed.write_bytes(b"not a zstd stream")
+        self.assertEqual(list(sessions.codex_iter_fragments(store, refs[0], 0, stats)), [])
+        self.assertEqual(stats["compressed_errors"], 1)
+        self.assertFalse(sessions.coverage_summary([store], 1, 0, stats)["scan_complete"])
+
 
 class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
     def make(self):

@@ -173,7 +173,7 @@ Codex stores the same threads in several layers with different authority.
 
 | store | path | authority |
 |---|---|---|
-| `sessions`, `archived` | `~/.codex/{sessions,archived_sessions}/YYYY/MM/DD/rollout-*.jsonl` | **canonical conversation body** |
+| `sessions`, `archived` | `~/.codex/{sessions,archived_sessions}/YYYY/MM/DD/rollout-*.jsonl[.zst]` | **canonical conversation body** |
 | `state:state_N.sqlite` | `~/.codex/state_*.sqlite` | canonical thread index (all surfaces: CLI, VS Code, exec) |
 | `catalog` | `~/.codex/sqlite/codex-dev.db` → `local_thread_catalog` | Desktop/sidebar catalog — includes `chatgpt` cloud threads with **no local transcript** |
 | `summaries` | `~/.codex/sqlite/codex-thread-summaries-dev.db` → `thread_turn_summaries` | app-generated summaries, not messages |
@@ -198,6 +198,8 @@ Codex stores the same threads in several layers with different authority.
   `response_item` (typed payload: message/reasoning/function_call/…),
   `event_msg` (user-facing events), `token_count` (cumulative usage — never
   sum across records), `compacted`/`turn_aborted` markers.
+- Compressed Codex rollouts require Python 3.14+ (stdlib Zstandard). With an
+  older runtime or a corrupt archive the reader reports an incomplete scan.
 - **Genuine prompts come from `event_msg` with `user_message` payload**, or
   `response_item` `message` with `role=user` whose text is not bootstrap
   material. `response_item` user-role messages containing

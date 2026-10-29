@@ -257,13 +257,25 @@ def iter_jsonl(path: Path, stats: dict[str, int], max_lines: int | None = None) 
     lines via stats['malformed'].
     """
     try:
-        size = path.stat().st_size
-        fh = path.open("r", encoding="utf-8", errors="replace")
-    except OSError:
+        if path.name.endswith(".jsonl.zst"):
+            # Python 3.14 includes Zstandard; do not silently skip archives on
+            # older runtimes or treat a corrupt stream as a complete scan.
+            from compression import zstd
+            try:
+                with zstd.open(path, "rt", encoding="utf-8", errors="replace") as fh:
+                    data = fh.read() if max_lines is None else _read_head(fh, max_lines)
+            except zstd.ZstdError as exc:
+                raise ValueError(str(exc)) from exc
+        else:
+            size = path.stat().st_size
+            with path.open("r", encoding="utf-8", errors="replace") as fh:
+                data = fh.read(size + 1) if max_lines is None else _read_head(fh, max_lines)
+    except (OSError, ImportError, EOFError, ValueError) as exc:
         stats["unreadable"] = stats.get("unreadable", 0) + 1
+        if path.name.endswith(".jsonl.zst"):
+            stats["compressed_errors"] = stats.get("compressed_errors", 0) + 1
+            print(f"cannot read compressed session {path}: {exc}; Zstandard requires Python 3.14+", file=sys.stderr)
         return
-    with fh:
-        data = fh.read(size + 1) if max_lines is None else _read_head(fh, max_lines)
     if not data.endswith("\n") and data.strip() and max_lines is None:
         stats["truncated_tail"] = stats.get("truncated_tail", 0) + 1
     # split('\n'), not splitlines(): JSON strings may legally contain raw
@@ -698,12 +710,15 @@ def codex_iter_sessions(store: Store) -> Iterator[SessionRef]:
     if store.name == "history":
         yield from _codex_history_sessions(store)
         return
-    for path in sorted(store.path.rglob("rollout-*.jsonl")):
+    paths = sorted(store.path.rglob("rollout-*.jsonl")) + sorted(store.path.rglob("rollout-*.jsonl.zst"))
+    for path in paths:
+        if path.name.endswith(".zst") and path.with_suffix("").exists():
+            continue  # the uncompressed rollout is the canonical copy
         # Cheap listing: session identity + dates come from the filename
         # (rollout-YYYY-MM-DDTHH-MM-SS-<id>.jsonl) and mtime; session_meta is
         # the first record, so a bounded head read suffices for cwd/lineage.
         # --since/--until filtering then skips full parses entirely.
-        name_m = re.match(r"rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(.+)\.jsonl$", path.name)
+        name_m = re.match(r"rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(.+)\.jsonl(?:\.zst)?$", path.name)
         created_name = f"{name_m.group(1)}T{name_m.group(2)}:{name_m.group(3)}:{name_m.group(4)}Z" if name_m else None
         try:
             updated = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
@@ -725,11 +740,14 @@ def codex_iter_sessions(store: Store) -> Iterator[SessionRef]:
                     models.append(payload["model"])
             if meta is not None and first_ts is not None and models:
                 break
+        if stats.get("unreadable"):
+            store.status, store.error = "unavailable", f"cannot read session: {path}"
+            continue
         meta = meta or {}
         lineage = meta.get("source", {}).get("subagent", {}).get("thread_spawn") if isinstance(meta.get("source"), dict) else None
         parent = meta.get("parent_thread_id") or meta.get("forked_from_id") or (lineage or {}).get("parent_thread_id")
         yield SessionRef(
-            "codex", store.name, str(meta.get("id") or meta.get("session_id") or path.stem),
+            "codex", store.name, str(meta.get("id") or meta.get("session_id") or (name_m.group(5) if name_m else path.stem)),
             locator={"file": str(path)},
             cwd=meta.get("cwd"), created=first_ts or created_name or meta.get("timestamp"),
             updated=updated,
@@ -868,7 +886,7 @@ def _find_codex_rollout(thread_id: str) -> Path | None:
     for base in (codex_home / "sessions", codex_home / "archived_sessions"):
         if not base.is_dir():
             continue
-        hits = list(base.rglob(f"rollout-*-{thread_id}.jsonl"))
+        hits = list(base.rglob(f"rollout-*-{thread_id}.jsonl")) + list(base.rglob(f"rollout-*-{thread_id}.jsonl.zst"))
         if hits:
             return hits[0]
     return None
@@ -929,7 +947,9 @@ def codex_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
         return
     file = ref.locator.get("file")
     if not file:
-        rollout = ref.extra.get("rollout_path") or _find_codex_rollout(ref.session_id)
+        rollout = ref.extra.get("rollout_path")
+        if not rollout or not Path(rollout).exists():
+            rollout = _find_codex_rollout(ref.session_id)
         if rollout and Path(rollout).exists():
             file = str(rollout)
         else:
@@ -2355,7 +2375,8 @@ def coverage_summary(stores: list[Store], scanned: int, matched: int, stats: dic
         "malformed_records": stats.get("malformed", 0),
         "truncated_tail_files": stats.get("truncated_tail", 0),
         "unreadable_files": stats.get("unreadable", 0),
-        "scan_complete": not truncated and all(s.status != "unavailable" for s in stores),
+        "compressed_errors": stats.get("compressed_errors", 0),
+        "scan_complete": not truncated and not stats.get("unreadable") and all(s.status != "unavailable" for s in stores),
         "note": "empty result means: no matches AND scan_complete — check stores[].status for missing/unavailable",
     }
 
@@ -2388,7 +2409,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             emit(ref.as_dict())
             emitted += 1
     emit(coverage_summary(stores, scanned, emitted, stats))
-    return EXIT_OK if all(s.status != "unavailable" for s in stores) else EXIT_PARTIAL
+    return EXIT_OK if all(s.status != "unavailable" for s in stores) and not stats.get("unreadable") else EXIT_PARTIAL
 
 
 def cmd_grep(args: argparse.Namespace) -> int:
@@ -2438,7 +2459,7 @@ def cmd_grep(args: argparse.Namespace) -> int:
         if truncated:
             break
     emit(coverage_summary(stores, scanned, emitted, stats, truncated=truncated))
-    return EXIT_OK if all(s.status != "unavailable" for s in stores) else EXIT_PARTIAL
+    return EXIT_OK if all(s.status != "unavailable" for s in stores) and not stats.get("unreadable") else EXIT_PARTIAL
 
 
 def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
@@ -2473,7 +2494,7 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
                 if str(rec.get("session_id")) == query_id:
                     return SessionRef("codex", "history", query_id, locator={"file": str(p)})
             return None
-        hits = list(p.rglob(f"rollout-*-{query_id}.jsonl"))
+        hits = list(p.rglob(f"rollout-*-{query_id}.jsonl")) + list(p.rglob(f"rollout-*-{query_id}.jsonl.zst"))
         if len(hits) == 1:
             return SessionRef("codex", store.name, query_id, locator={"file": str(hits[0])})
     elif store.harness == "grok":
@@ -2702,7 +2723,7 @@ def cmd_show(args: argparse.Namespace) -> int:
             f"seq {target} {'exists but was filtered out by --scope/--since/--until — retry with --scope all' if around_seen else 'does not exist in this session'}"
         )
     emit(summary)
-    return EXIT_OK
+    return EXIT_PARTIAL if stats.get("unreadable") or store.status == "unavailable" else EXIT_OK
 
 
 def _store_for_file(path: Path) -> tuple[Store, SessionRef]:
@@ -2732,7 +2753,7 @@ def _store_for_file(path: Path) -> tuple[Store, SessionRef]:
             raise SystemExit(f"cannot open sqlite read-only: {e}")
         raise SystemExit(f"unrecognized sqlite store: {path}")
     # JSON / JSONL: peek first records
-    first = path.open("r", encoding="utf-8", errors="replace").read(65536)
+    first = "" if path.name.endswith(".jsonl.zst") else path.open("r", encoding="utf-8", errors="replace").read(65536)
     try:
         obj = json.loads(first)
         if isinstance(obj, dict) and "messages" in obj and ("sessionId" in obj or "projectHash" in obj):

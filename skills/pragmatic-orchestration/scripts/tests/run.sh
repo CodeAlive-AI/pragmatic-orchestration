@@ -410,6 +410,11 @@ GEMINI_MODEL="gemini-override" PORCH_DUMP_ARGV="$TMP/gemini-overrides.json" \
   "$LIB_DIR/backend_run.sh" --mode review --agent-id gemini-cli --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/gemini-overrides.json"'"))["argv"]))')
 assert_contains "gemini shell runner honors GEMINI_MODEL" "$argv" "--model gemini-override"
+# Gemini CLI rejects an empty MCP allowlist entry ("mcpName is required if
+# specified"), and an empty list disables filtering. The allowlist must hold one
+# non-empty name that matches no configured server.
+mcp_allow=$(python3 -c 'import json; a=json.load(open("'"$TMP/gemini-overrides.json"'"))["argv"]; i=a.index("--allowed-mcp-server-names"); print(repr(a[i+1]))')
+assert_eq "gemini MCP allowlist is a non-empty sentinel" "$mcp_allow" "'porch-no-mcp-servers'"
 
 # Gemini happy path: stdout answer, artifacts, backend label gemini-cli (not plain)
 export PORCH_RUN_DIR="$TMP/run-gemini-ok"

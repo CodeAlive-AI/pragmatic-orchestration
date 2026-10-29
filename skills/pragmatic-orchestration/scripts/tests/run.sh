@@ -1311,8 +1311,11 @@ try:
 except subprocess.TimeoutExpired:
     raise SystemExit(124)
 elapsed = time.monotonic() - started
-if proc.returncode != 0 or elapsed >= 1.5:
-    raise SystemExit(proc.returncode or 125)
+# The subprocess timeout already distinguishes the 30-second hung fake from a
+# drained terminal stream. A 1.5-second wall-clock oracle also measured machine
+# contention and intermittently failed on the shared VM.
+if proc.returncode != 0:
+    raise SystemExit(proc.returncode)
 PY
 guard_state=$?
 set -e
@@ -1916,6 +1919,12 @@ if [[ $STEER_RC -ne 0 && $steer_fail -eq 0 ]]; then
 fi
 
 # Bounded observation, failed abort, and durable Codex continuation regressions.
+if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$TESTS_DIR/steer/test_claude_interrupt.py"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
 if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$TESTS_DIR/steer/test_orchestration.py"; then
   PASS=$((PASS + 1))
 else

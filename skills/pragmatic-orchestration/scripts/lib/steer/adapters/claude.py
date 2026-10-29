@@ -6,6 +6,7 @@ import queue
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -31,7 +32,11 @@ class ClaudeAdapter(BackendAdapter):
         self._final_parts: List[str] = []
         self._cancelled = False
         self._result_seen = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._turn_ready = False
+        self._interrupt: Optional[Dict[str, Any]] = None
+        self._seen_results: set[str] = set()
+        self._queued_user_sent = False
         # Track open tool_use content blocks by index so stop maps only tools.
         self._open_tool_blocks: Dict[str, str] = {}
 
@@ -86,6 +91,9 @@ class ClaudeAdapter(BackendAdapter):
             "uuid": client_id,
             "parent_tool_use_id": None,
         }
+        self._write_json(msg)
+
+    def _write_json(self, msg: Dict[str, Any]) -> None:
         line = json.dumps(msg, ensure_ascii=False) + "\n"
         assert self.proc and self.proc.stdin
         with self._stdin_lock:
@@ -116,10 +124,27 @@ class ClaudeAdapter(BackendAdapter):
             except json.JSONDecodeError:
                 self._events.put(AdapterEvent(kind="raw", data=line))
                 continue
-            self._handle_obj(obj)
+            if isinstance(obj, dict):
+                try:
+                    self._handle_obj(obj)
+                except Exception as error:
+                    with self._lock:
+                        self._error = f"Claude stream handling failed: {error}"
+                        self._exit_code = 1
+                        self._done = True
+                        if self._interrupt:
+                            self._ack_interrupt("failed", "stream_handover_failed")
+                        self._events.put(AdapterEvent(kind="error", data=self._error))
+                        self._events.put(AdapterEvent(kind="done", data="stream_error"))
+                    return
         # stdout closed — wait for process, but result may already have marked done
         rc = self.proc.wait()
         with self._lock:
+            if self._interrupt:
+                self._ack_interrupt("failed", "process_exited_before_handover")
+                self._error = "Claude process exited before the interrupt handover completed"
+                self._exit_code = 1
+                self._events.put(AdapterEvent(kind="error", data=self._error))
             if self._exit_code is None:
                 self._exit_code = rc
             if not self._done:
@@ -127,10 +152,25 @@ class ClaudeAdapter(BackendAdapter):
                 self._events.put(AdapterEvent(kind="done", data=str(rc)))
 
     def _handle_obj(self, obj: Dict[str, Any]) -> None:
+        # Reader events and mailbox delivery share one transition lock. Follow-up
+        # input is never sent between an unrecorded result and its state change.
+        with self._lock:
+            self._handle_locked(obj)
+
+    def _handle_locked(self, obj: Dict[str, Any]) -> None:
         native_id = obj.get("session_id")
         if isinstance(native_id, str) and native_id and not self.session_id:
             self.session_id = native_id
         typ = obj.get("type")
+        if typ == "control_response":
+            self._handle_control_response(obj)
+            return
+        if typ == "system" and obj.get("subtype") == "init":
+            self._turn_ready = True
+            self._send_interrupt_if_ready()
+        if typ == "stream_event" and isinstance(obj.get("event"), dict):
+            self._handle_locked(obj["event"])
+            return
         if typ == "user" or typ == "user_message" or obj.get("role") == "user":
             uuid = obj.get("uuid") or ""
             content_preview = ""
@@ -215,28 +255,43 @@ class ClaudeAdapter(BackendAdapter):
                     self._events.put(AdapterEvent(kind="text", data=t, raw=obj))
             return
         if typ in ("result", "result_success"):
-            # Authoritative result completes the adapter even if stdin stays open.
-            # is_error/error → run_failed (exit 1), consistent with one-shot.
-            result = obj.get("result")
-            is_error = bool(obj.get("is_error") or obj.get("error"))
-            if isinstance(result, str) and result.strip() and not is_error:
-                # Non-empty result replaces streamed deltas (XOR final).
-                self._result_text = result
-                self._final_parts = [result]
-            # Empty/whitespace result: keep deltas already collected.
-            with self._lock:
-                self._result_seen = True
-                self._done = True
-                if is_error:
-                    self._exit_code = 1
-                    self._error = str(obj.get("error") or result or "result_error")
-                    self._events.put(
-                        AdapterEvent(kind="error", data=self._error, raw=obj)
-                    )
-                else:
-                    self._exit_code = 0
-            self._events.put(AdapterEvent(kind="done", data="result", raw=obj))
+            result_id = obj.get("uuid")
+            if isinstance(result_id, str):
+                if result_id in self._seen_results:
+                    return
+                self._seen_results.add(result_id)
+            self._turn_ready = False
+            if self._interrupt:
+                if self._interrupt["sent"]:
+                    # A result can precede its interrupt acknowledgement. Retain
+                    # both barriers; neither alone authorizes the new instruction.
+                    self._interrupt["result"] = obj
+                    self._resume_after_interrupt()
+                    return
+                self._ack_interrupt("failed", "turn_ended_before_interrupt_sent")
+                self._interrupt = None
+            self._complete_result(obj)
             return
+        self._handle_content(obj, typ)
+
+    def _complete_result(self, obj: Dict[str, Any]) -> None:
+        # Authoritative result completes the adapter even if stdin stays open.
+        result = obj.get("result")
+        is_error = bool(obj.get("is_error") or obj.get("error"))
+        if isinstance(result, str) and result.strip() and not is_error:
+            self._result_text = result
+            self._final_parts = [result]
+        self._result_seen = True
+        self._done = True
+        if is_error:
+            self._exit_code = 1
+            self._error = str(obj.get("error") or result or "result_error")
+            self._events.put(AdapterEvent(kind="error", data=self._error, raw=obj))
+        else:
+            self._exit_code = 0
+        self._events.put(AdapterEvent(kind="done", data="result", raw=obj))
+
+    def _handle_content(self, obj: Dict[str, Any], typ: str) -> None:
         if typ == "assistant":
             msg = obj.get("message") or obj
             content = msg.get("content") if isinstance(msg, dict) else None
@@ -258,9 +313,8 @@ class ClaudeAdapter(BackendAdapter):
                 yield self._events.get_nowait()
             except queue.Empty:
                 break
-        if self.proc and self.proc.poll() is not None and not self._done:
-            self._done = True
-            self._exit_code = self.proc.returncode
+        # The reader owns EOF/result transitions. Observing process exit here
+        # can race buffered stdout and incorrectly complete an unfinished handover.
 
     def _queue_class(self) -> DeliveryClass:
         # Claude Code queues stream-json messages sent while work is in flight
@@ -268,12 +322,62 @@ class ClaudeAdapter(BackendAdapter):
         return DeliveryClass.QUEUE_NEXT_TURN
 
     def _interrupt_class(self) -> DeliveryClass:
-        raise NotImplementedError(
-            "claude-code steerable does not support interrupt mode "
-            "(queue_next_turn only; refuse silent downgrade)"
-        )
+        return DeliveryClass.CANCEL_AND_SEND
+
+    def _ack_interrupt(self, status: str, evidence: str) -> None:
+        assert self._interrupt
+        self._events.put(AdapterEvent(kind="steer_ack", data=self._interrupt["client_id"], raw={
+            "promptId": self._interrupt["client_id"], "status": status, "evidence": evidence}))
+
+    def _send_interrupt_if_ready(self) -> None:
+        pending = self._interrupt
+        if pending and self._turn_ready and not pending["sent"]:
+            pending["sent"] = True
+            self._write_json({"type": "control_request", "request_id": pending["request_id"],
+                              "request": {"subtype": "interrupt"}})
+
+    def _handle_control_response(self, obj: Dict[str, Any]) -> None:
+        response = obj.get("response")
+        pending = self._interrupt
+        if not isinstance(response, dict) or not pending or response.get("request_id") != pending["request_id"]:
+            return
+        if response.get("subtype") != "success":
+            self._ack_interrupt("rejected", "interrupt_rejected")
+            previous_result = pending["result"]
+            self._interrupt = None
+            if previous_result is not None:
+                self._complete_result(previous_result)
+            return
+        receipt = response.get("response") or {}
+        if not isinstance(receipt, dict) or receipt.get("still_queued"):
+            # Native queue ownership is outside this single-turn handover. Never
+            # erase accepted instructions or mistake a queued result for ours.
+            self._ack_interrupt("failed", "interrupt_queue_unresolved")
+            self._error = "Claude interrupt left queued work; cancel or inspect the native session"
+            self._events.put(AdapterEvent(kind="error", data=self._error, raw=obj))
+            # Keep the session and its already-accepted native queue alive. No
+            # follow-up is sent; caller can inspect or explicitly cancel it.
+            return
+        pending["acknowledged"] = True
+        self._ack_interrupt("queued", "interrupt_acknowledged_waiting_turn_end")
+        self._resume_after_interrupt()
+
+    def _resume_after_interrupt(self) -> None:
+        pending = self._interrupt
+        if not pending or not pending["acknowledged"] or pending["result"] is None:
+            return
+        self._events.put(AdapterEvent(kind="turn_completed", data="interrupted_turn_ended", raw=pending["result"]))
+        self._final_parts = []
+        self._result_text = None
+        self._open_tool_blocks.clear()
+        self._interrupt = None
+        self._write_user(pending["content"], client_id=pending["client_id"])
 
     def steer(self, content: str, mode: str, client_id: str) -> SteerResult:
+        with self._lock:
+            return self._steer_locked(content, mode, client_id)
+
+    def _steer_locked(self, content: str, mode: str, client_id: str) -> SteerResult:
         if self._done:
             return SteerResult(
                 ok=False,
@@ -291,8 +395,18 @@ class ClaudeAdapter(BackendAdapter):
                 error=str(e),
             )
         self._pending_steers[client_id] = {"content": content, "replayed": False}
+        if self._interrupt or (mode == "interrupt" and self._queued_user_sent):
+            return SteerResult(ok=False, delivery_class=dclass, status="rejected",
+                               error="Claude handover or queued input is unresolved; no instruction sent")
         try:
-            self._write_user(content, client_id=client_id)
+            if mode == "interrupt":
+                self._interrupt = {"client_id": client_id, "content": content, "sent": False,
+                                   "request_id": "interrupt_" + uuid.uuid4().hex,
+                                   "acknowledged": False, "result": None}
+                self._send_interrupt_if_ready()
+            else:
+                self._queued_user_sent = True
+                self._write_user(content, client_id=client_id)
         except Exception as e:
             return SteerResult(
                 ok=False,
@@ -304,7 +418,6 @@ class ClaudeAdapter(BackendAdapter):
         # Non-blocking: return request_sent immediately so the supervisor can
         # accept more mailbox work. Replay correlation (by client UUID) emits
         # an async steer_ack → applied when the user message is re-emitted.
-        # Hard interrupt rejection is preserved via map_mode/NotImplementedError.
         if self._pending_steers.get(client_id, {}).get("replayed"):
             return SteerResult(
                 ok=True,
@@ -317,7 +430,8 @@ class ClaudeAdapter(BackendAdapter):
             ok=True,
             delivery_class=dclass,
             status="request_sent",
-            evidence="stdin_write",
+            evidence=("interrupt_request_sent" if self._interrupt and self._interrupt["sent"]
+                      else "waiting_native_turn_start" if self._interrupt else "stdin_write"),
             meta={"promptId": client_id},
         )
 

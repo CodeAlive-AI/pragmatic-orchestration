@@ -4,7 +4,8 @@ This first implementation adds one coordinator around existing `porch delegate`.
 It supports local and POSIX SSH hosts, durable weighted reservations, detached
 launch, routed controls, and lost-launch-receipt reconciliation. It does **not**
 yet provision AgentCore or other cloud environments, transfer repositories, set up
-native subscription authentication, or add Claude interrupt support. Backend
+native subscription authentication. Claude live interruption is supported by its
+delegate adapter; see `delegate-runtime.md`. Backend
 capabilities remain those of the ordinary delegate adapter.
 
 ## One coordinator
@@ -16,7 +17,7 @@ separate coordinator database per desktop app, share SQLite over a network mount
 or run a second coordinator when the first is unavailable.
 
 The same Porch version must be installed on participating hosts. Use an absolute
-path to each host's `scripts/porch`. Existing SSH configuration supplies connection
+path to each host's resolved Porch executable. Existing SSH configuration supplies connection
 and authentication; no keys are copied. Windows workers are not qualified here.
 
 Configuration is opt-in via `PORCH_FLEET_CONFIG` or `fleet --config /absolute/file`.

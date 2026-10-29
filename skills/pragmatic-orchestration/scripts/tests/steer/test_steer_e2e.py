@@ -899,8 +899,8 @@ def test_oneshot_regression(tmp: Path) -> None:
     assert_true("default steerable /dev/stdin no fcopyfile", "fcopyfile" not in r.stderr, r.stderr)
 
 
-def test_claude_interrupt_rejected(tmp: Path) -> None:
-    print("=== e2e: claude interrupt rejected ===")
+def test_claude_interrupt_handover(tmp: Path) -> None:
+    print("=== e2e: claude interrupt handover ===")
     reg_root = tmp / "reg-clint"
     art = tmp / "art-clint"
     art.mkdir(parents=True)
@@ -910,31 +910,17 @@ def test_claude_interrupt_rejected(tmp: Path) -> None:
     env = env_base(reg_root, art)
     env["PORCH_FAKE_STEER_SLOW"] = "0.8"
     proc, run_id, _ = start_steerable("claude-code", "task", env, cwd)
-    time.sleep(0.15)
-    r = run_cmd(
-        [str(PORCH), "delegate", "steer", run_id, "--mode", "interrupt", "nope"],
-        env,
-    )
-    # mailbox accepts; protocol rejects — wait a bit and check status
-    time.sleep(0.8)
+    r = run_cmd([str(PORCH), "delegate", "steer", run_id, "--mode", "interrupt", "new direction"], env)
+    assert_true("claude interrupt mailbox accepts", r.returncode == 0, r.stderr)
+    wait_proc(proc, timeout=20)
     st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
     steers = st.get("steers") or []
-    # find interrupt
-    rejected = [
-        s
-        for s in steers
-        if s.get("mailbox_status") == "rejected"
-        or (s.get("error") and "interrupt" in str(s.get("error")).lower())
-    ]
-    assert_true("claude interrupt not silent downgrade", len(rejected) >= 1 or r.returncode == 0, str(steers))
-    # If only accepted still, wait for supervisor to process
-    if not rejected:
-        time.sleep(1.0)
-        st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
-        steers = st.get("steers") or []
-        rejected = [s for s in steers if s.get("mailbox_status") == "rejected"]
-        assert_true("claude interrupt rejected after process", len(rejected) >= 1, str(steers))
-    wait_proc(proc, timeout=20)
+    delivered = [s for s in steers if s.get("delivery_class") == "cancel_and_send"
+                 and s.get("mailbox_status") == "applied"]
+    assert_true("claude interrupt delivered after handover", bool(delivered), str(steers))
+    assert_true("claude replacement completed", st.get("status") == "completed", str(st))
+    final = (reg_root / "runs" / run_id / "final.txt").read_text()
+    assert_true("claude replacement supplies final", "INTERRUPTED" in final, final)
 
 
 def test_process_cleanup(tmp: Path) -> None:
@@ -3281,7 +3267,7 @@ def main() -> int:
         test_cancel(tmp)
         test_duplicate_idempotency(tmp)
         test_malicious_client_id_e2e(tmp)
-        test_claude_interrupt_rejected(tmp)
+        test_claude_interrupt_handover(tmp)
         test_process_cleanup(tmp)
         test_wait_already_terminal(tmp)
         test_wait_running_to_completed(tmp)

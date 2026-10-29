@@ -172,9 +172,39 @@ public output is bounded.
 |---|---|---|
 | `auto` | Normal clarification, added constraint, or preferred direction | Safest native behavior available on the backend |
 | `queue` | Current work may finish before guidance is applied | May affect only the next safe boundary; Grok uses a real next-turn FIFO entry |
-| `interrupt` | Current direction is wrong and partial work should be abandoned | May cancel the active turn/tool flow; Claude rejects instead of silently downgrading |
+| `interrupt` | Current direction is wrong and partial work should be abandoned | May cancel the active turn/tool flow; backend-specific handover rules apply |
 
 For Grok, `auto`/`queue` is the productive default for additive guidance. Use `interrupt` only to replace direction because each later interrupt supersedes the prompt currently running, including an earlier steer.
+
+### Claude interruption and replacement
+
+Claude uses `cancel_and_send`: Porch sends a native interrupt control request,
+waits for its matching success response and the previous turn's result (in either
+order), then sends the replacement instruction into the same process/session.
+An early request waits for that turn's native `system/init`, rather than relying
+on user-message replay as evidence the turn started. This avoids the early-ack
+race documented in [Claude Code issue 98713](https://github.com/anthropics/claude-code/issues/98713).
+The protocol follows the [official SDK implementation](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py).
+
+An interrupt acknowledgement alone does not prove the turn or tool has stopped.
+If no turn result arrives, Porch retains the pending handover and sends no new
+instruction. Inspect events or cancel explicitly. An error result for the
+interrupted turn is not the final result of the replacement task. Partial answer
+text is cleared at handover; a duplicate result UUID cannot complete the new turn.
+
+Overlapping handovers and interrupting a run that already received queued input
+are explicitly refused before new input is sent. Wait for the current handover
+before another steer. Porch does not erase accepted queued instructions. If the
+native interrupt receipt unexpectedly reports queued work, the handover stays
+unresolved with an error event; inspect or explicitly cancel the native session.
+Normal `auto`/`queue` behavior is unchanged.
+
+Verified on Claude Code 2.1.302 with native subscription authentication: interrupt
+a foreground shell, send a replacement instruction, retain the native session and
+finish successfully. The shell's delayed side effect remained absent after its
+original deadline. Interruption is not rollback: completed side effects remain.
+This live-turn capability does not add completed-run or process-restart continuation
+for Claude.
 
 ### What Grok actually does with a steer
 

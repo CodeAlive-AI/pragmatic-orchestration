@@ -167,7 +167,7 @@ def main() -> int:
     ok("grok live_queue", g.live_queue is True)
     ok("grok steerable", g.steerable is True)
     cl = backend_capabilities("claude-code")
-    ok("claude interrupt unsupported", cl.steer_interrupt == "")
+    ok("claude interrupt uses native handover", cl.steer_interrupt == "cancel_and_send")
     gem = backend_capabilities("gemini-cli")
     ok("gemini not steerable", gem.steerable is False and gem.supports_delegate is False)
     ok("gemini final rule plain", gem.final_text_rule == "plain_stdout")

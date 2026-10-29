@@ -128,7 +128,7 @@ _BACKEND_CAPS: Dict[str, BackendCapabilities] = {
         steerable=True,
         steer_auto="queue_next_turn",
         steer_queue="queue_next_turn",
-        steer_interrupt="",  # rejected; no silent downgrade
+        steer_interrupt="cancel_and_send",
         live_queue=False,
         oneshot=True,
         supports_delegate=True,
@@ -136,7 +136,8 @@ _BACKEND_CAPS: Dict[str, BackendCapabilities] = {
         notes=(
             "Authoritative result preferred over streamed deltas; "
             "empty/whitespace result must not erase non-empty deltas. "
-            "Interrupt mode is rejected (no silent downgrade)."
+            "Interrupt waits for native init, control acknowledgement and turn result before new input. "
+            "Preexisting queued input and overlapping handovers are refused explicitly."
         ),
     ),
     "opencode": BackendCapabilities(

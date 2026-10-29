@@ -17,6 +17,7 @@ def main() -> int:
     mode = os.environ.get("PORCH_FAKE_CLAUDE_STEER_MODE", "ok")
     slow = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.3"))
     users = []
+    interrupted = False
 
     # Read stdin lines concurrently-ish: process as they arrive
     # Emit progress first
@@ -44,7 +45,16 @@ def main() -> int:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if obj.get("type") == "user":
+                if obj.get("type") == "control_request":
+                    print(json.dumps({"type": "control_response", "response": {
+                        "subtype": "success", "request_id": obj["request_id"],
+                        "response": {"still_queued": []}}}), flush=True)
+                    print(json.dumps({"type": "result", "uuid": "interrupted-old-turn", "is_error": True}), flush=True)
+                    interrupted = True
+                    users = []
+                    deadline = time.time() + 5.0
+                elif obj.get("type") == "user":
+                    print(json.dumps({"type": "system", "subtype": "init", "session_id": "fake-claude-session"}), flush=True)
                     # Replay user message
                     print(json.dumps(obj), flush=True)
                     users.append(obj)
@@ -87,6 +97,8 @@ def main() -> int:
     result = "FAKE_CLAUDE_STEER_OK"
     if any((u.get("uuid") or "") != "initial" for u in users):
         result += "_STEERED"
+    if interrupted:
+        result += "_INTERRUPTED"
     print(json.dumps({"type": "result", "result": result}), flush=True)
     return 0
 

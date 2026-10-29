@@ -447,3 +447,29 @@ A task-local Porch copy was used for unpaid fake-agent verification; no shared
 installation or production service was changed. Its existing host-level admission
 policy still governs heavy work. Numeric capacities in test/example configurations
 are test fixtures, not approved operating limits for the user's real tasks.
+
+## Implementation checkpoint: Claude live handover, 2026-10-29
+
+The Claude adapter now implements native live interrupt-and-replacement without
+ending the conversation. The native CLI subscription smoke and public Porch smoke
+passed on version 2.1.302; details are in `claude-interrupt-verification.md`.
+This supersedes the earlier statement that Porch rejects every Claude interrupt.
+Queued-input/overlapping handover cases remain explicit unsupported transitions;
+no queue is dropped and no failed instruction is replayed. Durable Claude resume
+across process exit and cloud subscription readiness are still separate work.
+
+## Owner's current execution preferences, 2026-10-29
+
+Owner's decision: remote VM/cloud execution uses Codex only for now; do not finish
+Claude authentication or enroll it in remote placement. Claude CLI 2.1.302 was
+installed in the dev VM user's native directory but remains unauthenticated and
+inactive. No Mac credential was copied. Its already implemented interrupt support
+is retained for future use.
+
+Owner's final profile correction: "Делегатор по дефолту GPT 6.1 Sol high и 6.1 Terra xhigh".
+The standard delegation choices are `codex` (GPT-6.1 Sol/high) and
+`codex-gpt-6.1-terra` (GPT-6.1 Terra/xhigh). This supersedes the intermediate
+Sol/xhigh request. One delegated task still selects one exact profile; this does
+not authorize duplicating every task across both profiles. The shipped profiles
+already have these model/effort settings; fleet examples now enroll only these
+Codex choices.

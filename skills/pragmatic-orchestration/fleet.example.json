@@ -9,7 +9,7 @@
       "automatic": true,
       "capacity": 1,
       "request_timeout_seconds": 60,
-      "agents": ["codex", "claude-opus"],
+      "agents": ["codex", "codex-gpt-6.1-terra"],
       "workspaces": {"feature-a": "/replace/isolated/workspace-a"}
     },
     {
@@ -20,7 +20,7 @@
       "automatic": false,
       "capacity": 1,
       "request_timeout_seconds": 60,
-      "agents": ["codex", "claude-opus"],
+      "agents": ["codex", "codex-gpt-6.1-terra"],
       "workspaces": {"feature-a": "/replace/isolated/workspace-a"}
     }
   ]

@@ -1112,13 +1112,28 @@ def opencode_iter_sessions(store: Store) -> Iterator[SessionRef]:
             store.status, store.error = "unavailable", str(e)
             return
         try:
-            if not table_exists(conn, "session"):
-                store.status, store.error = "unsupported", "no session table"
+            has_v1 = table_exists(conn, "session")
+            has_v2 = table_exists(conn, "session_v2") and table_exists(conn, "session_message")
+            if not has_v1 and not has_v2:
+                store.status, store.error = "unavailable", "no supported OpenCode session tables"
                 return
-            for row in conn.execute(
+            v2_rows = {}
+            if has_v2:
+                for row in conn.execute("SELECT id, directory, title, time_created, time_updated, parent_id, agent, model, version, time_archived FROM session_v2"):
+                    v2_rows[row[0]] = row
+            v1_rows = conn.execute(
                 "SELECT s.id, s.directory, s.title, s.time_created, s.time_updated, s.parent_id, s.agent, s.model, s.version, p.worktree "
                 "FROM session s LEFT JOIN project p ON p.id = s.project_id"
-            ):
+            ).fetchall() if has_v1 else []
+            v1_cols = table_columns(conn, "session") if has_v1 else set()
+            archived = dict(conn.execute("SELECT id, time_archived FROM session")) if "time_archived" in v1_cols else {}
+            for row in v1_rows:
+                v2 = v2_rows.get(row[0])
+                # The v2 background migration can lose v1 assistant messages.
+                # Prefer v1 when the copy has not subsequently changed.
+                if v2 and (v2[4] > row[4] or (v2[9] is not None and archived.get(row[0]) is None)):
+                    continue
+                v2_rows.pop(row[0], None)
                 model = None
                 try:
                     model = json.loads(row[7]).get("id") if row[7] else None
@@ -1131,6 +1146,16 @@ def opencode_iter_sessions(store: Store) -> Iterator[SessionRef]:
                     parent=row[5], models=[m for m in (model,) if m],
                     extra={"agent": row[6], "version": row[8]},
                 )
+            for row in v2_rows.values():
+                try:
+                    model = json.loads(row[7]).get("id") if row[7] else None
+                except (json.JSONDecodeError, AttributeError):
+                    model = row[7]
+                yield SessionRef("opencode", "db", row[0],
+                    locator={"table": "session_v2", "key": row[0], "db": str(store.path)},
+                    title=row[2], cwd=row[1], created=row[3], updated=row[4],
+                    parent=row[5], models=[model] if model else [],
+                    extra={"agent": row[6], "version": row[8]})
         except sqlite3.Error as e:
             store.status, store.error = "unavailable", str(e)
         finally:
@@ -1155,8 +1180,63 @@ def opencode_iter_sessions(store: Store) -> Iterator[SessionRef]:
         )
 
 
+def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    conn = open_sqlite_ro(store.path)
+    try:
+        rows = conn.execute("SELECT id, type, time_created, data FROM session_message WHERE session_id=? ORDER BY seq", (ref.session_id,)).fetchall()
+    finally:
+        conn.close()
+    seq = 0
+    for row_id, row_type, timestamp, raw in rows:
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError("message is not an object")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            stats["malformed"] = stats.get("malformed", 0) + 1
+            continue
+        locator = {"db": str(store.path), "table": "session_message", "key": row_id}
+        model_info = data.get("model") if isinstance(data.get("model"), dict) else {}
+        model, provider = model_info.get("id"), model_info.get("providerID")
+        fragments = []
+        if row_type == "user":
+            fragments.append(("prompt", data.get("text"), "human", None))
+        elif row_type == "assistant":
+            for part in data.get("content") or []:
+                if not isinstance(part, dict):
+                    stats["malformed"] = stats.get("malformed", 0) + 1
+                    continue
+                kind = part.get("type")
+                if kind in ("text", "reasoning"):
+                    fragments.append(("assistant" if kind == "text" else "reasoning", part.get("text"), "agent", None))
+                elif kind == "tool":
+                    state = part.get("state") if isinstance(part.get("state"), dict) else {}
+                    rel = {"call_id": part.get("id"), "tool": part.get("name")}
+                    fragments.append(("tool_call", {"tool": part.get("name"), "input": state.get("input"), "status": state.get("status")}, "agent", rel))
+                    output = state.get("content") or state.get("output") or state.get("error")
+                    if output is not None:
+                        fragments.append(("tool_result", output, "system", rel))
+        elif row_type == "shell":
+            fragments.append(("tool_call", data.get("command"), "human", {"tool": "shell", "call_id": data.get("shellID")}))
+            output = data.get("output")
+            if isinstance(output, dict):
+                output = output.get("output")
+            if output is not None:
+                fragments.append(("tool_result", output, "system", {"tool": "shell", "call_id": data.get("shellID")}))
+        else:
+            fragments.append(("metadata", data, "system", None))
+        for kind, text_value, authorship, rel in fragments:
+            seq += 1
+            yield frag("opencode", "db", ref.session_id, seq, kind, f"session_message.{row_type}", locator,
+                       text=text_value, ts=timestamp, authorship=authorship, model=model, provider=provider,
+                       cwd=ref.cwd, visible=kind in KINDS_CONVO, rel=rel, max_chars=max_chars)
+
+
 def opencode_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
     seq = 0
+    if store.name == "db" and ref.locator.get("table") == "session_v2":
+        yield from _opencode_v2_fragments(store, ref, max_chars, stats)
+        return
     if store.name == "db":
         conn = open_sqlite_ro(store.path)
         try:
@@ -2506,20 +2586,7 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
                               cwd=info.get("cwd"), title=summary.get("generated_title"))
     elif store.harness == "opencode":
         if store.name == "db":
-            try:
-                conn = open_sqlite_ro(p)
-                row = conn.execute(
-                    "SELECT s.id, s.directory, s.title, s.time_created, s.time_updated, s.parent_id, s.agent, s.model, s.version, p.worktree "
-                    "FROM session s LEFT JOIN project p ON p.id = s.project_id WHERE s.id=?", (query_id,)
-                ).fetchone()
-                conn.close()
-            except sqlite3.Error:
-                row = None
-            if row:
-                return SessionRef("opencode", "db", row[0],
-                                  locator={"table": "session", "key": row[0], "db": str(p)},
-                                  title=row[2], cwd=row[1] or row[9], created=row[3], updated=row[4],
-                                  parent=row[5], extra={"agent": row[6], "version": row[8]})
+            return next((ref for ref in opencode_iter_sessions(store) if ref.session_id == query_id), None)
         else:
             hits = list(p.glob(f"session/*/{query_id}.json"))
             if len(hits) == 1:

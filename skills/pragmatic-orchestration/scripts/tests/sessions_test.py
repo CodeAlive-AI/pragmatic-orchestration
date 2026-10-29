@@ -227,6 +227,49 @@ class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
         self.assertTrue(any(f["kind"] == "tool_call" for f in out))
         self.assertTrue(any(f["kind"] == "tool_result" for f in out))
 
+    def test_v2_sessions_and_migration_precedence(self):
+        db = self.make()
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE session_v2 (id TEXT, directory TEXT, title TEXT,
+                time_created INTEGER, time_updated INTEGER, parent_id TEXT,
+                agent TEXT, model TEXT, version TEXT, time_archived INTEGER);
+            CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+        """)
+        conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_1", "/work/repo", "Lossy copy", 1000, 2000, None, None, None, "2", None))
+        conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_v2", "/work/new", "New", 3000, 4000, None, "build", '{"id":"model"}', "2", None))
+        rows = [
+            ("u", "user", {"text": "new prompt"}),
+            ("a", "assistant", {"content": [{"type": "reasoning", "text": "thinking"},
+                {"type": "text", "text": "new answer"}, {"type": "tool", "name": "read",
+                 "id": "c", "state": {"input": {"path": "x"}, "content": [{"type": "text", "text": "file"}]}}]}),
+            ("sh", "shell", {"command": "pwd", "output": {"output": "/work/new"}}),
+        ]
+        for index, (mid, kind, data) in enumerate(rows):
+            conn.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?,?)",
+                         (mid, "ses_v2", kind, index, 3000 + index, 3000 + index, json.dumps(data)))
+        conn.commit()
+        conn.close()
+        store = sessions.Store("opencode", "db", db, "sqlite")
+        refs = {r.session_id: r for r in sessions.opencode_iter_sessions(store)}
+        self.assertEqual(refs["ses_1"].locator["table"], "session")
+        self.assertEqual(refs["ses_v2"].locator["table"], "session_v2")
+        self.assertEqual(sessions.fast_resolve(store, "ses_v2").locator["table"], "session_v2")
+        fragments = list(sessions.opencode_iter_fragments(store, refs["ses_v2"], 0, {}))
+        self.assertTrue(any(f["kind"] == "prompt" and f.get("text") == "new prompt" for f in fragments))
+        self.assertTrue(any(f["kind"] == "assistant" and f.get("text") == "new answer" for f in fragments))
+        self.assertTrue(any(f["kind"] == "tool_result" and "file" in f.get("text", "") for f in fragments))
+        self.assertTrue(any(f["kind"] == "tool_call" and f.get("text") == "pwd" for f in fragments))
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE session_v2 SET time_updated=2500 WHERE id='ses_1'")
+        conn.commit()
+        conn.close()
+        refs = {r.session_id: r for r in sessions.opencode_iter_sessions(store)}
+        self.assertEqual(refs["ses_1"].locator["table"], "session_v2")
+
     def test_storage_tree(self):
         base = self.root / "storage"
         write_json(base / "session" / "p1" / "ses_9.json",

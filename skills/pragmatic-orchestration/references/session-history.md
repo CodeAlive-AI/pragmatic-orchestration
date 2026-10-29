@@ -213,6 +213,10 @@ Codex stores the same threads in several layers with different authority.
 
 ### opencode — `~/.local/share/opencode/opencode.db` + `storage/{session,message,part}/`
 
+- OpenCode 2.x also stores sessions in `session_v2` and typed messages in
+  `session_message`. Migrated sessions can exist in both generations: the v1
+  record wins when the v2 copy is no newer, because that copy can omit steps;
+  a newer or newly archived v2 record wins. Locators name the selected table.
 - SQLite `session` table: id, project_id, parent_id (subagent link),
   directory, title, agent, model, time_created/updated, token counters.
 - Messages live in `message` (role on the message), content in `part`

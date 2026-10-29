@@ -65,6 +65,11 @@ the allocation stays unknown and needs operator investigation; no automatic repl
 or time-based release exists. Multiple matching receipts are reported explicitly.
 
 Known terminal run observations free allocations during subsequent launch selection.
+New supervisor runs also report `cleanup_status`. A terminal task with pending
+or failed adapter cleanup is observed as `cleanup_pending`/`cleanup_failed`, so
+it does not free its allocation. Cleanup errors remain in run metadata/audit.
+This receipt covers adapter process-group cleanup, not escaped detached jobs or
+destruction of an environment; those require their own execution/provider boundary.
 Status displays recorded allocations alongside fresh host observations; use
 `reconcile` to update an individual record. Missing/unreadable registry data cannot
 release a reservation. A host returning no probe is unavailable, not idle.

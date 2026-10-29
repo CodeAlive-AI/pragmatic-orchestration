@@ -541,3 +541,22 @@ one small provider adapter. Keep AWS SDK/lifecycle code outside placement and
 agent adapters, and keep the existing originating chats and two-skill boundary.
 Automatic enrollment still needs its own concrete operational configuration;
 the disposable trial does not establish it.
+
+## Implementation checkpoint: cancellation and cleanup evidence, 2026-10-30
+
+The reproduced controlled-cancellation defect is fixed: RPC group termination
+precedes parent reaping, continues observing the group after the leader exits,
+and kills remaining resistant members. The original macOS reproducer now reports
+no surviving descendant. New regressions run on macOS and Linux; unrelated jobs
+and the caller's group remain protected. Cleanup failures are visible/retryable.
+
+The existing-host MVP now distinguishes task result from adapter cleanup. Each
+new run starts with pending cleanup; completion/failure is recorded separately,
+and fleet does not reuse its allocation while cleanup is pending or failed.
+This advances the coordinator without adding a provider framework or daemon.
+
+Remaining work before automatic cloud enrollment: host-level ownership of nested
+detached jobs, already-exited-backend recovery, durable provider cleanup/result
+exchange, and unattended native subscription bootstrap. No new cloud resources
+or model calls were used for this slice. Verification is recorded under
+`docs/benchmarks/2026-10-30-cancellation-fix/`.

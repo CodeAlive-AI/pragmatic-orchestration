@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-30",
+  "macos": {
+    "new_tests": 6,
+    "failures": 0,
+    "original_reproducer_descendant_survived": false
+  },
+  "linux": {
+    "cancellation": {
+      "tests": 6,
+      "failures": 0
+    },
+    "fleet": {
+      "tests": 6,
+      "failures": 0
+    },
+    "agentcore_guest": {
+      "tests": 8,
+      "failures": 0
+    },
+    "platform": {
+      "tests": 22,
+      "failures": 0,
+      "skipped": 4
+    },
+    "steering_e2e": {
+      "passed": 404,
+      "failed": 0
+    }
+  },
+  "models_called": 0,
+  "cloud_resources_created": 0,
+  "source_sha256": {
+    "skills/pragmatic-orchestration/scripts/lib/steer/util.py": "3e3647562350f659978126e355f1c38b1a5e537e3fe4d81c4289b878e29228fa",
+    "skills/pragmatic-orchestration/scripts/lib/steer/jsonrpc.py": "987da3e5ab69f483785ce760545854373e05ba75f361b7263d3c90d9f7bf4965",
+    "skills/pragmatic-orchestration/scripts/lib/steer/supervisor.py": "099ee48cbb7692c6c4f7f3d844433fcb05355a4035d537b1cebe3c592fa9fa7c",
+    "skills/pragmatic-orchestration/scripts/lib/fleet/hosts.py": "141b83541b53639dd43dc4a6b36ff07fcd91e0d3af4dc42d8622a7d758a09da1"
+  },
+  "limits": [
+    "Controlled inherited process group qualified",
+    "Detached nested jobs and already-exited backend leaders need host-level ownership",
+    "No native Windows execution",
+    "No cloud stop/export/retention qualification"
+  ]
+}

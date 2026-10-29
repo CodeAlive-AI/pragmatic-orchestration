@@ -223,6 +223,7 @@ class Supervisor:
 
         self._update_registry_meta(
             status="running",
+            cleanup_status="pending",
             pid=os.getpid(),
             backend_binary=binary,
             artifacts_dir=self.artifacts_dir,
@@ -1055,15 +1056,21 @@ class Supervisor:
             self._update_registry_state(steers=steers, recover=False)
 
     def _cleanup_adapter(self) -> None:
+        if getattr(self, "_adapter_cleanup_done", False):
+            return
         if not self.adapter:
+            self._update_registry_meta(cleanup_status="completed", cleanup_error=None)
             return
         try:
             child = self.adapter.child_pid()
             self.adapter.close()
             if child:
                 kill_process_group(child, timeout=2.0)
-        except Exception:
-            pass
+            self._adapter_cleanup_done = True
+            self._update_registry_meta(cleanup_status="completed", cleanup_error=None)
+        except Exception as error:
+            self._update_registry_meta(cleanup_status="failed", cleanup_error=str(error))
+            self._registry_notice("adapter_cleanup_failed", str(error))
 
     def _artifacts_need_private_home(self, path: str) -> bool:
         """True when protocol artifacts must not land in project cwd."""

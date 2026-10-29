@@ -1950,6 +1950,12 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/cancellation_test.py"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
 # Session-history readers (synthetic fixtures, offline).
 echo "=== Session history readers (offline) ==="
 set +e

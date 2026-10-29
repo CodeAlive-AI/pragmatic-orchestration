@@ -393,7 +393,7 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
-def kill_process_group(pid: int, timeout: float = 5.0) -> None:
+def kill_process_group(pid: int, timeout: float = 5.0, *, process=None) -> None:
     """Deterministic process-group cancellation. Best-effort, no orphans preferred."""
     if pid <= 0:
         return
@@ -403,31 +403,29 @@ def kill_process_group(pid: int, timeout: float = 5.0) -> None:
         return
     try:
         pgid = os.getpgid(pid)
-    except OSError:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+    except ProcessLookupError:
         return
+    if pgid == os.getpgrp():
+        raise RuntimeError("refusing to cancel the caller's process group")
     try:
         os.killpg(pgid, signal.SIGTERM)
-    except OSError:
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process is not None:
+            process.poll()  # Reap our leader, but observe the entire group.
         try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if not pid_alive(pid):
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
             return
         time.sleep(0.05)
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except OSError:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
+    except ProcessLookupError:
+        return
+    if process is not None:
+        process.wait(timeout=timeout)
 
 
 def resolve_under_root(root: Path, candidate: Path) -> Path:

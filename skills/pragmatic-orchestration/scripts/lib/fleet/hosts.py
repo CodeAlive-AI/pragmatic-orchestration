@@ -23,7 +23,10 @@ def probe():
             if path.is_symlink() or not path.is_dir():
                 continue
             meta = registry.load_meta(path.name)
-            runs[path.name] = meta["status"]
+            status = meta["status"]
+            if status in {"completed", "failed", "cancelled"} and meta.get("cleanup_status", "completed") != "completed":
+                status = "cleanup_" + meta["cleanup_status"]
+            runs[path.name] = status
             if isinstance(meta.get("fleet_request"), dict):
                 requests.append({**meta["fleet_request"], "run_id": path.name, "cwd": meta["cwd"]})
     memory = None

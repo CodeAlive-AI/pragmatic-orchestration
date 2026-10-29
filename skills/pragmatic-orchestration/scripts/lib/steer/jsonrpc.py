@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .util import detached_popen_kwargs, resolve_argv
+from .util import detached_popen_kwargs, resolve_argv, kill_process_group
 
 
 class JsonRpcProcess:
@@ -256,24 +256,17 @@ class JsonRpcProcess:
     def terminate(self) -> None:
         if self._closed:
             return
-        self._closed = True
         if self.proc and self.proc.poll() is None:
+            # Capture and stop the group while its leader still exists. Closing
+            # stdin or waiting for the parent first can orphan live tools.
+            kill_process_group(self.proc.pid, timeout=3.0, process=self.proc)
             try:
                 if self.proc.stdin:
                     self.proc.stdin.close()
             except Exception:
                 pass
-            try:
-                self.proc.terminate()
-            except Exception:
-                pass
-            try:
-                self.proc.wait(timeout=3)
-            except Exception:
-                try:
-                    self.proc.kill()
-                except Exception:
-                    pass
+            self.proc.wait(timeout=3)
+        self._closed = True
         if self._raw_fp:
             try:
                 self._raw_fp.close()

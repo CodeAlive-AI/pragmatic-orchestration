@@ -120,6 +120,21 @@ That result does not establish a reliable resumable stop or task cancellation.
 
 ## Current code gaps and acceptance
 
+**2026-10-30 implementation update:** the controlled-cancellation parent-reaping
+defect below is fixed. RPC termination signals/observes its process group before
+waiting for the leader; observation continues after the leader exits and escalates
+to SIGKILL for resistant remaining members. Permission failures are observable,
+and signalling the caller's group is refused. Supervisor adapter cleanup now has
+pending/completed/failed metadata and an audit error rather than a swallowed
+exception. Fleet keeps terminal tasks with incomplete cleanup allocated.
+See [verification](benchmarks/2026-10-30-cancellation-fix/README.md).
+
+This is the qualified inherited-process-group slice. A backend that has already
+exited before cancellation, nested Porch jobs in separate sessions, and processes
+that escape the group still need a durable host job boundary and reconciliation.
+Adapter cleanup completion is not a claim of complete environment destruction.
+The cloud lifecycle/export/independent cleanup obligations below remain open.
+
 At `821eb2e`, supervisor terminal status is written before its final adapter
 cleanup; `_cleanup_adapter` suppresses exceptions. Fleet terminal observations
 can therefore release capacity without independent process-quiescence evidence.

@@ -24,8 +24,8 @@ porch sessions show   --file PATH          # sniff a single file/db
 
 `history` is an alias of `sessions`. All output is JSONL on stdout: session
 headers (`_session`), fragments, and a final `_summary` record. Diagnostics go
-to stderr; exit codes are 0 ok / 2 partial (some stores unavailable) / 70+ hard
-failure.
+to stderr; exit codes are 0 ok / 2 partial / 3 hard failure. See the
+[compatibility matrix](session-compatibility.md) for per-format evidence.
 
 ## Platform defaults
 
@@ -49,6 +49,9 @@ itself is platform-neutral; only the *default store roots* differ:
 | `omp` | `~/.omp/agent/sessions` | `%USERPROFILE%\.omp\agent\sessions` |
 | `porch` | `~/Library/Caches/pragmatic-orchestration/steer` (macOS), `$XDG_CACHE_HOME/pragmatic-orchestration/steer` (Linux) | `%LOCALAPPDATA%\pragmatic-orchestration\steer` |
 
+Hermes uses `~/.hermes/state.db` (`%USERPROFILE%` on Windows); Cursor also
+checks `~/.cursor/acp-sessions` on every platform.
+
 `PORCH_HISTORY_ROOT_<HARNESS>` overrides any default (uppercase, `-`→`_`),
 `PORCH_STEER_DIR` overrides the porch root. On Linux `claude-desktop`
 and `cursor` fall back to `~/.config/…`. SQLite stores open read-only via a
@@ -65,7 +68,8 @@ data — do not grep before you know which sessions exist.
    confirmed against a live install, `spec` = format documented but only
    fixture-verified, `guess` = best effort). Note which harnesses are absent;
    absence is a fact about the machine, not an error.
-2. **List candidate sessions** — `sessions list`. Cheap metadata scan only:
+2. **List candidate sessions** — `sessions list`. Metadata scan (Cursor ACP
+   graph validation reads its conversation nodes):
    session id, title, cwd, created/updated, models. Filter with `--cwd`,
    `--since/--until`, `-a`, `--store`. Session ids are stable addresses —
    keep them verbatim for `show`.

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import contextlib
+import io
 import os
 import sqlite3
 import subprocess
@@ -203,6 +205,15 @@ class CodexTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(list(sessions.codex_iter_fragments(store, refs[0], 0, stats)), [])
         self.assertEqual(stats["compressed_errors"], 1)
         self.assertFalse(sessions.coverage_summary([store], 1, 0, stats)["scan_complete"])
+
+    def test_missing_zstd_decoder_is_not_silent(self):
+        path = self.root / "rollout-test.jsonl.zst"
+        path.write_bytes(b"compressed fixture")
+        stats = {}
+        with patch.dict(sys.modules, {"compression": None}), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(list(sessions.iter_jsonl(path, stats)), [])
+        self.assertEqual(stats["compressed_errors"], 1)
+        self.assertIn("requires Python 3.14", err.getvalue())
 
 
 class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
@@ -510,6 +521,11 @@ class CursorACPTests(FixtureMixin, unittest.TestCase):
         fragments = list(sessions.cursor_iter_fragments(store, refs[0], 400, {}))
         self.assertEqual([f["text"] for f in fragments], ["user prompt", "assistant response"])
         self.assertEqual(fragments[1]["locator"]["key"], answer_id.hex())
+        env = dict(os.environ, PORCH_HISTORY_ROOT_CURSOR=str(root), PYTHONDONTWRITEBYTECODE="1")
+        proc = subprocess.run([sys.executable, str(LIB / "sessions.py"), "show", "cursor:cursor-acp:" + sid],
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("assistant response", proc.stdout)
         conn = sqlite3.connect(db)
         conn.execute("UPDATE blobs SET data=? WHERE id=?", (field(2, b"tool payload"), step_id.hex()))
         conn.commit()
@@ -1288,6 +1304,15 @@ class CliTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(summary["stores"][0]["status"], "missing")
         self.assertTrue(summary["scan_complete"])
 
+    def test_list_limit_reports_incomplete_scan(self):
+        root, _ = self.make_claude()
+        write_jsonl(root / "other" / "other.jsonl", [
+            {"type": "user", "message": {"role": "user", "content": "another"}},
+        ])
+        proc = self.run_cli("list", "-a", "claude-code", "--limit", "1",
+                            env_extra={"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)})
+        self.assertFalse(self.lines(proc)[-1]["scan_complete"])
+
     def test_grep_searches_full_text_and_returns_match_excerpt(self):
         root = self.root / "claude"
         write_jsonl(root / "project" / "long.jsonl", [
@@ -1309,6 +1334,15 @@ class CliTests(FixtureMixin, unittest.TestCase):
         proc = self.run_cli("grep", "-a", "claude-code", "--max-chars", "0",
                             "Needle", env_extra=env)
         self.assertEqual(len(self.lines(proc)[0]["text"]), 1210)
+
+    def test_grep_case_insensitive_excerpt_uses_original_unicode_offsets(self):
+        root = self.root / "claude"
+        write_jsonl(root / "p" / "unicode.jsonl", [{"type": "user", "message": {
+            "role": "user", "content": "İ" * 600 + "Needle" + "x" * 600}}])
+        proc = self.run_cli("grep", "-a", "claude-code", "-i", "--max-chars", "30", "needle",
+                            env_extra={"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Needle", self.lines(proc)[0]["text"])
 
     def test_no_db_or_index_created(self):
         root, sid = self.make_claude()

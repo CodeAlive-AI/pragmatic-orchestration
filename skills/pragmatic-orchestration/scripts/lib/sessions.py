@@ -2690,14 +2690,18 @@ def cmd_list(args: argparse.Namespace) -> int:
     since, until = parse_time_bound(args.since), parse_time_bound(args.until)
     scanned = emitted = 0
     stats: dict[str, int] = {}
+    truncated = False
     for store in stores:
         for ref in iter_all_sessions(store, args.cwd, since, until):
             scanned += 1
             if args.limit and emitted >= args.limit:
+                truncated = True
                 break
             emit(ref.as_dict())
             emitted += 1
-    emit(coverage_summary(stores, scanned, emitted, stats))
+        if truncated:
+            break
+    emit(coverage_summary(stores, scanned, emitted, stats, truncated=truncated))
     return EXIT_OK if all(s.status != "unavailable" for s in stores) and not stats.get("unreadable") and not stats.get("unsupported_fragments") else EXIT_PARTIAL
 
 
@@ -2714,7 +2718,23 @@ def cmd_grep(args: argparse.Namespace) -> int:
         needle = args.pattern if not args.ignore_case else args.pattern.lower()
         def match(t: str) -> tuple[int, int] | None:
             pos = (t if not args.ignore_case else t.lower()).find(needle)
-            return (pos, pos + len(needle)) if pos >= 0 else None
+            if pos < 0:
+                return None
+            if not args.ignore_case or not needle:
+                return pos, pos + len(needle)
+            # Some Unicode lowercase mappings expand to several characters.
+            # Map the match offsets back to the original excerpt's characters.
+            lower_offset = 0
+            start = end = None
+            for index, char in enumerate(t):
+                next_offset = lower_offset + len(char.lower())
+                if start is None and next_offset > pos:
+                    start = index
+                if next_offset >= pos + len(needle):
+                    end = index + 1
+                    break
+                lower_offset = next_offset
+            return (start, end) if start is not None and end is not None else None
     scanned = emitted = 0
     stats: dict[str, int] = {}
     truncated = False

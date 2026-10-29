@@ -473,3 +473,25 @@ Sol/xhigh request. One delegated task still selects one exact profile; this does
 not authorize duplicating every task across both profiles. The shipped profiles
 already have these model/effort settings; fleet examples now enroll only these
 Codex choices.
+
+## Implementation checkpoint: AgentCore guest qualification, 2026-10-29
+
+Added the guest half of an AgentCore provider: a small HTTP facade around the
+existing fleet CLI, a typed channel with session/boot checks, and an ARM64 image
+recipe. It reuses the existing task registry, reservation/idempotency semantics
+and agent adapters. It creates no AWS resources and does not enroll a provisionable
+cloud pool in the scheduler yet. See `references/agentcore-image.md` in the Porch
+skill for its exact interface and qualification boundary.
+
+The image built on the existing dev VM; its HTTP health/readiness, Codex binary,
+Python, Node and Chromium installation were inspected. Six additional loopback
+protocol tests passed with real Porch supervision and fake agent/auth boundaries.
+No credential was included in the image; it correctly reports subscription
+readiness false and refuses a launch until native subscription login is ready.
+
+The ARM64 Chromium headless test failed under QEMU on the x86 dev VM, reporting
+GPU subprocess launch failure. Browser execution is therefore unqualified. Do not
+hide it by changing flags or calling a different platform's result an ARM pass.
+A native ARM cloud trial is the next decision-changing experiment. Cloud lifecycle,
+passive inventory, object exchange and unattended Codex subscription bootstrap are
+still required before VM-busy → automatic AgentCore overflow can be advertised.

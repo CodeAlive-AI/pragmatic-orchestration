@@ -1,0 +1,8 @@
+{
+  "baseline_commit": "821eb2e",
+  "platform": "darwin",
+  "leader_reaped": true,
+  "descendant_survived": true,
+  "scope": "synthetic own process group; no model/cloud/container",
+  "test_process_cleanup": "SIGKILL sent to this probe group in finally"
+}

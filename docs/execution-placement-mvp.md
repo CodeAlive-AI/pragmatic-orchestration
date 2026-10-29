@@ -135,6 +135,11 @@ package dependency. Keep provider registration explicit at the composition root.
 
 ## Placement, concurrency and failures
 
+The explicit [stop and cleanup contract](execution-lifecycle.md) defines task
+cancellation, compute stop, result preservation and destructive removal. Its
+current-code gaps and failure/restart scenarios must be resolved before automatic
+cloud enrollment. The successful disposable stand teardown is narrower evidence.
+
 Use one authoritative placement store on the existing VM, reached through a small
 Porch command/service over the existing authenticated transport. SQLite on that
 machine is sufficient initially; never share a SQLite file over a network mount.
@@ -288,10 +293,12 @@ is a separate capability from interrupting a live turn.
    coordinator restart, provider failure and result-preservation failure. Record
    measured pressure; use it to propose capacity settings rather than invent them.
 
-The MVP is complete only when both agent backends can perform the agreed control
-flow on existing hosts and the chosen cloud path, with subscription billing and
+Under the owner's latest scope, the MVP is complete only when Codex can perform
+the agreed control flow on existing hosts and the chosen cloud path, including
+qualified stopping/cleanup, subscription billing and
 recoverable task history. Steps 1–2 alone are an intermediate delivery, not the
-full requested result. Other providers are enabled individually after the same
+full requested result. Claude remote enrollment is deferred by the owner; its
+adapter remains available for later qualification. Other providers are enabled individually after the same
 contract tests; there is no requirement to implement all providers now.
 
 Offline tests should focus on meaningful decisions and failures: concurrent claim,
@@ -523,7 +530,10 @@ outcome was treated as unknown, never as confirmation of a stop. The synthetic
 stand was retired through DeleteCapacityProviderSession and passive resource
 inspection. Stop/resume behavior and an interruption deadline remain unqualified.
 
-The next useful slice is supported unattended native subscription bootstrap in a
+The stop/cleanup audit subsequently reproduced a descendant surviving RPC parent
+reaping. Close the cancellation boundary and cleanup-evidence gaps in
+`execution-lifecycle.md` before the next live cloud slice. Then qualify
+supported unattended native subscription bootstrap in a
 separate trusted configuration; reuse the ARAI broker design only after examining
 its source, without its production credentials or services. Then connect passive
 inventory, idempotent acquisition/release and repository/result exchange through

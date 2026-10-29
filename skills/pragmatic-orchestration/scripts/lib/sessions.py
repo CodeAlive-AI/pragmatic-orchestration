@@ -370,6 +370,7 @@ HARNESS_EVIDENCE = {
     "qwen-code": "spec",
     "kimi-code": "spec",
     "omp": "spec",
+    "hermes": "spec",
 }
 
 ENV_ROOT = "PORCH_HISTORY_ROOT_"
@@ -416,6 +417,9 @@ class Store:
 
 def stores_for(harness: str) -> list[Store]:
     ov = _root_override(harness)
+    if harness == "hermes":
+        base = ov or (HOME / ".hermes")
+        return [Store(harness, "state.db", base if base.suffix == ".db" else base / "state.db", "sqlite")]
     if harness == "claude-code":
         roots = [ov] if ov else [HOME / ".claude" / "projects", HOME / ".claude.back" / "projects"]
         return [Store(harness, f"{r.parent.name}/{r.name}", r, "jsonl_dir") for r in roots]
@@ -507,7 +511,7 @@ def stores_for(harness: str) -> list[Store]:
 
 ALL_HARNESSES = [
     "claude-code", "codex", "opencode", "grok", "devin", "gemini",
-    "claude-desktop", "cursor", "qwen-code", "kimi-code", "omp", "porch",
+    "claude-desktop", "cursor", "qwen-code", "kimi-code", "omp", "porch", "hermes",
 ]
 
 
@@ -2361,6 +2365,68 @@ def porch_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
 
 
 # ---------------------------------------------------------------------------
+# Hermes current state database (do not read its config or system prompts)
+# ---------------------------------------------------------------------------
+
+def hermes_iter_sessions(store: Store) -> Iterator[SessionRef]:
+    try:
+        conn = open_sqlite_ro(store.path)
+        try:
+            columns = table_columns(conn, "sessions")
+            required = {"id", "started_at"}
+            if not required.issubset(columns) or not table_exists(conn, "messages"):
+                raise sqlite3.OperationalError("unsupported Hermes state database schema")
+            optional = ("title", "cwd", "model", "parent_session_id", "ended_at", "source")
+            select = ", ".join(name if name in columns else f"NULL AS {name}" for name in optional)
+            rows = conn.execute(f"SELECT id, started_at, {select} FROM sessions").fetchall()
+        finally:
+            conn.close()
+        for sid, started, title, cwd, model, parent, ended, source in rows:
+            yield SessionRef("hermes", store.name, str(sid),
+                locator={"db": str(store.path), "table": "sessions", "key": sid},
+                title=title, cwd=cwd, created=started, updated=ended,
+                models=[model] if model else [], parent=parent, extra={"source": source})
+    except sqlite3.Error as exc:
+        store.status, store.error = "unavailable", str(exc)
+
+
+def hermes_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    try:
+        conn = open_sqlite_ro(store.path)
+        try:
+            columns = table_columns(conn, "messages")
+            if not {"id", "session_id", "role", "content", "timestamp"}.issubset(columns):
+                raise sqlite3.OperationalError("unsupported Hermes messages schema")
+            optional = ("tool_calls", "tool_call_id", "tool_name", "reasoning", "reasoning_content")
+            select = ", ".join(name if name in columns else f"NULL AS {name}" for name in optional)
+            rows = conn.execute(f"SELECT id, role, content, timestamp, {select} FROM messages WHERE session_id=? ORDER BY timestamp, id", (ref.session_id,)).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        store.status, store.error = "unavailable", str(exc)
+        stats["unreadable"] = stats.get("unreadable", 0) + 1
+        return
+    seq = 0
+    for mid, role, content, timestamp, calls, call_id, tool_name, reasoning, reasoning_content in rows:
+        loc = {"db": str(store.path), "table": "messages", "key": mid}
+        items = []
+        if reasoning or reasoning_content:
+            items.append(("reasoning", reasoning or reasoning_content, "agent"))
+        kind, author = {"user": ("prompt", "unknown"), "assistant": ("assistant", "agent"),
+                        "tool": ("tool_result", "system"), "system": ("context", "system")}.get(role, ("unknown", "unknown"))
+        if content:
+            items.append((kind, content, author))
+        if calls:
+            items.append(("tool_call", calls, "agent"))
+        for fragment_kind, text_value, authorship in items:
+            seq += 1
+            yield frag("hermes", store.name, ref.session_id, seq, fragment_kind, f"messages.{role}", loc,
+                       text=text_value, ts=timestamp, authorship=authorship, cwd=ref.cwd,
+                       basis="role=user; local record does not prove human authorship" if role == "user" else "Hermes message role",
+                       rel={"call_id": call_id, "tool": tool_name}, max_chars=max_chars)
+
+
+# ---------------------------------------------------------------------------
 # dispatch tables
 # ---------------------------------------------------------------------------
 
@@ -2377,6 +2443,7 @@ READERS = {
     "kimi-code": (kimi_iter_sessions, kimi_iter_fragments),
     "omp": (omp_iter_sessions, omp_iter_fragments),
     "porch": (porch_iter_sessions, porch_iter_fragments),
+    "hermes": (hermes_iter_sessions, hermes_iter_fragments),
 }
 
 

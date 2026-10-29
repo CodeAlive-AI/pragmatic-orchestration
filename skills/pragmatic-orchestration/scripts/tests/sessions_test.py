@@ -98,6 +98,33 @@ class ClaudeCodeTests(FixtureMixin, unittest.TestCase):
         self.assertTrue(all("line" in f["locator"] for f in out))
 
 
+class HermesTests(FixtureMixin, unittest.TestCase):
+    def test_state_db_read_only(self):
+        db = self.root / "state.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE sessions (id TEXT, started_at REAL, title TEXT, cwd TEXT,
+                model TEXT, parent_session_id TEXT, ended_at REAL, source TEXT, system_prompt TEXT);
+            CREATE TABLE messages (id INTEGER, session_id TEXT, role TEXT, content TEXT,
+                timestamp REAL, tool_calls TEXT, tool_call_id TEXT, tool_name TEXT,
+                reasoning TEXT, reasoning_content TEXT);
+            INSERT INTO sessions VALUES ('h1', 1000, 'Example', '/repo', 'model', NULL, 1002, 'cli', 'not exported');
+            INSERT INTO messages VALUES (1, 'h1', 'user', 'find this', 1000, NULL, NULL, NULL, NULL, NULL);
+            INSERT INTO messages VALUES (2, 'h1', 'assistant', 'answer', 1001, '[{"name":"read"}]', NULL, NULL, 'thinking', NULL);
+            INSERT INTO messages VALUES (3, 'h1', 'tool', 'file contents', 1002, NULL, 'c1', 'read', NULL, NULL);
+        """)
+        conn.commit()
+        conn.close()
+        store = sessions.Store("hermes", "state.db", db, "sqlite")
+        refs = list(sessions.hermes_iter_sessions(store))
+        self.assertEqual(refs[0].title, "Example")
+        self.assertNotIn("not exported", json.dumps(refs[0].as_dict()))
+        fragments = list(sessions.hermes_iter_fragments(store, refs[0], 0, {}))
+        self.assertEqual([f["kind"] for f in fragments], ["prompt", "reasoning", "assistant", "tool_call", "tool_result"])
+        self.assertNotIn("authorship", fragments[0])  # unknown is omitted
+        self.assertEqual(fragments[-1]["locator"]["key"], 3)
+
+
 class CodexTests(FixtureMixin, unittest.TestCase):
     def make(self):
         sid = "99999999-8888-7777-6666-555555555555"

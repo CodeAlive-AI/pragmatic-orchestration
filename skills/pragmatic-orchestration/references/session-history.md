@@ -8,7 +8,7 @@ raw source.
 
 Supported harnesses: `claude-code`, `codex` (CLI + Desktop), `opencode`,
 `grok`, `devin` (CLI/Desktop), `gemini`, `cursor`, `claude-desktop`,
-`qwen-code`, `kimi-code`, `omp`, plus `porch` for this skill's own
+`qwen-code`, `kimi-code`, `omp`, `hermes`, plus `porch` for this skill's own
 delegate/review runs.
 
 ## Command surface
@@ -210,6 +210,13 @@ Codex stores the same threads in several layers with different authority.
 - `history` sessions are grouped prompt-log entries (`native_type
   history.entry`, `authorship=unknown`): useful for prompt search, not a
   transcript.
+
+### hermes — `~/.hermes/state.db`
+
+- Reads current `sessions` and `messages` SQLite tables read-only; legacy JSON
+  exports are not included. Source configuration and system prompts are not read.
+  User-role authorship is unknown because the record does not establish whether
+  the text came from a person or an integration. Fixture-verified.
 
 ### opencode — `~/.local/share/opencode/opencode.db` + `storage/{session,message,part}/`
 

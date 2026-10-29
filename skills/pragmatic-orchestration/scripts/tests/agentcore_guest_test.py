@@ -1,4 +1,6 @@
 """Real loopback HTTP / real Porch supervisor, fake agent and auth; no AWS."""
+import http.client
+import io
 import json
 import os
 import sys
@@ -13,7 +15,7 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPTS / 'lib'))
-from agentcore.server import Guest, handler
+from agentcore.server import Guest, handler, read_chunked
 from agentcore.channel import RunnerChannel, UnknownRunnerOutcome
 
 
@@ -85,6 +87,23 @@ class GuestTests(unittest.TestCase):
         with urllib.request.urlopen(self.url+'/ping') as response:
             self.assertEqual(json.load(response)['status'],'Healthy')
         self.assertFalse(self.invoke('ready')['subscription_ready'])
+
+    def test_http_chunked_invocation(self):
+        body=json.dumps(dict(protocol=1,session_id=self.session,operation='ready')).encode()
+        connection=http.client.HTTPConnection('127.0.0.1',self.server.server_port,timeout=5)
+        self.addCleanup(connection.close)
+        connection.request('POST','/invocations',body=iter([body[:17],body[17:]]),
+                           headers={'Content-Type':'application/json'},encode_chunked=True)
+        response=connection.getresponse()
+        self.assertEqual(response.status,200)
+        self.assertTrue(json.loads(response.read())['runner_ready'])
+
+    def test_chunk_extensions_trailers_and_incomplete_frames(self):
+        framed=b'4;name=value\r\nWiki\r\n5\r\npedia\r\n0\r\nChecksum: unused\r\n\r\n'
+        self.assertEqual(read_chunked(io.BytesIO(framed)),b'Wikipedia')
+        for framed in [b'ZZ\r\n',b'3\r\nhi',b'2\r\nhiXX',b'0\r\n']:
+            with self.subTest(framed=framed),self.assertRaises(ValueError):
+                read_chunked(io.BytesIO(framed))
 
     def test_channel_refuses_cross_boot_and_does_not_replay(self):
         calls=[]

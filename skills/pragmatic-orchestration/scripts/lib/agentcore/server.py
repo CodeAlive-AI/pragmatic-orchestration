@@ -22,6 +22,33 @@ from steer.util import atomic_write_json, flock_exclusive
 from steer.config_loader import agent_settings
 
 
+def read_exact(stream, length):
+    value = stream.read(length)
+    if len(value) != length:
+        raise ValueError("incomplete request body")
+    return value
+
+
+def read_chunked(stream):
+    parts = []
+    while True:
+        line = stream.readline()
+        size = line.removesuffix(b"\r\n").split(b";", 1)[0]
+        if not line.endswith(b"\r\n") or not re.fullmatch(rb"[0-9a-fA-F]+", size):
+            raise ValueError("invalid chunk size")
+        length = int(size, 16)
+        if length == 0:
+            while True:
+                trailer = stream.readline()
+                if trailer == b"\r\n":
+                    return b"".join(parts)
+                if not trailer.endswith(b"\r\n") or b":" not in trailer:
+                    raise ValueError("invalid chunk trailer")
+        parts.append(read_exact(stream, length))
+        if read_exact(stream, 2) != b"\r\n":
+            raise ValueError("invalid chunk terminator")
+
+
 class Guest:
     def __init__(self, config_path):
         self.config_path = Path(config_path).resolve()
@@ -156,10 +183,17 @@ def handler(guest):
                 self.reply(404, {"error": "unknown_path"})
                 return
             try:
-                length = int(self.headers["Content-Length"])
-                if length < 0:
-                    raise ValueError("invalid content length")
-                envelope = json.loads(self.rfile.read(length))
+                transfer = self.headers.get("Transfer-Encoding")
+                if transfer:
+                    if transfer.lower().strip() != "chunked" or self.headers.get("Content-Length") is not None:
+                        raise ValueError("unsupported request framing")
+                    raw = read_chunked(self.rfile)
+                else:
+                    length = self.headers.get("Content-Length", "")
+                    if not length.isascii() or not length.isdecimal():
+                        raise ValueError("invalid content length")
+                    raw = read_exact(self.rfile, int(length))
+                envelope = json.loads(raw)
                 self.reply(200, guest.invoke(envelope))
             except (ValueError, KeyError, TypeError) as error:
                 self.reply(400, {"error": str(error)})

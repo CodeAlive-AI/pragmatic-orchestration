@@ -74,6 +74,9 @@ data — do not grep before you know which sessions exist.
    `kind`, `authorship`, `ts`, `model`, `seq`, and `locator`. Default
    `--scope convo` emits only `prompt` + `assistant` fragments; widen with
    `--scope all|tools|system|reasoning|prompts`.
+   Matching scans the full fragment; `--max-chars` limits only the emitted
+   excerpt around the first match. `text_offset` is the excerpt's character
+   offset in the full fragment. Use `--max-chars 0` to emit the full text.
 4. **Read around a hit** — `sessions show <harness:id> --around SEQ --context N`.
    `seq` is the fragment's native sequence position within its session;
    `--context` emits N *emitted* fragments on each side — counted after

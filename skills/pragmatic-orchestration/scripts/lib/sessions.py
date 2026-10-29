@@ -2397,10 +2397,14 @@ def cmd_grep(args: argparse.Namespace) -> int:
     since, until = parse_time_bound(args.since), parse_time_bound(args.until)
     if args.regex:
         pattern = re.compile(args.pattern, re.IGNORECASE if args.ignore_case else 0)
-        match = lambda t: bool(pattern.search(t))
+        def match(t: str) -> tuple[int, int] | None:
+            found = pattern.search(t)
+            return found.span() if found else None
     else:
         needle = args.pattern if not args.ignore_case else args.pattern.lower()
-        match = (lambda t: needle in t) if not args.ignore_case else (lambda t: needle in t.lower())
+        def match(t: str) -> tuple[int, int] | None:
+            pos = (t if not args.ignore_case else t.lower()).find(needle)
+            return (pos, pos + len(needle)) if pos >= 0 else None
     scanned = emitted = 0
     stats: dict[str, int] = {}
     truncated = False
@@ -2409,12 +2413,20 @@ def cmd_grep(args: argparse.Namespace) -> int:
             continue
         for ref in iter_all_sessions(store, args.cwd, None, None):
             scanned += 1
-            for f in iter_all_fragments(store, ref, args.max_chars, stats):
+            # Match the entire decoded fragment; --max-chars limits output only.
+            for f in iter_all_fragments(store, ref, 0, stats):
                 if not in_scope(f, args.scope) or not in_window(f, since, until):
                     continue
                 text = f.get("text")
-                if text is None or not match(text):
+                span = match(text) if text is not None else None
+                if span is None:
                     continue
+                if args.max_chars > 0 and len(text) > args.max_chars:
+                    start = max(0, min(span[0] - max(0, (args.max_chars - (span[1] - span[0])) // 2),
+                                       len(text) - args.max_chars))
+                    f["text"] = text[start:start + args.max_chars]
+                    f["text_offset"] = start
+                    f["truncated"] = True
                 f["session"] = {k: v for k, v in ref.as_dict().items() if k in ("session_id", "title", "cwd", "created", "parent", "agent")}
                 emit(f)
                 emitted += 1

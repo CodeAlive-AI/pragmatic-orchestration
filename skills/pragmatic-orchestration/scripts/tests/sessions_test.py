@@ -1144,6 +1144,28 @@ class CliTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(summary["stores"][0]["status"], "missing")
         self.assertTrue(summary["scan_complete"])
 
+    def test_grep_searches_full_text_and_returns_match_excerpt(self):
+        root = self.root / "claude"
+        write_jsonl(root / "project" / "long.jsonl", [
+            {"type": "user", "timestamp": "2026-01-11T00:00:01Z",
+             "sessionId": "long", "message": {"role": "user",
+             "content": "x" * 600 + "Needle-123" + "y" * 600}},
+        ])
+        env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)}
+        for query in [("needle", "-i"), ("Needle-[0-9]+", "--regex")]:
+            proc = self.run_cli("grep", "-a", "claude-code", *query, env_extra=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            rows = self.lines(proc)
+            self.assertEqual(len(rows), 2)
+            self.assertIn("Needle", rows[0]["text"])
+            self.assertLessEqual(len(rows[0]["text"]), 400)
+            self.assertGreater(rows[0]["text_offset"], 0)
+            self.assertTrue(rows[0]["truncated"])
+            self.assertTrue(rows[-1]["scan_complete"])
+        proc = self.run_cli("grep", "-a", "claude-code", "--max-chars", "0",
+                            "Needle", env_extra=env)
+        self.assertEqual(len(self.lines(proc)[0]["text"]), 1210)
+
     def test_no_db_or_index_created(self):
         root, sid = self.make_claude()
         env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)}

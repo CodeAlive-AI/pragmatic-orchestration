@@ -46,7 +46,7 @@ Usage:
   porch delegate events RUN_ID [--cursor N] [--max-events N]
   porch delegate list [--active|--all] [--reap] [--json]
   porch quota [all|codex|grok]
-  porch fleet probe|status|plan|launch|control [options]
+  porch fleet probe|status|plan|launch|control|reconcile [options]
   porch ui [--desktop] [--port PORT] [--registry-root PATH]
   porch sessions roots [-a harness[,harness...]] [--store SUBSTR]
   porch sessions list [-a ...] [--store S] [--cwd S] [--since T] [--until T] [--limit N]

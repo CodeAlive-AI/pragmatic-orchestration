@@ -19,11 +19,11 @@ from .store import Store
 
 
 def parser():
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(prog="porch fleet", description=__doc__)
     p.add_argument("--config", default=os.environ.get("PORCH_FLEET_CONFIG"))
     commands = p.add_subparsers(dest="command", required=True)
     commands.add_parser("probe", help="local host observation, no configuration or model call")
-    commands.add_parser("worker-launch", help=argparse.SUPPRESS)
+    commands.add_parser("worker-launch", help="internal worker entrypoint used by the coordinator")
     commands.add_parser("status", help="observe configured hosts and durable reservations")
     sub = commands.add_parser("reconcile", help="recover a lost launch receipt from host registry evidence")
     sub.add_argument("request_id")

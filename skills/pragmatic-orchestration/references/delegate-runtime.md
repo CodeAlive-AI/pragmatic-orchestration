@@ -106,13 +106,30 @@ fails explicitly: reconstructing a latest-run claim could permit duplicate work.
 Conversation continuation does not restart terminated shell tools.
 
 One session admits only one continuation at a time. After a continuation claims
-the session, its predecessor cannot be reused: continue the successful successor.
+the session, its predecessor cannot be reused: continue the latest successor.
 If it failed, was cancelled, or vanished mid-delivery, inspect its result and task
-effects. The runtime rejects continuation of that uncertain outcome and never
-replays a prompt automatically. A failed native resume likewise never starts a
-fresh session. Any recovery requiring a new worker must be a deliberate parent
-decision after reconciling what happened, with an explicit remaining-work prompt.
-Other providers and ordinary ephemeral Codex runs have no completed-run resume.
+effects first. For a terminal durable run with confirmed backend cleanup, opt into
+recovery explicitly and provide a new remaining-work instruction:
+
+```bash
+NEXT_ID=$("$PORCH" delegate -a codex --continue-run "$RUN_ID" --recover-session --detach --name recover-task "Inspect the changes and results already produced, then finish the remaining work without repeating completed steps")
+"$PORCH" delegate wait "$NEXT_ID"
+```
+
+`--recover-session` permits failed/cancelled runs and completed runs with a
+nonzero exit code. It requires `cleanup_status: completed`, the latest-run claim,
+the original profile/model/effort/binary/CWD, and exclusive session access.
+Active or stale runs and missing/failed/pending cleanup are rejected: reconcile
+the old writer before recovery. The old prompt and queued steers are never
+redelivered; only the new instruction is sent to the resumed native thread.
+The successor records `recover_session: true`; the old outcome stays unchanged.
+
+A failed native resume never starts a fresh session. Its successor retains the
+existing handle so, after inspecting the failure, recovery can target that latest
+failed run. Ordinary `--continue-run` still rejects unsuccessful outcomes.
+Other providers and ordinary ephemeral Codex runs have no terminal-run resume.
+If native history is unavailable, a new worker remains a deliberate parent
+decision after reconciling prior effects, with an explicit remaining-work prompt.
 
 ## Bounded event observation
 
@@ -261,7 +278,7 @@ Never interpret `accepted`, `request_sent`, `queued`, or `running` as proof that
   --prompt-file steer.md
 ```
 
-Retry a stable `client_id` only with identical content, mode, and kind. Any mismatch is an idempotency conflict. For an active run, a retry with identical content returns the existing message; a new instruction needs a new client id. A closed mailbox rejects new messages. Reconcile the run outcome first: use `--continue-run` for the latest successful durable Codex run, or deliberately start a new run for remaining work when continuation is unavailable. Failed or uncertain runs require inspection before recovery; never silently replay the original task. Client ids are SHA-256-mapped for paths; the original value remains in JSON.
+Retry a stable `client_id` only with identical content, mode, and kind. Any mismatch is an idempotency conflict. For an active run, a retry with identical content returns the existing message; a new instruction needs a new client id. A closed mailbox rejects new messages. Reconcile the run outcome first: use `--continue-run` for the latest successful durable Codex run, or add `--recover-session` after inspecting a failed/cancelled durable run and confirming cleanup. Deliberately start a new run for remaining work when continuation is unavailable; never silently replay the original task. Client ids are SHA-256-mapped for paths; the original value remains in JSON.
 
 Do not put secrets in tasks or steering guidance unless persistence in private raw/audit artifacts is intentional. Large task and guidance bodies travel through files or mailbox JSON, not large argv/env values.
 

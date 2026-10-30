@@ -713,6 +713,103 @@ class OrchestrationTests(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("outcome may be unknown", p.stderr)
 
+    def test_recover_unsuccessful_session_sends_only_new_instruction(self):
+        for status, code in (("failed", 1), ("cancelled", 130), ("completed", 74)):
+            with self.subTest(status=status):
+                rid = self.start_durable()
+                self.reg.update_meta(rid, status=status, exit_code=code)
+                before = self.reg.load_meta(rid)
+                calls_before = len(self.rpc_calls())
+                p = self.cli("-a", "codex", "--continue-run", rid,
+                             "--recover-session", "INSPECT_AND_FINISH_REMAINING")
+                self.assertEqual(p.returncode, 0, p.stderr)
+                successor = self.reg.load_meta(extract_run_id(p.stderr))
+                self.assertTrue(successor["recover_session"])
+                self.assertEqual(successor["continued_from"], rid)
+                self.assertEqual(successor["session_handle"], before["session_handle"])
+                self.assertEqual(self.reg.load_meta(rid), before)
+                calls = self.rpc_calls()[calls_before:]
+                self.assertEqual(len([c for c in calls if c["method"] == "thread/resume"]), 1)
+                self.assertFalse(any(c["method"] == "thread/start" for c in calls))
+                self.assertEqual([c["params"]["input"][0]["text"] for c in calls
+                                  if c["method"] == "turn/start"], ["INSPECT_AND_FINISH_REMAINING"])
+
+    def test_recover_cancelled_detached_run(self):
+        started = self.cli("-a", "codex", "--persist-session", "--detach", "ORIGINAL",
+                           env=dict(self.env, PORCH_FAKE_STEER_SLOW="10"))
+        self.assertEqual(started.returncode, 0, started.stderr)
+        rid = started.stdout.strip()
+        try:
+            deadline = time.monotonic() + 10
+            while not self.reg.load_meta(rid).get("session_handle") and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue(self.reg.load_meta(rid).get("session_handle"))
+            self.assertEqual(self.cli("cancel", rid).returncode, 0)
+            deadline = time.monotonic() + 10
+            while self.reg.load_meta(rid).get("cleanup_status") != "completed" and time.monotonic() < deadline:
+                time.sleep(.02)
+            previous = self.reg.load_meta(rid)
+            self.assertEqual(previous["status"], "cancelled")
+            p = self.cli("-a", "codex", "--continue-run", rid, "--recover-session", "--detach", "REMAINING")
+            self.assertEqual(p.returncode, 0, p.stderr)
+            next_id = p.stdout.strip()
+            result = self.cli("wait", next_id, "--timeout", "10", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.reg.load_meta(next_id)["session_handle"], previous["session_handle"])
+        finally:
+            if self.reg.load_meta(rid)["status"] not in ("completed", "failed", "cancelled"):
+                self.cli("cancel", rid)
+
+    def test_recovery_rejects_active_or_unclean_source_without_provider_call(self):
+        rid = self.start_durable()
+        for status, cleanup in (("running", "completed"), ("starting", "completed"),
+                                ("failed", "pending"), ("cancelled", "failed"), ("failed", None)):
+            with self.subTest(status=status, cleanup=cleanup):
+                self.reg.update_meta(rid, status=status, exit_code=1, cleanup_status=cleanup)
+                count = len(self.rpc_calls())
+                p = self.cli("-a", "codex", "--continue-run", rid, "--recover-session", "new")
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn("terminal" if status in ("starting", "running") else "cleanup", p.stderr)
+                self.assertEqual(len(self.rpc_calls()), count)
+
+    def test_recover_session_requires_continue_run(self):
+        p = self.cli("-a", "codex", "--recover-session", "task")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("--recover-session requires --continue-run", p.stderr)
+        self.assertFalse(self.rpc_calls())
+
+    def test_failed_native_resume_can_recover_latest_claim(self):
+        rid = self.start_durable()
+        broken = dict(self.env, PORCH_FAKE_CODEX_STEER_MODE="resume-error")
+        p = self.cli("-a", "codex", "--continue-run", rid, "NOT_DELIVERED", env=broken)
+        self.assertNotEqual(p.returncode, 0)
+        failed_id = extract_run_id(p.stderr)
+        failed = self.reg.load_meta(failed_id)
+        self.assertEqual(failed["session_handle"], self.reg.load_meta(rid)["session_handle"])
+        p = self.cli("-a", "codex", "--continue-run", failed_id, "--recover-session", "NEW_RECOVERY")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        calls = self.rpc_calls()
+        self.assertEqual(len([c for c in calls if c["method"] == "thread/start"]), 1)
+        self.assertEqual([c["params"]["input"][0]["text"] for c in calls
+                          if c["method"] == "turn/start"], ["INITIAL_ONLY", "NEW_RECOVERY"])
+
+    def test_recovery_keeps_session_coordination_and_identity_checks(self):
+        rid = self.start_durable()
+        self.reg.update_meta(rid, status="failed", exit_code=1)
+        before = self.reg.load_meta(rid)
+        for field in ("agent_id", "backend", "model", "effort", "backend_binary", "cwd"):
+            with self.subTest(field=field):
+                self.reg.update_meta(rid, **{field: "changed"})
+                count = len(self.rpc_calls())
+                p = self.cli("-a", "codex", "--continue-run", rid, "--recover-session", "new")
+                self.assertNotEqual(p.returncode, 0)
+                self.assertEqual(len(self.rpc_calls()), count)
+                self.reg.update_meta(rid, **{field: before[field]})
+        (self.reg.run_path(rid) / "session.json").unlink()
+        p = self.cli("-a", "codex", "--continue-run", rid, "--recover-session", "new")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("cannot safely continue after registry loss", p.stderr)
+
     def test_lost_session_coordination_fails_without_replaying(self):
         rid = self.start_durable()
         (self.reg.run_path(rid) / "session.json").unlink()

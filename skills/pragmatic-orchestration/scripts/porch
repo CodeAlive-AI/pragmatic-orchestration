@@ -37,6 +37,7 @@ Usage:
   porch delegate -a <exact-agent-id> --detach ["task"]
   porch delegate -a <codex-profile> --persist-session [--detach] "task"
   porch delegate -a <codex-profile> --continue-run RUN_ID [--detach] "follow-up"
+  porch delegate -a <codex-profile> --continue-run RUN_ID --recover-session [--detach] "remaining work"
   porch delegate steer RUN_ID [--mode auto|queue|interrupt] [--prompt-file FILE] "guidance"
   porch delegate status RUN_ID [--json]
   porch delegate cancel RUN_ID

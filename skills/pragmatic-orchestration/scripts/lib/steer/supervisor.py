@@ -110,10 +110,12 @@ class Supervisor:
         run_id_file: str = "",
         persist_session: bool = False,
         continue_run: str = "",
+        recover_session: bool = False,
         run_name: str = "",
     ):
         self.persist_session = persist_session or bool(continue_run)
         self.continue_run = continue_run
+        self.recover_session = recover_session
         self._session_lease = None
         self.run_id_file = run_id_file
         self.agent_id = agent_id
@@ -141,6 +143,8 @@ class Supervisor:
         self._registry_recoveries = 0
 
     def run(self) -> int:
+        if self.recover_session and not self.continue_run:
+            raise RegistryError("--recover-session requires --continue-run")
         agent, backend, model, binary = agent_settings(self.agent_id)
         effort = agent.get("effort") or ""
         if self.persist_session and backend != "codex-cli":
@@ -168,7 +172,8 @@ class Supervisor:
                    "created_at_ns": str(time.time_ns()),
                    **launcher_metadata(os.environ),
                    **fleet_metadata,
-                   "persist_session": self.persist_session, "continued_from": self.continue_run or None},
+                   "persist_session": self.persist_session, "continued_from": self.continue_run or None,
+                   "recover_session": self.recover_session},
             run_name=self.run_name,
         )
         self._registry_meta = self.registry.load_meta(self.run_id)
@@ -248,8 +253,10 @@ class Supervisor:
                 agent_id=self.agent_id,
             )
             if self.persist_session:
-                self._session_lease = SessionLease(self.registry, self.run_id, self.continue_run)
+                self._session_lease = SessionLease(self.registry, self.run_id, self.continue_run,
+                                                   recover_session=self.recover_session)
                 self._session_lease.acquire()
+                self._registry_meta = self.registry.load_meta(self.run_id)
                 self.adapter.persist_session = True
                 self.adapter.resume_thread_id = self._session_lease.handle.get("thread_id", "")
 
@@ -1139,6 +1146,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--agent-id", required=True)
     p.add_argument("--persist-session", action="store_true")
     p.add_argument("--continue-run", default="")
+    p.add_argument("--recover-session", action="store_true")
     p.add_argument("--task-file", required=True)
     p.add_argument("--cwd", default=os.getcwd())
     # Empty string is allowed: supervisor relocates protocol artifacts under the
@@ -1190,6 +1198,7 @@ def main(argv: Optional[list] = None) -> int:
         run_id_file=args.run_id_file,
         persist_session=args.persist_session,
         continue_run=args.continue_run,
+        recover_session=args.recover_session,
         run_name=args.run_name,
     )
     return sup.run()

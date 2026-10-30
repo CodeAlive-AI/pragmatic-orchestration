@@ -1,8 +1,8 @@
 """Opt-in Codex conversation continuation, serialized across linked runs.
 
-A failed/uncertain turn is never replayed. The latest-run claim is written before
-contacting the provider, so a crash leaves an inspectable failed/active claimant
-instead of making the previous successful turn available for blind redelivery.
+A failed/uncertain turn is never replayed. Explicit recovery sends a new prompt
+after cleanup. The handle and latest-run claim are written before contacting the
+provider, so even a failed resume leaves an inspectable, recoverable claimant.
 """
 from __future__ import annotations
 
@@ -15,20 +15,28 @@ from .util import atomic_write_json, read_json, open_lock_fd, lock_exclusive
 
 
 class SessionLease:
-    def __init__(self, registry: Registry, run_id: str, source: str = ""):
+    def __init__(self, registry: Registry, run_id: str, source: str = "", *, recover_session: bool = False):
         self.registry = registry
         self.run_id = run_id
         self.source = source
+        self.recover_session = recover_session
         self.handle: Dict[str, Any] = {}
         self._fd = None
 
     def acquire(self) -> None:
+        if self.recover_session and not self.source:
+            raise RegistryError("--recover-session requires --continue-run")
         current = self.registry.load_meta(self.run_id)
         anchor = self.run_id
         if self.source:
             previous = self.registry.load_meta(self.source)
-            if previous.get("status") != "completed" or previous.get("exit_code") != 0:
-                raise RegistryError("continue requires a successful completed run; previous outcome may be unknown")
+            if self.recover_session:
+                if previous.get("status") not in ("completed", "failed", "cancelled"):
+                    raise RegistryError("recovery requires a terminal run; use steer/cancel for active work")
+                if previous.get("cleanup_status") != "completed":
+                    raise RegistryError("recovery requires completed backend cleanup; inspect and reconcile the old writer first")
+            elif previous.get("status") != "completed" or previous.get("exit_code") != 0:
+                raise RegistryError("continue requires a successful completed run; previous outcome may be unknown; inspect task effects, then use --recover-session with a new remaining-work instruction")
             handle = previous.get("session_handle")
             if not isinstance(handle, dict) or handle.get("backend") != "codex-cli" or not handle.get("thread_id"):
                 raise RegistryError("run has no durable Codex session; start with --persist-session")
@@ -54,8 +62,12 @@ class SessionLease:
                 state = read_json(state_path)
                 if not isinstance(state, dict) or state.get("latest_run_id") != self.source:
                     raise RegistryError(f"source is not the latest session run; inspect successor {state.get('latest_run_id') if isinstance(state, dict) else 'unknown'} before continuing")
-            atomic_write_json(state_path, {"latest_run_id": self.run_id})
             self.handle.update(backend="codex-cli", anchor_run_id=anchor)
+            if self.source:
+                # Save before claiming: a crash or native resume failure must not
+                # strand the latest claimant without its existing thread handle.
+                self.registry.update_meta(self.run_id, session_handle=dict(self.handle))
+            atomic_write_json(state_path, {"latest_run_id": self.run_id})
         except BlockingIOError as e:
             self.close()
             raise RegistryError("session is already in use; no instruction was sent") from e

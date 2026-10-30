@@ -186,8 +186,9 @@ replacement writes, confirm the old writer has stopped and inspect its changes. 
 
 Use `steer` for an active run. For a successfully completed durable Codex run,
 read [Codex follow-ups](delegate-runtime.md#durable-codex-follow-ups) and continue
-the latest run with `--continue-run`. Otherwise, reconcile prior effects and
-start a new worker only for remaining work when justified. An explicitly chosen
+the latest run with `--continue-run`. After failure/cancellation, inspect effects
+and backend cleanup, then add `--recover-session` for the latest durable Codex run.
+When continuation is unavailable, start a new worker only for remaining work when justified. An explicitly chosen
 one-shot run cannot accept steering; do not cancel it merely to change modes.
 
 ## Result review and acceptance

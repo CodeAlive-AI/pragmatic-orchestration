@@ -43,6 +43,7 @@ LAUNCH_MODE="default"
 DETACH=0
 PERSIST_SESSION=0
 CONTINUE_RUN=""
+RECOVER_SESSION=0
 RUN_NAME=""
 
 while [[ $# -gt 0 ]]; do
@@ -92,6 +93,10 @@ while [[ $# -gt 0 ]]; do
             [[ -n "${1:-}" ]] || { echo "Error: --continue-run requires RUN_ID" >&2; exit $EXIT_USAGE; }
             CONTINUE_RUN="$1"
             PERSIST_SESSION=1
+            shift
+            ;;
+        --recover-session)
+            RECOVER_SESSION=1
             shift
             ;;
         --detach)
@@ -149,6 +154,8 @@ before waiting again. Neither observer cancels workers.
 only a new instruction in that session, as a new linked run. It requires the
 latest successful run, the same CWD/profile/model/effort/binary, and exclusive
 session access. Failed or unknown outcomes are never replayed automatically.
+After inspecting effects, add --recover-session to continue a failed/cancelled
+durable run with a new instruction. Backend cleanup must be completed first.
 Exit: 0 completed, 130 cancelled, 70 supervisor died, 74 completed but no
 answer text, otherwise the agent's own failure code.
 
@@ -167,6 +174,7 @@ Options:
   --detach               Start the steerable session detached; print run_id and exit
   --persist-session      Preserve native Codex conversation after completion
   --continue-run RUN_ID   Continue the latest successful durable Codex run
+  --recover-session      Allow --continue-run after failure/cancellation; inspect effects first
   --prompt-file <path>   Task / guidance from file
   -h, --help
 EOF
@@ -239,6 +247,11 @@ if [[ "$BACKEND" == "gemini-cli" || "$SUPPORTS_DELEGATE" == "false" || "$SUPPORT
     exit $EXIT_CONFIG_ERROR
 fi
 
+if [[ "$RECOVER_SESSION" -eq 1 && -z "$CONTINUE_RUN" ]]; then
+    echo "Error: --recover-session requires --continue-run" >&2
+    exit $EXIT_USAGE
+fi
+
 if [[ "$PERSIST_SESSION" -eq 1 && ( "$STEERABLE" -ne 1 || "$BACKEND" != "codex-cli" ) ]]; then
     echo "Error: --persist-session / --continue-run require steerable Codex" >&2
     exit $EXIT_USAGE
@@ -276,6 +289,9 @@ if [[ "$STEERABLE" -eq 1 ]]; then
     fi
     if [[ -n "$CONTINUE_RUN" ]]; then
         REG_ARGS+=(--continue-run "$CONTINUE_RUN")
+    fi
+    if [[ "$RECOVER_SESSION" -eq 1 ]]; then
+        REG_ARGS+=(--recover-session)
     fi
     if [[ -n "${PORCH_STEER_DIR:-}" ]]; then
         REG_ARGS+=(--registry-root "$PORCH_STEER_DIR")

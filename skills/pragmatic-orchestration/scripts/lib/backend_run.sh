@@ -474,7 +474,11 @@ build_cmd_gemini() {
     RUNTIME_SETTINGS_FILE="$(mktemp "${TMPDIR:-/tmp}/porch-gemini-settings.XXXXXX")"
     printf '%s\n' '{"experimental":{"enableAgents":false,"extensionManagement":false,"extensionConfig":false}}' > "$RUNTIME_SETTINGS_FILE"
     export GEMINI_CLI_SYSTEM_SETTINGS_PATH="$RUNTIME_SETTINGS_FILE"
-    CMD=("$BIN" --model "$MODEL" --approval-mode yolo -o text -e none --allowed-mcp-server-names "")
+    # MCP: Gemini CLI filters servers only for a NON-empty allowlist, and since
+    # its policy engine validates allowlist entries, an empty name aborts startup
+    # ("mcpName is required if specified"). A sentinel name that matches no
+    # server keeps the allowlist non-empty, so every configured server is dropped.
+    CMD=("$BIN" --model "$MODEL" --approval-mode yolo -o text -e none --allowed-mcp-server-names porch-no-mcp-servers)
 }
 
 build_cmd_grok() {

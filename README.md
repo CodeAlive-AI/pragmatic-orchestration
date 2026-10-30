@@ -12,7 +12,9 @@ The repo ships two skills in the Agent Skills layout: `pragmatic-orchestration` 
 
 - **review** — independent opinions or multi-depth code review from several model families at once (read-only).
 - **delegate** — hand a task to one exact agent: steerable by default, detachable, with `wait` / `watch` / `events` / `list` to supervise long-running work (full-access runtime).
-- **sessions** — search and navigate local coding-agent session histories.
+- **sessions** — search and navigate local coding-agent session histories. Its
+  format research draws on [Agent Sessions](https://github.com/jazzyalex/agent-sessions);
+  see the [supported formats and evidence](skills/pragmatic-orchestration/references/session-compatibility.md).
 - **quota** — read remaining Codex / Grok subscription quota.
 
 Supported worker harnesses: Codex CLI, Claude Code, OpenCode, Grok Build, Devin CLI, and Gemini CLI (review only).

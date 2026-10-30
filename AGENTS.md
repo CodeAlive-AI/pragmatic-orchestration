@@ -31,6 +31,10 @@ Opt-in real-backend smoke tests: `scripts/tests/steer/smoke_real.sh` — see
 
 ## Versioning and releases
 
+Owner's decision, 2026-10-30: use stable semver releases (for example, `2.1.0`).
+Do not add beta or other prerelease suffixes unless the owner explicitly requests
+a prerelease.
+
 Follow semver. Skill/interface changes (`skills/**`, `.claude-plugin/*`) require
 a version bump in BOTH `.claude-plugin/plugin.json` and
 `.claude-plugin/marketplace.json` (keep them in sync), then:

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import contextlib
+import io
 import os
 import sqlite3
 import subprocess
@@ -98,6 +100,33 @@ class ClaudeCodeTests(FixtureMixin, unittest.TestCase):
         self.assertTrue(all("line" in f["locator"] for f in out))
 
 
+class HermesTests(FixtureMixin, unittest.TestCase):
+    def test_state_db_read_only(self):
+        db = self.root / "state.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE sessions (id TEXT, started_at REAL, title TEXT, cwd TEXT,
+                model TEXT, parent_session_id TEXT, ended_at REAL, source TEXT, system_prompt TEXT);
+            CREATE TABLE messages (id INTEGER, session_id TEXT, role TEXT, content TEXT,
+                timestamp REAL, tool_calls TEXT, tool_call_id TEXT, tool_name TEXT,
+                reasoning TEXT, reasoning_content TEXT);
+            INSERT INTO sessions VALUES ('h1', 1000, 'Example', '/repo', 'model', NULL, 1002, 'cli', 'not exported');
+            INSERT INTO messages VALUES (1, 'h1', 'user', 'find this', 1000, NULL, NULL, NULL, NULL, NULL);
+            INSERT INTO messages VALUES (2, 'h1', 'assistant', 'answer', 1001, '[{"name":"read"}]', NULL, NULL, 'thinking', NULL);
+            INSERT INTO messages VALUES (3, 'h1', 'tool', 'file contents', 1002, NULL, 'c1', 'read', NULL, NULL);
+        """)
+        conn.commit()
+        conn.close()
+        store = sessions.Store("hermes", "state.db", db, "sqlite")
+        refs = list(sessions.hermes_iter_sessions(store))
+        self.assertEqual(refs[0].title, "Example")
+        self.assertNotIn("not exported", json.dumps(refs[0].as_dict()))
+        fragments = list(sessions.hermes_iter_fragments(store, refs[0], 0, {}))
+        self.assertEqual([f["kind"] for f in fragments], ["prompt", "reasoning", "assistant", "tool_call", "tool_result"])
+        self.assertNotIn("authorship", fragments[0])  # unknown is omitted
+        self.assertEqual(fragments[-1]["locator"]["key"], 3)
+
+
 class CodexTests(FixtureMixin, unittest.TestCase):
     def make(self):
         sid = "99999999-8888-7777-6666-555555555555"
@@ -157,6 +186,35 @@ class CodexTests(FixtureMixin, unittest.TestCase):
         # malformed interior line counted, not dropped silently
         self.assertEqual(stats.get("malformed"), 1)
 
+    @unittest.skipUnless(sys.version_info >= (3, 14), "stdlib Zstandard requires Python 3.14")
+    def test_compressed_rollout_and_corruption(self):
+        from compression import zstd
+        root, sid = self.make()
+        path = next(root.rglob("*.jsonl"))
+        compressed = path.with_name(path.name + ".zst")
+        compressed.write_bytes(zstd.compress(path.read_bytes()))
+        path.unlink()
+        store = sessions.Store("codex", "sessions", root, "jsonl_dir")
+        refs = list(sessions.codex_iter_sessions(store))
+        self.assertEqual([r.session_id for r in refs], [sid])
+        stats = {}
+        fragments = list(sessions.codex_iter_fragments(store, refs[0], 0, stats))
+        self.assertTrue(any(f.get("text") == "add a retry loop" for f in fragments))
+        self.assertEqual(fragments[0]["locator"]["file"], str(compressed))
+        compressed.write_bytes(b"not a zstd stream")
+        self.assertEqual(list(sessions.codex_iter_fragments(store, refs[0], 0, stats)), [])
+        self.assertEqual(stats["compressed_errors"], 1)
+        self.assertFalse(sessions.coverage_summary([store], 1, 0, stats)["scan_complete"])
+
+    def test_missing_zstd_decoder_is_not_silent(self):
+        path = self.root / "rollout-test.jsonl.zst"
+        path.write_bytes(b"compressed fixture")
+        stats = {}
+        with patch.dict(sys.modules, {"compression": None}), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(list(sessions.iter_jsonl(path, stats)), [])
+        self.assertEqual(stats["compressed_errors"], 1)
+        self.assertIn("requires Python 3.14", err.getvalue())
+
 
 class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
     def make(self):
@@ -206,6 +264,49 @@ class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
         self.assertTrue(any(f["kind"] == "assistant" and f["text"] == "Fixed it." for f in out))
         self.assertTrue(any(f["kind"] == "tool_call" for f in out))
         self.assertTrue(any(f["kind"] == "tool_result" for f in out))
+
+    def test_v2_sessions_and_migration_precedence(self):
+        db = self.make()
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE session_v2 (id TEXT, directory TEXT, title TEXT,
+                time_created INTEGER, time_updated INTEGER, parent_id TEXT,
+                agent TEXT, model TEXT, version TEXT, time_archived INTEGER);
+            CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+        """)
+        conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_1", "/work/repo", "Lossy copy", 1000, 2000, None, None, None, "2", None))
+        conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_v2", "/work/new", "New", 3000, 4000, None, "build", '{"id":"model"}', "2", None))
+        rows = [
+            ("u", "user", {"text": "new prompt"}),
+            ("a", "assistant", {"content": [{"type": "reasoning", "text": "thinking"},
+                {"type": "text", "text": "new answer"}, {"type": "tool", "name": "read",
+                 "id": "c", "state": {"input": {"path": "x"}, "content": [{"type": "text", "text": "file"}]}}]}),
+            ("sh", "shell", {"command": "pwd", "output": {"output": "/work/new"}}),
+        ]
+        for index, (mid, kind, data) in enumerate(rows):
+            conn.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?,?)",
+                         (mid, "ses_v2", kind, index, 3000 + index, 3000 + index, json.dumps(data)))
+        conn.commit()
+        conn.close()
+        store = sessions.Store("opencode", "db", db, "sqlite")
+        refs = {r.session_id: r for r in sessions.opencode_iter_sessions(store)}
+        self.assertEqual(refs["ses_1"].locator["table"], "session")
+        self.assertEqual(refs["ses_v2"].locator["table"], "session_v2")
+        self.assertEqual(sessions.fast_resolve(store, "ses_v2").locator["table"], "session_v2")
+        fragments = list(sessions.opencode_iter_fragments(store, refs["ses_v2"], 0, {}))
+        self.assertTrue(any(f["kind"] == "prompt" and f.get("text") == "new prompt" for f in fragments))
+        self.assertTrue(any(f["kind"] == "assistant" and f.get("text") == "new answer" for f in fragments))
+        self.assertTrue(any(f["kind"] == "tool_result" and "file" in f.get("text", "") for f in fragments))
+        self.assertTrue(any(f["kind"] == "tool_call" and f.get("text") == "pwd" for f in fragments))
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE session_v2 SET time_updated=2500 WHERE id='ses_1'")
+        conn.commit()
+        conn.close()
+        refs = {r.session_id: r for r in sessions.opencode_iter_sessions(store)}
+        self.assertEqual(refs["ses_1"].locator["table"], "session_v2")
 
     def test_storage_tree(self):
         base = self.root / "storage"
@@ -384,6 +485,65 @@ class CursorTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(out[0]["kind"], "prompt")
         self.assertEqual(out[0]["authorship"], "human")
         self.assertEqual(out[1]["kind"], "assistant")
+
+
+class CursorACPTests(FixtureMixin, unittest.TestCase):
+    def test_graph_and_incomplete_nodes(self):
+        sid = "11111111-2222-3333-4444-555555555555"
+        root = self.root / "acp-sessions"
+        folder = root / sid
+        folder.mkdir(parents=True)
+        write_json(folder / "meta.json", {"schemaVersion": 1, "cwd": "/work"})
+        def field(n, data):
+            self.assertLess(len(data), 128)
+            return bytes([n * 8 + 2, len(data)]) + data
+        ids = [bytes([n]) * 32 for n in range(1, 6)]
+        root_id, turn_id, user_id, step_id, answer_id = ids
+        nodes = {
+            root_id: field(8, turn_id),
+            turn_id: field(1, field(1, user_id) + field(2, step_id)),
+            user_id: field(1, b"user prompt"),
+            step_id: field(1, answer_id),
+            answer_id: field(1, b"assistant response"),
+        }
+        db = folder / "store.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("CREATE TABLE meta (key TEXT, value TEXT); CREATE TABLE blobs (id TEXT, data BLOB);")
+        meta = {"agentId": sid, "latestRootBlobId": root_id.hex(), "name": "ACP"}
+        conn.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps(meta).encode().hex(),))
+        conn.executemany("INSERT INTO blobs VALUES (?, ?)", [(key.hex(), value) for key, value in nodes.items()])
+        conn.commit()
+        conn.close()
+        store = sessions.Store("cursor", "acp", root, "session_dirs")
+        refs = list(sessions.cursor_iter_sessions(store))
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0].session_id, "cursor-acp:" + sid)
+        fragments = list(sessions.cursor_iter_fragments(store, refs[0], 400, {}))
+        self.assertEqual([f["text"] for f in fragments], ["user prompt", "assistant response"])
+        self.assertEqual(fragments[1]["locator"]["key"], answer_id.hex())
+        env = dict(os.environ, PORCH_HISTORY_ROOT_CURSOR=str(root), PYTHONDONTWRITEBYTECODE="1")
+        proc = subprocess.run([sys.executable, str(LIB / "sessions.py"), "show", "cursor:cursor-acp:" + sid],
+                              capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("assistant response", proc.stdout)
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE blobs SET data=? WHERE id=?", (field(2, b"tool payload"), step_id.hex()))
+        conn.commit()
+        conn.close()
+        stats = {}
+        fragments = list(sessions.cursor_iter_fragments(store, refs[0], 400, stats))
+        self.assertEqual([f["text"] for f in fragments], ["user prompt"])
+        self.assertEqual(stats["unsupported_fragments"], 1)
+        self.assertFalse(sessions.coverage_summary([store], 1, 1, stats)["scan_complete"])
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE blobs SET data=? WHERE id=?", (nodes[step_id], step_id.hex()))
+        conn.execute("DELETE FROM blobs WHERE id=?", (answer_id.hex(),))
+        conn.commit()
+        conn.close()
+        stats = {}
+        self.assertEqual(list(sessions.cursor_iter_fragments(store, refs[0], 400, stats)), [])
+        self.assertEqual(stats["unreadable"], 1)
+        self.assertFalse(sessions.coverage_summary([store], 1, 0, stats)["scan_complete"])
 
 
 class CodexIndexTests(FixtureMixin, unittest.TestCase):
@@ -1143,6 +1303,66 @@ class CliTests(FixtureMixin, unittest.TestCase):
         summary = self.lines(proc)[-1]
         self.assertEqual(summary["stores"][0]["status"], "missing")
         self.assertTrue(summary["scan_complete"])
+
+    def test_list_limit_reports_incomplete_scan(self):
+        root, _ = self.make_claude()
+        write_jsonl(root / "other" / "other.jsonl", [
+            {"type": "user", "message": {"role": "user", "content": "another"}},
+        ])
+        proc = self.run_cli("list", "-a", "claude-code", "--limit", "1",
+                            env_extra={"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)})
+        self.assertFalse(self.lines(proc)[-1]["scan_complete"])
+
+    def test_title_exact_cwd_and_grouped_search(self):
+        root, sid = self.make_claude()
+        write_jsonl(root / "other" / "other.jsonl", [
+            {"type": "user", "cwd": "/work/repo-copy", "message": {"role": "user", "content": "needle"}},
+        ])
+        env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)}
+        proc = self.run_cli("list", "-a", "claude-code", "--title", "cli TEST", env_extra=env)
+        rows = self.lines(proc)
+        self.assertEqual(rows[0]["session_id"], f"-work-repo/{sid}")
+        self.assertEqual(len(rows), 2)
+        proc = self.run_cli("grep", "-a", "claude-code", "--cwd", "/work/repo", "--cwd-exact",
+                            "--group-by-session", "needle", env_extra=env)
+        rows = self.lines(proc)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["_session"]["session_id"], f"-work-repo/{sid}")
+        self.assertEqual(rows[0]["matches"][0]["text"], "needle in the haystack")
+        self.assertTrue(rows[-1]["scan_complete"])
+        proc = self.run_cli("grep", "--cwd-exact", "needle", env_extra=env)
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_grep_searches_full_text_and_returns_match_excerpt(self):
+        root = self.root / "claude"
+        write_jsonl(root / "project" / "long.jsonl", [
+            {"type": "user", "timestamp": "2026-01-11T00:00:01Z",
+             "sessionId": "long", "message": {"role": "user",
+             "content": "x" * 600 + "Needle-123" + "y" * 600}},
+        ])
+        env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)}
+        for query in [("needle", "-i"), ("Needle-[0-9]+", "--regex")]:
+            proc = self.run_cli("grep", "-a", "claude-code", *query, env_extra=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            rows = self.lines(proc)
+            self.assertEqual(len(rows), 2)
+            self.assertIn("Needle", rows[0]["text"])
+            self.assertLessEqual(len(rows[0]["text"]), 400)
+            self.assertGreater(rows[0]["text_offset"], 0)
+            self.assertTrue(rows[0]["truncated"])
+            self.assertTrue(rows[-1]["scan_complete"])
+        proc = self.run_cli("grep", "-a", "claude-code", "--max-chars", "0",
+                            "Needle", env_extra=env)
+        self.assertEqual(len(self.lines(proc)[0]["text"]), 1210)
+
+    def test_grep_case_insensitive_excerpt_uses_original_unicode_offsets(self):
+        root = self.root / "claude"
+        write_jsonl(root / "p" / "unicode.jsonl", [{"type": "user", "message": {
+            "role": "user", "content": "İ" * 600 + "Needle" + "x" * 600}}])
+        proc = self.run_cli("grep", "-a", "claude-code", "-i", "--max-chars", "30", "needle",
+                            env_extra={"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(root)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Needle", self.lines(proc)[0]["text"])
 
     def test_no_db_or_index_created(self):
         root, sid = self.make_claude()

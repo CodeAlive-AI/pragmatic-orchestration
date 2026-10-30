@@ -8,15 +8,15 @@ raw source.
 
 Supported harnesses: `claude-code`, `codex` (CLI + Desktop), `opencode`,
 `grok`, `devin` (CLI/Desktop), `gemini`, `cursor`, `claude-desktop`,
-`qwen-code`, `kimi-code`, `omp`, plus `porch` for this skill's own
+`qwen-code`, `kimi-code`, `omp`, `hermes`, plus `porch` for this skill's own
 delegate/review runs.
 
 ## Command surface
 
 ```bash
 porch sessions roots  [-a h1,h2] [--store SUBSTR]
-porch sessions list   [-a h1,h2] [--store S] [--cwd S] [--since T] [--until T] [--limit N]
-porch sessions grep   [-a h1,h2] [--scope S] [-i] [--regex] [--limit N] PATTERN
+porch sessions list   [-a h1,h2] [--store S] [--cwd S] [--cwd-exact] [--title S] [--since T] [--until T] [--limit N]
+porch sessions grep   [-a h1,h2] [--scope S] [-i] [--regex] [--group-by-session] [--limit N] PATTERN
 porch sessions show   <harness:session-id> [--scope S] [--limit N]
 porch sessions show   <harness:session-id> --around SEQ [--context N]
 porch sessions show   --file PATH          # sniff a single file/db
@@ -24,8 +24,8 @@ porch sessions show   --file PATH          # sniff a single file/db
 
 `history` is an alias of `sessions`. All output is JSONL on stdout: session
 headers (`_session`), fragments, and a final `_summary` record. Diagnostics go
-to stderr; exit codes are 0 ok / 2 partial (some stores unavailable) / 70+ hard
-failure.
+to stderr; exit codes are 0 ok / 2 partial / 3 hard failure. See the
+[compatibility matrix](session-compatibility.md) for per-format evidence.
 
 ## Platform defaults
 
@@ -49,6 +49,9 @@ itself is platform-neutral; only the *default store roots* differ:
 | `omp` | `~/.omp/agent/sessions` | `%USERPROFILE%\.omp\agent\sessions` |
 | `porch` | `~/Library/Caches/pragmatic-orchestration/steer` (macOS), `$XDG_CACHE_HOME/pragmatic-orchestration/steer` (Linux) | `%LOCALAPPDATA%\pragmatic-orchestration\steer` |
 
+Hermes uses `~/.hermes/state.db` (`%USERPROFILE%` on Windows); Cursor also
+checks `~/.cursor/acp-sessions` on every platform.
+
 `PORCH_HISTORY_ROOT_<HARNESS>` overrides any default (uppercase, `-`→`_`),
 `PORCH_STEER_DIR` overrides the porch root. On Linux `claude-desktop`
 and `cursor` fall back to `~/.config/…`. SQLite stores open read-only via a
@@ -65,7 +68,8 @@ data — do not grep before you know which sessions exist.
    confirmed against a live install, `spec` = format documented but only
    fixture-verified, `guess` = best effort). Note which harnesses are absent;
    absence is a fact about the machine, not an error.
-2. **List candidate sessions** — `sessions list`. Cheap metadata scan only:
+2. **List candidate sessions** — `sessions list`. Metadata scan (Cursor ACP
+   graph validation reads its conversation nodes):
    session id, title, cwd, created/updated, models. Filter with `--cwd`,
    `--since/--until`, `-a`, `--store`. Session ids are stable addresses —
    keep them verbatim for `show`.
@@ -74,6 +78,13 @@ data — do not grep before you know which sessions exist.
    `kind`, `authorship`, `ts`, `model`, `seq`, and `locator`. Default
    `--scope convo` emits only `prompt` + `assistant` fragments; widen with
    `--scope all|tools|system|reasoning|prompts`.
+   Matching scans the full fragment; `--max-chars` limits only the emitted
+   excerpt around the first match. `text_offset` is the excerpt's character
+   offset in the full fragment. Use `--max-chars 0` to emit the full text.
+   `list --title` filters recorded titles case-insensitively. For `list` or
+   `grep`, combine `--cwd` and `--cwd-exact` to distinguish similarly named
+   project paths. `grep --group-by-session` emits one object per source
+   session with a `matches` array; `--limit` still counts matching fragments.
 4. **Read around a hit** — `sessions show <harness:id> --around SEQ --context N`.
    `seq` is the fragment's native sequence position within its session;
    `--context` emits N *emitted* fragments on each side — counted after
@@ -170,7 +181,7 @@ Codex stores the same threads in several layers with different authority.
 
 | store | path | authority |
 |---|---|---|
-| `sessions`, `archived` | `~/.codex/{sessions,archived_sessions}/YYYY/MM/DD/rollout-*.jsonl` | **canonical conversation body** |
+| `sessions`, `archived` | `~/.codex/{sessions,archived_sessions}/YYYY/MM/DD/rollout-*.jsonl[.zst]` | **canonical conversation body** |
 | `state:state_N.sqlite` | `~/.codex/state_*.sqlite` | canonical thread index (all surfaces: CLI, VS Code, exec) |
 | `catalog` | `~/.codex/sqlite/codex-dev.db` → `local_thread_catalog` | Desktop/sidebar catalog — includes `chatgpt` cloud threads with **no local transcript** |
 | `summaries` | `~/.codex/sqlite/codex-thread-summaries-dev.db` → `thread_turn_summaries` | app-generated summaries, not messages |
@@ -195,6 +206,8 @@ Codex stores the same threads in several layers with different authority.
   `response_item` (typed payload: message/reasoning/function_call/…),
   `event_msg` (user-facing events), `token_count` (cumulative usage — never
   sum across records), `compacted`/`turn_aborted` markers.
+- Compressed Codex rollouts require Python 3.14+ (stdlib Zstandard). With an
+  older runtime or a corrupt archive the reader reports an incomplete scan.
 - **Genuine prompts come from `event_msg` with `user_message` payload**, or
   `response_item` `message` with `role=user` whose text is not bootstrap
   material. `response_item` user-role messages containing
@@ -206,8 +219,19 @@ Codex stores the same threads in several layers with different authority.
   history.entry`, `authorship=unknown`): useful for prompt search, not a
   transcript.
 
+### hermes — `~/.hermes/state.db`
+
+- Reads current `sessions` and `messages` SQLite tables read-only; legacy JSON
+  exports are not included. Source configuration and system prompts are not read.
+  User-role authorship is unknown because the record does not establish whether
+  the text came from a person or an integration. Fixture-verified.
+
 ### opencode — `~/.local/share/opencode/opencode.db` + `storage/{session,message,part}/`
 
+- OpenCode 2.x also stores sessions in `session_v2` and typed messages in
+  `session_message`. Migrated sessions can exist in both generations: the v1
+  record wins when the v2 copy is no newer, because that copy can omit steps;
+  a newer or newly archived v2 record wins. Locators name the selected table.
 - SQLite `session` table: id, project_id, parent_id (subagent link),
   directory, title, agent, model, time_created/updated, token counters.
 - Messages live in `message` (role on the message), content in `part`
@@ -248,6 +272,12 @@ Codex stores the same threads in several layers with different authority.
 
 ### cursor — `~/Library/Application Support/Cursor/User/{globalStorage,workspaceStorage/*/}state.vscdb`
 
+- ACP sessions under `~/.cursor/acp-sessions/<uuid>/store.db` are read as a
+  validated SQLite/protobuf graph. User and assistant text includes blob
+  locators; shell, tool and reasoning nodes are not decoded. When such nodes
+  occur, `unsupported_fragments` makes the scan explicitly incomplete.
+- ACP support is fixture-verified; malformed graphs are reported unavailable,
+  and never produce a partial transcript as a complete result.
 - VS Code KV sqlite (`cursorDiskKV` table). Sessions are `composerData:<id>`
   keys: `name` (title), `createdAt`, `lastUpdatedAt`, `usageData` (per-model
   token counters).

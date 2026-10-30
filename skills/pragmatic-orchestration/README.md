@@ -243,9 +243,20 @@ run is known.
 
 `sessions` reads the session stores your coding agents already write —
 Claude Code, Codex CLI/Desktop, OpenCode, Grok, Devin CLI, Gemini, Cursor,
-Qwen Code, Kimi Code, OMP, Claude Desktop, and Porch's own runs. It
+Qwen Code, Kimi Code, OMP, Hermes, Claude Desktop, and Porch's own runs. It
 creates no index or database; every record carries a native locator
 (file:line or db table:key) back to the raw source.
+
+`grep` searches normalized text from JSON, SQLite, and other supported stores;
+it is not a shell call to grep or ripgrep. Matching uses the full text, then
+returns a bounded excerpt around the match. Format details and verification
+status are in the [compatibility matrix](references/session-compatibility.md).
+Compressed Codex rollouts require Python 3.14+. Cursor ACP currently exposes
+conversation text; omitted tool, shell, or reasoning nodes make coverage partial.
+
+We are grateful to [Agent Sessions](https://github.com/jazzyalex/agent-sessions)
+for its open-source format research, fixtures, and session-browser ideas that
+informed the Codex, OpenCode, Cursor ACP, and Hermes integrations.
 
 Multi-layer stores keep their authority straight: Codex surfaces the
 canonical `rollout-*.jsonl` bodies, the `state_*.sqlite` thread index
@@ -263,6 +274,10 @@ scripts/porch sessions roots
 
 # Recent Codex sessions in a project
 scripts/porch sessions list -a codex --since 2026-01-01 --cwd my-project
+
+# Find a title or group matching fragments by session
+scripts/porch sessions list --title "retry"
+scripts/porch sessions grep --cwd /work/repo --cwd-exact --group-by-session "retry"
 
 # What did the human actually ask? (prompts only, all harnesses)
 scripts/porch sessions grep --scope prompts -i "rollback"

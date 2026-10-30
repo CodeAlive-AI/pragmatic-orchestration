@@ -247,5 +247,6 @@ Codex continuation, load the relevant section of
 | [references/ui.md](references/ui.md) | optional Electron/local web observer, setup, live output, limits |
 | [references/runtime-contracts.md](references/runtime-contracts.md) | events, debug tape, safety/capabilities, workflows, prompt layers, artifacts |
 | [references/session-history.md](references/session-history.md) | `sessions` navigation algorithm, per-harness store map, classification contract |
+| [references/session-compatibility.md](references/session-compatibility.md) | session format support, verification evidence, and limitations |
 | [references/testing.md](references/testing.md) | offline suite and opt-in real-backend smoke tests |
 | [ACP-RESEARCH.md](ACP-RESEARCH.md) | deferred ACP transport research |

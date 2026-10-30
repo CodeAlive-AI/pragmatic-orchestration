@@ -69,6 +69,12 @@ to use the new id. OpenCode Go lists this as Gemini 4 Argon **Contributor**:
 prompts and completions may be used to train Google models, and it is not ZDR.
 See the [Go catalog and privacy terms](https://dev.opencode.ai/v2/docs/console/go/).
 
+The [current OpenCode Go profiles](opencode-go.md) cover all 28 tool-capable
+models verified on 2026-10-30, including DeepSeek V4.1 Flash, DeepSeek V4 Pro,
+GLM 5.3/Flash, Qwen 3.8 Max/Flash, Kimi K3.1 Pro and MiniMax M3.1 Flash.
+Use `-a opencode-go-<model-id>` for an exact model. The new profiles are opt-in;
+copy them from `config.example.json` when maintaining an existing local config.
+
 The disabled-by-default `opencode-go-muse-spark-1.3-contributor` and
 `opencode-go-deepseek-v4.1-flash` profiles use the OpenCode Go catalog at
 their maximum effort (`xhigh` for Muse and `max` for DeepSeek). Select either

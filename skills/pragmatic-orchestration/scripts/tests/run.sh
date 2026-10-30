@@ -1869,6 +1869,12 @@ else
 fi
 
 echo "=== Shared runtime contracts (offline) ==="
+if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/opencode_go_test.py" -v; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
 set +e
 CONTRACT_OUT=$(PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$TESTS_DIR/runtime_contracts.py" 2>&1)
 CONTRACT_RC=$?

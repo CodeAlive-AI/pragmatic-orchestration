@@ -136,6 +136,206 @@
       "role": "analyst",
       "label": "OC-Go DeepSeek V4.1 Flash"
     },
+    "opencode-go-beam-free": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/beam-free",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go Beam Free"
+    },
+    "opencode-go-claude-haiku-5-5": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/claude-haiku-5-5",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go Claude Haiku 5.5"
+    },
+    "opencode-go-deepseek-v4-pro": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/deepseek-v4-pro",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go DeepSeek V4 Pro"
+    },
+    "opencode-go-gemini-4-argon": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/gemini-4-argon",
+      "effort": "high",
+      "role": "lateral",
+      "label": "OC-Go Gemini 4 Argon"
+    },
+    "opencode-go-glm-5.2": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/glm-5.2",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go GLM-5.2"
+    },
+    "opencode-go-glm-5.3": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/glm-5.3",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go GLM-5.3"
+    },
+    "opencode-go-glm-5.3-flash": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/glm-5.3-flash",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go GLM-5.3-Flash"
+    },
+    "opencode-go-gpt-5.6-luna": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/gpt-5.6-luna",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go GPT-5.6 Luna"
+    },
+    "opencode-go-gpt-6-luna": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/gpt-6-luna",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go GPT-6 Luna"
+    },
+    "opencode-go-grok-4.7": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/grok-4.7",
+      "effort": "xhigh",
+      "role": "analyst",
+      "label": "OC-Go Grok 4.7"
+    },
+    "opencode-go-hy3": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/hy3",
+      "effort": "high",
+      "role": "lateral",
+      "label": "OC-Go Hy3"
+    },
+    "opencode-go-hy4-preview": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/hy4-preview",
+      "effort": "high",
+      "role": "lateral",
+      "label": "OC-Go Hy4 preview"
+    },
+    "opencode-go-iceman-contributor-free": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/iceman-contributor-free",
+      "effort": "none",
+      "role": "analyst",
+      "label": "OC-Go Iceman Contributor Free"
+    },
+    "opencode-go-kimi-k2.7-code": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/kimi-k2.7-code",
+      "effort": "none",
+      "role": "analyst",
+      "label": "OC-Go Kimi K2.7 Code"
+    },
+    "opencode-go-kimi-k3.1-pro": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/kimi-k3.1-pro",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go Kimi K3.1 Pro"
+    },
+    "opencode-go-longcat-2.0": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/longcat-2.0",
+      "effort": "high",
+      "role": "analyst",
+      "label": "OC-Go LongCat-2.0"
+    },
+    "opencode-go-mimo-v2.6-flash": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/mimo-v2.6-flash",
+      "effort": "none",
+      "role": "lateral",
+      "label": "OC-Go MiMo-V2.6-Flash"
+    },
+    "opencode-go-mimo-v2.6-pro": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/mimo-v2.6-pro",
+      "effort": "none",
+      "role": "lateral",
+      "label": "OC-Go MiMo-V2.6-Pro"
+    },
+    "opencode-go-minimax-m3": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/minimax-m3",
+      "effort": "thinking",
+      "role": "lateral",
+      "label": "OC-Go MiniMax-M3"
+    },
+    "opencode-go-minimax-m3.1-flash": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/minimax-m3.1-flash",
+      "effort": "max",
+      "role": "lateral",
+      "label": "OC-Go MiniMax M3.1 Flash"
+    },
+    "opencode-go-muse-spark-1.2-contributor": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/muse-spark-1.2-contributor",
+      "effort": "xhigh",
+      "role": "lateral",
+      "label": "OC-Go Muse Spark 1.2 Contributor"
+    },
+    "opencode-go-qwen3.7-plus": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/qwen3.7-plus",
+      "effort": "max",
+      "role": "analyst",
+      "label": "OC-Go Qwen3.7 Plus"
+    },
+    "opencode-go-qwen3.8-flash": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/qwen3.8-flash",
+      "effort": "xhigh",
+      "role": "analyst",
+      "label": "OC-Go Qwen3.8 Flash"
+    },
+    "opencode-go-qwen3.8-max": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/qwen3.8-max",
+      "effort": "xhigh",
+      "role": "analyst",
+      "label": "OC-Go Qwen3.8 Max"
+    },
+    "opencode-go-step-5-preview": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/step-5-preview",
+      "effort": "high",
+      "role": "analyst",
+      "label": "OC-Go Step 5 Preview"
+    },
     "opencode-synthetic-kimi-k3": {
       "enabled": false,
       "backend": "opencode",

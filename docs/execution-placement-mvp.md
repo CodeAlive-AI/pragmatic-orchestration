@@ -560,3 +560,31 @@ detached jobs, already-exited-backend recovery, durable provider cleanup/result
 exchange, and unattended native subscription bootstrap. No new cloud resources
 or model calls were used for this slice. Verification is recorded under
 `docs/benchmarks/2026-10-30-cancellation-fix/`.
+
+## Implementation checkpoint: real development task, 2026-10-30
+
+At the owner's request, a native ARM AgentCore worker using the existing Codex
+subscription and GPT-6.1 Terra / medium completed a real ARAI formatter task.
+Its original-policy regression failed and the correction passed; selected HTTP
+tests (52), the quick app check (880), lint and three TypeScript projects passed.
+A real Chromium landing lane had 20 passes and one Kazakh 320px reflow failure;
+full Docker-dependent App E2E remains unqualified. ARAI retains the detailed
+record at `docs/benchmarks/2026-10-30-agentcore-development-smoke/` in its repo.
+
+The trial found and repaired the missing Codex code-mode companion and idle
+bootstrap reporting; see the [image qualification](benchmarks/2026-10-30-agentcore-code-host/README.md).
+The owner authorized preserving the native login profile and installation ID
+for reuse. They are protected outside source/images and were exported before
+the trial session was deleted. Automatic profile seeding and concurrent token
+refresh are still separate work; this does not establish a permanent login pool.
+
+All 20 passive final cleanup checks passed at 2026-10-30 04:25 UTC, including
+both trial runtimes/identities, compute, work volumes, networking and roles.
+No trial resources remain and no production deployment or Git publication ran.
+
+The next infrastructure slice is a private Tailscale/SSH bridge to the shared
+Docker VM, with exact revision transfer and whole Docker-backed test lanes in
+isolated server checkouts. The owner confirmed tailnet administrator access;
+service SSH authorization and enrollment setup are pending. Docker API access
+alone does not make server bind paths and localhost ports available to a guest.
+Keep provider lifecycle, source exchange and auth outside the placement core.

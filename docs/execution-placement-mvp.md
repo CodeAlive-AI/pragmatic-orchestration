@@ -4,7 +4,15 @@ Status: incremental implementation authorized by the owner on 2026-10-29.
 The existing-host slice is implemented; the native AgentCore guest passed a
 bounded qualification trial. Automatic cloud provisioning remains planned.
 See the implementation checkpoint and execution-placement-verification.md for evidence.
-Updated: 2026-10-29.
+Updated: 2026-10-30.
+
+All execution environments use the existing shared development Docker services
+by default. Task-specific image exceptions need durable ownership and verified
+disposal, independently of the agent VM. See
+[shared development resources](shared-development-resources.md) for the owner's
+decision, the small fleet-store extension and remaining acceptance work. Native
+ARM64 AgentCore access to shared Docker passed an operator-controlled smoke;
+automatic enrollment and resource disposal remain planned.
 
 ## Initial plan saved before updating the clone
 

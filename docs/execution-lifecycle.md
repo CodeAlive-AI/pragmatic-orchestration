@@ -37,6 +37,12 @@ resources rather than allocate a replacement or delete a broad project prefix.
 
 ## The normal completion/cancellation path
 
+The owner's 2026-10-30 [shared Docker decision](shared-development-resources.md)
+adds a resource boundary independent of the agent VM. Reuse existing services;
+record justified private images and their containers/data per task. Dispose those
+resources on their actual host, preserving shared services, base images and foreign
+references. The qualified manual bridge does not implement the general disposer.
+
 1. Persist the desired action against the original task/environment operation.
    Repeated cancel/cleanup commands join that operation.
 2. Stop new task input and new descendants. Ask the native backend to interrupt

@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-30",
+  "motivation": "Prepare source transfer and native dependency builds for the requested shared development bridge",
+  "image_tag": "porch-agentcore:dev-tools-20261030",
+  "image_index": "sha256:9478a9b024ff5a73a334de067c3ea2420c55ced282ee1c5abe9215ac71c032de",
+  "dockerfile_sha256": "75e244671ddcba56d23d49c6673b0454b12e4777e2e8fce48017073ad4189f09",
+  "platform": "linux/arm64 under emulation on dev-docker-sg",
+  "build": "passed",
+  "smoke": {
+    "uid": 1000,
+    "capabilities": "all dropped",
+    "network": "none",
+    "cgroup_parent": "user.slice",
+    "removed_after_exit": true,
+    "ssh_version": "OpenSSH_9.2p1 Debian-2+deb12u10",
+    "rsync_version": "3.2.7",
+    "make_version": "4.3",
+    "c_compilation_and_execution": "passed",
+    "cpp_compilation_and_execution": "passed",
+    "codex_version": "0.165.0",
+    "code_mode_host_help": "passed"
+  },
+  "not_qualified": [
+    "Native cloud execution of this updated image",
+    "better-sqlite3 dependency rebuild",
+    "Tailscale enrollment or service SSH access",
+    "Full Docker-dependent App E2E"
+  ],
+  "publication": false
+}

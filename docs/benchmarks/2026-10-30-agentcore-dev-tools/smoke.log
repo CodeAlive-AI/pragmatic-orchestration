@@ -1,0 +1,9 @@
+WARNING: proceeding, even though we could not create PATH aliases: CODEX_HOME points to "/work/codex", but that path does not exist
+codex-cli 0.165.0
+OpenSSH_9.2p1 Debian-2+deb12u10, OpenSSL 3.0.22 25 Aug 2026
+rsync  version 3.2.7  protocol version 32
+GNU Make 4.3
+Python 3.14.10
+v24.22.2
+native-c-ok
+native-cpp-ok

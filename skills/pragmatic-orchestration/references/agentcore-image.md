@@ -19,6 +19,13 @@ host; use its existing resource admission and cgroup policy. The recipe is
 explicit source directories and the shipped example; user config, native auth,
 repositories and caches are not copied. Do not override this with a broad COPY.
 
+The development image includes OpenSSH client, rsync and the native C/C++ build
+toolchain. The real project trial needed source transfer and native dependency
+compilation; an overall successful package install had hidden an optional
+`better-sqlite3` build failure when no compiler existed. These tools alone do not
+qualify that dependency or deploy the shared Docker bridge. No SSH server,
+Docker daemon, tailnet enrollment or access credential is configured by the image.
+
 The qualification profile has Codex CLI 0.165.0 and its matching `codex-code-mode-host` installed side by side (official release assets checked
 against their SHA-256 digests), Python 3.14, Node 24/npm, Git, jq and Chromium.
 Native dependency versions and resolved base-image digests must be recorded for

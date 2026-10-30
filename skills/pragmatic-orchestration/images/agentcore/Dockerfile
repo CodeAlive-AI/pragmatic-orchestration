@@ -26,6 +26,9 @@ RUN case "$TARGETARCH" in \
     && chmod 755 /usr/local/bin/codex /usr/local/bin/codex-code-mode-host \
     && /usr/local/bin/codex-code-mode-host --help >/dev/null \
     && rm /tmp/codex.tar.gz /tmp/code-host.tar.gz
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-client rsync build-essential \
+    && rm -rf /var/lib/apt/lists/*
 COPY scripts /opt/porch/scripts
 COPY prompts /opt/porch/prompts
 COPY references /opt/porch/references

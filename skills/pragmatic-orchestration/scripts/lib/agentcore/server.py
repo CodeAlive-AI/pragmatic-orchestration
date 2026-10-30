@@ -63,7 +63,10 @@ class Guest:
 
     def health(self):
         observation = probe()
-        busy = any(status not in TERMINAL for status in observation["runs"].values())
+        # Login, staging and dependency installation precede the first agent run.
+        # The provisioning caller owns this marker and removes it after bootstrap.
+        busy = (self.state / "bootstrap-active").exists() or any(
+            status not in TERMINAL for status in observation["runs"].values())
         return {"status": "HealthyBusy" if busy else "Healthy"}
 
     def bind(self, session_id):

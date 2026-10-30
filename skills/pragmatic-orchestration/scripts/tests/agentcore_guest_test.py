@@ -88,6 +88,15 @@ class GuestTests(unittest.TestCase):
             self.assertEqual(json.load(response)['status'],'Healthy')
         self.assertFalse(self.invoke('ready')['subscription_ready'])
 
+    def test_bootstrap_is_busy_before_the_first_worker(self):
+        marker = self.guest.state / 'bootstrap-active'
+        marker.touch()
+        with urllib.request.urlopen(self.url+'/ping') as response:
+            self.assertEqual(json.load(response)['status'], 'HealthyBusy')
+        marker.unlink()
+        with urllib.request.urlopen(self.url+'/ping') as response:
+            self.assertEqual(json.load(response)['status'], 'Healthy')
+
     def test_http_chunked_invocation(self):
         body=json.dumps(dict(protocol=1,session_id=self.session,operation='ready')).encode()
         connection=http.client.HTTPConnection('127.0.0.1',self.server.server_port,timeout=5)

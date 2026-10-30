@@ -19,7 +19,7 @@ host; use its existing resource admission and cgroup policy. The recipe is
 explicit source directories and the shipped example; user config, native auth,
 repositories and caches are not copied. Do not override this with a broad COPY.
 
-The qualification profile has Codex CLI 0.165.0 (official release assets checked
+The qualification profile has Codex CLI 0.165.0 and its matching `codex-code-mode-host` installed side by side (official release assets checked
 against their SHA-256 digests), Python 3.14, Node 24/npm, Git, jq and Chromium.
 Native dependency versions and resolved base-image digests must be recorded for
 a release. Chromium is not proof that a project's browser test suite works.
@@ -114,3 +114,20 @@ Sources checked 2026-10-29: [AWS HTTP contract](https://docs.aws.amazon.com/bedr
 [AWS command execution](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-execute-command.html),
 [Instances data lifecycle](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-data-management.html),
 and [Codex 0.165.0 release](https://github.com/openai/codex/releases/tag/rust-v0.165.0).
+
+A native developer task on 2026-10-30 exposed an incomplete CLI installation: the
+main executable could authenticate and talk to the model, but tool execution
+failed without `codex-code-mode-host`. A version/login check alone cannot qualify
+a coding environment. The recipe now verifies the matching host asset digest
+and starts its help command during the build; a real edit/test task remains the
+acceptance check.
+
+Bootstrap is active work even before a delegate exists. A prepared entrypoint
+creates `bootstrap-active` in the fleet state directory (the parent of its
+`state_path`) before starting the HTTP guest. While it exists, `/ping` reports
+`HealthyBusy`; the provisioning caller removes it after login, source staging
+and dependency checks finish. Reboot does not mean those steps finished. The
+marker is not a lease or a cleanup mechanism: the caller still owns bounded
+provider cleanup independently of its laptop. Automatic cloud enrollment stays
+unqualified until that lifecycle is integrated. The native pilot's first login
+was interrupted when bootstrap was incorrectly reported as idle.

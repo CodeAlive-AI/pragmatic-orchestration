@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-30",
+  "codex_version": "0.165.0",
+  "defect": "CLI authenticated and reached the model but tool execution failed because the separately distributed codex-code-mode-host was absent",
+  "repair": "Install the matching official host beside the CLI and verify its help entrypoint during image build",
+  "official_release": "https://github.com/openai/codex/releases/tag/rust-v0.165.0",
+  "asset_sha256": {
+    "linux_arm64": "400956c325a2118768029f235958b7d2fd2ea4e59c5466d336fb4fb7f0e94b61",
+    "linux_amd64": "9577b09b2a546eeb3da8a09807de6d58fbaa207755256390113772ea4f05235e"
+  },
+  "arm64_image_index": "sha256:51327b5beea153f121bd1df9601052545ffbedf1d1d20ee6bff0b1f6f0069b0c",
+  "qualification": {
+    "guest_loopback_tests": {
+      "passed": 9,
+      "failed": 0
+    },
+    "remote_arm64_image_build": "passed",
+    "capability_free_image_binary_smoke": "passed",
+    "native_agentcore_tool_use": "passed with the same verified host asset installed beside a copy of the CLI; Terra/medium completed an actual source edit, CLI regression, lint, typechecks and browser tests"
+  },
+  "bootstrap_health": {
+    "marker": "fleet state directory / bootstrap-active",
+    "test": "HealthyBusy with marker and no worker; Healthy after marker removal",
+    "cleanup_authority": "caller; marker is neither a lease nor autonomous cloud cleanup"
+  },
+  "limits": [
+    "Native AMD64 code-mode host not executed in this run",
+    "No unattended subscription refresh qualification",
+    "No automatic cloud enrollment or shared Docker bridge deployment"
+  ],
+  "source_sha256": {
+    "skills/pragmatic-orchestration/images/agentcore/Dockerfile": "d1dc743b6527592bc9ccbb62590fed8d52d3f38187f63bb2f44f857f2d9b068f",
+    "skills/pragmatic-orchestration/scripts/lib/agentcore/server.py": "808060739b3261d2eab8ca4217fe3b3d0d408a1e2d0228d50d2454543e9e17b0",
+    "skills/pragmatic-orchestration/scripts/tests/agentcore_guest_test.py": "aa9fb8e071b214e67aacf68a7a236d895e26d77a7b58b9bef567d304557fe42a"
+  }
+}

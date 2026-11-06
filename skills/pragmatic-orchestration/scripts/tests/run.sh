@@ -24,6 +24,10 @@ export PORCH_SUPPRESS_SHELL_WARN=1
 # into the offline suite.
 unset PORCH_RAW_PROMPT PORCH_SKIP_OUTPUT_TEMPLATE PORCH_MODE \
   PORCH_SINGLE_AGENT PORCH_ARTIFACT_KEY 2>/dev/null || true
+# Per-backend overrides from the caller (Claude Code exports CLAUDE_EFFORT, for
+# example) would replace the fixture's model and effort.
+unset CLAUDE_MODEL CLAUDE_EFFORT CODEX_MODEL CODEX_EFFORT DEVIN_MODEL \
+  GEMINI_MODEL GROK_MODEL GROK_EFFORT OPENCODE_MODEL OPENCODE_EFFORT 2>/dev/null || true
 
 PASS=0
 FAIL=0

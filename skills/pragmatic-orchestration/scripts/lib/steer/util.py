@@ -419,6 +419,10 @@ def kill_process_group(pid: int, timeout: float = 5.0, *, process=None) -> None:
             os.killpg(pgid, 0)
         except ProcessLookupError:
             return
+        except PermissionError:
+            # macOS answers EPERM for a group of only zombies; SIGTERM above
+            # already reached this group, so it is ours and has exited.
+            return
         time.sleep(0.05)
     try:
         os.killpg(pgid, signal.SIGKILL)

@@ -86,7 +86,9 @@ used for model training, the service is not zero-data-retention, and availabilit
 is region-limited. Check the current OpenCode Go terms before reviewing sensitive
 repositories because catalog and privacy terms can change.
 
-The disabled-by-default `devin` profile uses Devin CLI's `swe-2-high` model;
+The disabled-by-default `devin` profile uses Devin CLI's `swe-2-flash-high` model (SWE-2 Flash;
+`swe-2-flash-medium`, `swe-2-flash-max` and the `swe-2-*` family also work —
+see `devin models`);
 Devin versions effort into the model id, so there is no effort override. Both
 one-shot and steerable paths run over `devin acp` (JSON-RPC 2.0 NDJSON on
 stdio) — print mode `devin -p` is not used because a denied or

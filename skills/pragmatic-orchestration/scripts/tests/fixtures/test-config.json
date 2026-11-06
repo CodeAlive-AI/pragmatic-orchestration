@@ -84,9 +84,9 @@
     "devin": {
       "enabled": true,
       "backend": "devin-cli",
-      "model": "swe-2-high",
+      "model": "swe-2-flash-high",
       "role": "analyst",
-      "label": "Devin SWE-2 Test"
+      "label": "Devin SWE-2 Flash Test"
     },
     "devin-gemini-4-argon": {
       "enabled": false,

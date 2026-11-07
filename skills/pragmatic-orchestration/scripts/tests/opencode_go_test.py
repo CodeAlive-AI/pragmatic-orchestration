@@ -25,12 +25,14 @@ class OpenCodeGoTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.env = dict(os.environ, PORCH_CONFIG=str(SKILL / "config.example.json"),
+                        XDG_DATA_HOME=str(self.root / "xdg-data"),
                         PORCH_BIN_OPENCODE=str(TESTS / "fakes/fake-opencode"),
                         PORCH_OUTPUT_DIR=str(self.root / "outputs"),
                         PORCH_STEER_DIR=str(self.root / "registry"),
                         PORCH_SAVE_OUTPUTS="0", PORCH_SUPPRESS_SHELL_WARN="1")
         for key in ("OPENCODE_MODEL", "OPENCODE_EFFORT", "PORCH_RUN_DIR",
-                    "PORCH_ARTIFACT_KEY", "PORCH_DUMP_ARGV"):
+                    "PORCH_ARTIFACT_KEY", "PORCH_DUMP_ARGV", "OPENCODE_DB",
+                    "OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD", "OPENCODE_CONFIG_CONTENT"):
             self.env.pop(key, None)
 
     def run_command(self, argv, env=None):
@@ -60,11 +62,12 @@ class OpenCodeGoTests(unittest.TestCase):
                                       "--agent-id", profile_id, "--raw", "CATALOG_CHECK"],
                                      dict(self.env, PORCH_DUMP_ARGV=str(output)))
                     argv = json.loads(output.read_text())["argv"]
-                    self.assertEqual(argv[argv.index("-m") + 1], "opencode-go/" + model["id"])
+                    expected = "opencode-go/" + model["id"]
                     if model["variants"]:
-                        self.assertEqual(argv[argv.index("--variant") + 1], model["variants"][-1])
-                    else:
-                        self.assertNotIn("--variant", argv)
+                        expected += "#" + model["variants"][-1]
+                    self.assertEqual(argv[argv.index("-m") + 1], expected)
+                    self.assertIn("--standalone", argv)
+                    self.assertNotIn("--variant", argv)
 
     def test_steerable_payload_matches_catalog(self):
         with patch.dict(os.environ, self.env, clear=True):
@@ -76,12 +79,9 @@ class OpenCodeGoTests(unittest.TestCase):
                     adapter = OpenCodeAdapter(binary=binary, model=resolved_model,
                                               effort=agent["effort"], cwd=str(self.root),
                                               artifacts_dir=str(self.root))
-                    adapter.session_id = "catalog-session"
-                    with patch.object(adapter, "_http_json", return_value=None) as request:
-                        adapter._prompt_async("CATALOG_CHECK", "catalog-client")
-                    payload = request.call_args.kwargs["body"]
-                    self.assertEqual(payload["model"], {"providerID": "opencode-go",
-                                                       "modelID": model["id"]})
+                    payload = adapter._model_ref()
+                    self.assertEqual(payload["providerID"], "opencode-go")
+                    self.assertEqual(payload["id"], model["id"])
                     if model["variants"]:
                         self.assertEqual(payload["variant"], model["variants"][-1])
                     else:
@@ -105,7 +105,11 @@ class OpenCodeGoTests(unittest.TestCase):
                                               dict(self.env, PORCH_FAKE_ARGV_LOG=str(log)))
                     self.assertIn("FAKE_OPENCODE_OK", result.stdout)
                     argv = json.loads(log.read_text().splitlines()[0])["argv"]
-                    self.assertEqual(argv[argv.index("-m") + 1], "opencode-go/" + model_id)
+                    expected_effort = CONFIG["agents"]["opencode-go-" + model_id]["effort"]
+                    expected = "opencode-go/" + model_id
+                    if expected_effort != "none":
+                        expected += "#" + expected_effort
+                    self.assertEqual(argv[argv.index("-m") + 1], expected)
 
     def test_new_profile_keeps_explicit_effort_override(self):
         for effort, expected in (("low", "low"), ("none", "")):
@@ -114,6 +118,20 @@ class OpenCodeGoTests(unittest.TestCase):
                 agent, _, model, _ = agent_settings("opencode-go-glm-5.3-flash")
                 self.assertEqual(model, "opencode-go/glm-5.3-flash")
                 self.assertEqual(agent["effort"], expected)
+
+    def test_server_version_is_checked_before_creating_session(self):
+        binary = str(TESTS / "fakes/steer/fake-opencode-steer")
+        for version in ("1.19.0", "2.2.5", "3.0.0", "unknown"):
+            with self.subTest(version=version), patch.dict(os.environ,
+                    dict(self.env, PORCH_FAKE_OPENCODE_VERSION=version), clear=True):
+                adapter = OpenCodeAdapter(binary=binary, model="test/model", cwd=str(self.root),
+                                          artifacts_dir=str(self.root), agent_id=version)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "OpenCode 2.2.6 or newer"):
+                        adapter.start("test")
+                    self.assertIsNone(adapter.session_id)
+                finally:
+                    adapter.close()
 
 
 if __name__ == "__main__":

@@ -66,7 +66,7 @@ One-shot normalization records all stages; the steerable supervisor records norm
 |---|---|---|
 | Codex CLI | `--search`, `exec --sandbox read-only`, ask-for-approval never, multi-agent disabled | `--dangerously-bypass-approvals-and-sandbox` |
 | Claude Code | `dontAsk`, safe mode, no session/Chrome, Edit/Write/Agent/Task denied, Bash + web enabled | `--dangerously-skip-permissions` |
-| OpenCode | runtime `porch-review` primary agent with its own work-alone prompt: full diagnostics, edit/task denied | `--agent build --auto` |
+| OpenCode | runtime `porch-review` primary agent with its own work-alone prompt: full diagnostics, edit/subagent denied | `--agent build --auto` |
 | Grok Build | `--no-plan`, read-only sandbox, terminal enabled, subagents disabled | `--always-approve`, no sandbox |
 | Gemini CLI | `--approval-mode yolo`, extensions/MCP/subagents disabled; report-only prompt contract | unsupported |
 

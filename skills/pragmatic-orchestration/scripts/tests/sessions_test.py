@@ -219,53 +219,22 @@ class CodexTests(FixtureMixin, unittest.TestCase):
 class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
     def make(self):
         db = self.root / "opencode.db"
-        conn = sqlite3.connect(db)
-        conn.executescript("""
-            CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
-            CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT,
-                directory TEXT, title TEXT, agent TEXT, model TEXT, version TEXT,
-                time_created REAL, time_updated REAL);
-            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created REAL, data TEXT);
-            CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT,
-                time_created REAL, data TEXT);
-        """)
-        conn.execute("INSERT INTO project VALUES ('p1', '/work/repo')")
-        conn.execute("INSERT INTO session VALUES ('ses_1', 'p1', NULL, '/work/repo', 'Fix bug', 'build', '{\"id\":\"kimi-k3\"}', '1.0', 1000, 2000)")
-        conn.execute("INSERT INTO message VALUES ('msg_u1', 'ses_1', 1100, ?)",
-                     (json.dumps({"id": "msg_u1", "role": "user", "path": {"cwd": "/work/repo"}}),))
-        conn.execute("INSERT INTO message VALUES ('msg_a1', 'ses_1', 1200, ?)",
-                     (json.dumps({"id": "msg_a1", "role": "assistant", "finish": "stop",
-                                  "modelID": "kimi-k3", "providerID": "opencode"}),))
-        conn.execute("INSERT INTO part VALUES ('prt_u1', 'ses_1', 'msg_u1', 1101, ?)",
-                     (json.dumps({"type": "text", "text": "please fix the bug"}),))
-        conn.execute("INSERT INTO part VALUES ('prt_a1', 'ses_1', 'msg_a1', 1201, ?)",
-                     (json.dumps({"type": "text", "text": "Fixed it."}),))
-        conn.execute("INSERT INTO part VALUES ('prt_a2', 'ses_1', 'msg_a1', 1202, ?)",
-                     (json.dumps({"type": "tool", "tool": "bash", "callID": "c1",
-                                  "state": {"status": "completed", "input": {"cmd": "ls"}, "output": "ok"}}),))
-        conn.commit()
-        conn.close()
+        sqlite3.connect(db).close()
         return db
 
-    def test_db_reader(self):
-        db = self.make()
-        store = sessions.Store("opencode", "db", db, "sqlite")
-        refs = list(sessions.opencode_iter_sessions(store))
-        self.assertEqual(len(refs), 1)
-        self.assertEqual(refs[0].title, "Fix bug")
-        self.assertEqual(refs[0].cwd, "/work/repo")
-        self.assertEqual(refs[0].models, ["kimi-k3"])
+    def test_store_discovery_follows_opencode_database_configuration(self):
+        data = self.root / "data" / "opencode"
+        data.mkdir(parents=True)
+        (data / "opencode-channel.db").touch()
+        with patch.dict(os.environ, {"XDG_DATA_HOME": str(data.parent)}, clear=True):
+            stores = sessions.stores_for("opencode")
+        self.assertEqual([s.path for s in stores], [data / "opencode.db", data / "opencode-channel.db"])
+        with patch.dict(os.environ, {"XDG_DATA_HOME": str(data.parent), "OPENCODE_DB": "nested/custom"}, clear=True):
+            self.assertEqual(sessions.stores_for("opencode")[0].path, data / "nested/custom")
+        with patch.dict(os.environ, {"XDG_DATA_HOME": str(data.parent), "OPENCODE_DB": ":memory:"}, clear=True):
+            self.assertEqual(sessions.stores_for("opencode"), [])
 
-        stats: dict[str, int] = {}
-        out = list(sessions.opencode_iter_fragments(store, refs[0], 400, stats))
-        prompts = [f for f in out if f["kind"] == "prompt"]
-        # text part inside role=user message → prompt, human
-        self.assertTrue(any(f.get("text") == "please fix the bug" and f["authorship"] == "human" for f in prompts))
-        self.assertTrue(any(f["kind"] == "assistant" and f["text"] == "Fixed it." for f in out))
-        self.assertTrue(any(f["kind"] == "tool_call" for f in out))
-        self.assertTrue(any(f["kind"] == "tool_result" for f in out))
-
-    def test_v2_sessions_and_migration_precedence(self):
+    def test_v2_sessions_and_parts(self):
         db = self.make()
         conn = sqlite3.connect(db)
         conn.executescript("""
@@ -274,6 +243,8 @@ class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
                 agent TEXT, model TEXT, version TEXT, time_archived INTEGER);
             CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT,
                 seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE session_part (message_id TEXT, session_id TEXT, ordinal INTEGER,
+                type TEXT, call_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
         """)
         conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
                      ("ses_1", "/work/repo", "Lossy copy", 1000, 2000, None, None, None, "2", None))
@@ -289,18 +260,27 @@ class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
         for index, (mid, kind, data) in enumerate(rows):
             conn.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?,?)",
                          (mid, "ses_v2", kind, index, 3000 + index, 3000 + index, json.dumps(data)))
+        conn.execute("INSERT INTO session_part VALUES (?,?,?,?,?,?,?,?)",
+                     ("a", "ses_v2", 0, "text", None, 3001, 3001,
+                      json.dumps({"text": "row answer"})))
         conn.commit()
         conn.close()
         store = sessions.Store("opencode", "db", db, "sqlite")
         refs = {r.session_id: r for r in sessions.opencode_iter_sessions(store)}
-        self.assertEqual(refs["ses_1"].locator["table"], "session")
+        self.assertEqual(refs["ses_1"].locator["table"], "session_v2")
         self.assertEqual(refs["ses_v2"].locator["table"], "session_v2")
         self.assertEqual(sessions.fast_resolve(store, "ses_v2").locator["table"], "session_v2")
         fragments = list(sessions.opencode_iter_fragments(store, refs["ses_v2"], 0, {}))
         self.assertTrue(any(f["kind"] == "prompt" and f.get("text") == "new prompt" for f in fragments))
         self.assertTrue(any(f["kind"] == "assistant" and f.get("text") == "new answer" for f in fragments))
+        self.assertEqual([f["text"] for f in fragments if f["kind"] == "assistant"],
+                         ["row answer", "new answer"])
         self.assertTrue(any(f["kind"] == "tool_result" and "file" in f.get("text", "") for f in fragments))
         self.assertTrue(any(f["kind"] == "tool_call" and f.get("text") == "pwd" for f in fragments))
+        channel = sessions.Store("opencode", "db:opencode-channel.db", db, "sqlite")
+        channel_ref = next(r for r in sessions.opencode_iter_sessions(channel) if r.session_id == "ses_v2")
+        self.assertEqual(channel_ref.store, channel.name)
+        self.assertTrue(all(f["store"] == channel.name for f in sessions.opencode_iter_fragments(channel, channel_ref, 0, {})))
         conn = sqlite3.connect(db)
         conn.execute("UPDATE session_v2 SET time_updated=2500 WHERE id='ses_1'")
         conn.commit()
@@ -308,21 +288,6 @@ class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
         refs = {r.session_id: r for r in sessions.opencode_iter_sessions(store)}
         self.assertEqual(refs["ses_1"].locator["table"], "session_v2")
 
-    def test_storage_tree(self):
-        base = self.root / "storage"
-        write_json(base / "session" / "p1" / "ses_9.json",
-                   {"id": "ses_9", "title": "T", "directory": "/w",
-                    "time": {"created": 1, "updated": 2}})
-        write_json(base / "message" / "ses_9" / "msg_1.json",
-                   {"id": "msg_1", "role": "user", "time": {"created": 1}})
-        write_json(base / "part" / "msg_1" / "prt_1.json",
-                   {"type": "text", "text": "hello from storage"})
-        store = sessions.Store("opencode", "storage", base, "json_dir")
-        refs = list(sessions.opencode_iter_sessions(store))
-        self.assertEqual(len(refs), 1)
-        stats: dict[str, int] = {}
-        out = list(sessions.opencode_iter_fragments(store, refs[0], 400, stats))
-        self.assertTrue(any(f["kind"] == "prompt" and f.get("text") == "hello from storage" for f in out))
 
 
 class GrokTests(FixtureMixin, unittest.TestCase):
@@ -1193,12 +1158,14 @@ class WindowsPathTests(FixtureMixin, unittest.TestCase):
     """Store paths resolve to %APPDATA%/%LOCALAPPDATA% under Windows."""
 
     def _stores(self, harness, env):
-        env = dict(env)
+        env = dict(os.environ, **env)
         env.pop("PORCH_STEER_DIR", None)  # keep the host env out of steer-root resolution
+        for key in ("XDG_DATA_HOME", "OPENCODE_DB", "PORCH_HISTORY_ROOT_OPENCODE"):
+            env.pop(key, None)
         with patch.object(sessions, "IS_WINDOWS", True), \
              patch.object(sessions, "IS_MACOS", False), \
              patch.object(sessions, "HOME", self.root), \
-             patch.dict(os.environ, env, clear=False):
+             patch.dict(os.environ, env, clear=True):
             return sessions.stores_for(harness)
 
     def test_windows_bases(self):
@@ -1216,7 +1183,7 @@ class WindowsPathTests(FixtureMixin, unittest.TestCase):
         self.assertTrue(str(dev[0].path).startswith(appdata))
         self.assertTrue(str(dev[2].path).startswith(localapp))
         oc = self._stores("opencode", env)
-        self.assertTrue(str(oc[0].path).startswith(localapp))
+        self.assertEqual(oc[0].path, self.root / ".local" / "share" / "opencode" / "opencode.db")
         with patch.object(sessions, "IS_WINDOWS", True), \
              patch.object(sessions, "IS_MACOS", False), \
              patch.object(sessions, "HOME", self.root), \

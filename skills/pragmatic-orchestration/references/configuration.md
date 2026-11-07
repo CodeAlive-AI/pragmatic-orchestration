@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Python 3
-- At least one supported harness: Codex CLI, OpenCode, Claude Code, or native Grok Build
+- At least one supported harness: Codex CLI, OpenCode 2.2.6 or newer in the 2.x series, Claude Code, or native Grok Build
 - Gemini CLI is optional and review-only
 - Devin CLI is optional and opt-in: `devin` v3000.x on PATH, authenticated via `devin auth login`
 
@@ -63,7 +63,7 @@ long-horizon work, or retain `low` when it is one reviewer in a larger pool.
 The opt-in `opencode-go-gemini-4-argon-contributor` profile uses
 `opencode-go/gemini-4-argon-contributor` with `high` effort for review and
 delegate. Select it with `-a opencode-go-gemini-4-argon-contributor`.
-OpenCode 1.19.0 exposes `low`, `medium`, and `high` variants; `OPENCODE_EFFORT`
+The captured catalog exposes `low`, `medium`, and `high` variants; `OPENCODE_EFFORT`
 overrides the default. Copy this profile into an existing user-local config
 to use the new id. OpenCode Go lists this as Gemini 4 Argon **Contributor**:
 prompts and completions may be used to train Google models, and it is not ZDR.

@@ -1,7 +1,6 @@
 # OpenCode Go profiles
 
-Verified on 2026-10-30 against the [live Go catalog](https://opencode.ai/inference/go/v1/models)
-and `opencode models opencode-go --verbose --refresh --pure` from OpenCode 1.19.0.
+The model and variant snapshot was captured on 2026-10-30 from the [Go catalog](https://opencode.ai/inference/go/v1/models). Catalog entries and variants can change; verify the selected model in OpenCode 2 before use.
 The 28 current tool-capable Go models have explicit profiles in `config.example.json`.
 The [Go documentation](https://opencode.ai/v2/docs/console/go/) describes availability and workspace settings.
 

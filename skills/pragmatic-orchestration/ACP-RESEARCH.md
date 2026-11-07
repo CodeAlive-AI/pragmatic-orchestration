@@ -71,7 +71,7 @@ The local CLI versions inspected during the evaluation were:
 
 - Codex CLI `0.145.0`
 - Claude Code `2.1.218`
-- OpenCode `1.18.4`
+- OpenCode 2 (current integration uses its HTTP/SSE API)
 - Grok Build `0.2.111`
 
 | Harness | ACP path | Status for this use case |

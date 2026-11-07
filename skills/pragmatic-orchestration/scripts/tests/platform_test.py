@@ -45,7 +45,6 @@ class PlatformTests(unittest.TestCase):
     def test_all_modules_import(self):
         for module in pkgutil.walk_packages(steer.__path__, steer.__name__ + "."):
             importlib.import_module(module.name)
-        importlib.import_module("terminal_guard")
 
     def test_backend_shell_assignments_are_lf_only_and_preserve_values(self):
         bash = shutil.which("bash")
@@ -304,45 +303,43 @@ print('harness survived timeout')
         import runpy
         fake = Path(__file__).resolve().parent / "fakes/steer/fake-opencode-steer"
         namespace = runpy.run_path(str(fake))
-        namespace["STATE"].done = True
         output = io.StringIO()
         with patch("socket.getfqdn", side_effect=AssertionError("offline fake attempted DNS")), \
+             patch.object(namespace["LoopbackHTTPServer"], "serve_forever"), \
              patch.object(sys, "argv", [str(fake), "serve", "--hostname", "127.0.0.1", "--port", "0"]), \
              contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             self.assertEqual(namespace["main"](), 0)
         self.assertIn("listening on http://127.0.0.1:", output.getvalue())
 
-    def test_terminal_guard_stops_completed_backend(self):
-        event = '{"type":"session.complete"}'
-        result = subprocess.run(
-            [sys.executable, str(LIB / "terminal_guard.py"), "--backend", "opencode",
-             "--terminal-grace", "0.1", "--", sys.executable, "-c",
-             f"import time; print({event!r}, flush=True); time.sleep(60)"],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(event, result.stdout)
-
-    def test_terminal_guard_reports_timer_failure_without_hanging(self):
-        result = self.python(r"""
-import sys
-import terminal_guard as guard
-real_signal = guard.signal_tree
-calls = 0
-def fail_once(proc, *, force):
-    global calls
-    calls += 1
-    if calls == 1:
-        raise RuntimeError('injected taskkill failure')
-    return real_signal(proc, force=force)
-guard.signal_tree = fail_once
-sys.argv = ['terminal_guard', '--backend', 'opencode', '--terminal-grace', '0.1',
-            '--', sys.executable, '-c',
-            'import time; print(\'{"type":"session.complete"}\', flush=True); time.sleep(60)']
-guard.main()
-""")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("backend process-tree cleanup failed", result.stderr)
+    @unittest.skipUnless(os.name == "posix", "POSIX process-group cancellation")
+    def test_opencode_one_shot_cancellation_reaps_server_and_client(self):
+        fake = Path(__file__).resolve().parent / "fakes/fake-opencode"
+        server_file = self.root / "server.pid"
+        client_file = self.root / "client.pid"
+        env = dict(self.env, XDG_DATA_HOME=str(self.root / "data"),
+                   PORCH_FAKE_OPENCODE_SERVER_PID_FILE=str(server_file),
+                   PORCH_FAKE_OPENCODE_CLIENT_PID_FILE=str(client_file), PORCH_SAVE_OUTPUTS="0")
+        for key in ("OPENCODE_DB", "OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD"):
+            env.pop(key, None)
+        proc = subprocess.Popen([sys.executable, str(LIB / "opencode_run.py"), str(self.root), "test",
+                                 str(fake), "run", "--standalone", "--format", "json"],
+                                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 20
+            while not (server_file.is_file() and client_file.is_file()) and time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    self.fail(f"wrapper exited early: {proc.stderr.read().decode()}")
+                time.sleep(.05)
+            self.assertTrue(server_file.is_file() and client_file.is_file())
+            pids = [int(server_file.read_text()), int(client_file.read_text())]
+            proc.terminate()
+            proc.communicate(timeout=15)
+            self.assertEqual(proc.returncode, 143)
+            self.assertTrue(all(not util.pid_alive(pid) for pid in pids), pids)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
     @unittest.skipUnless(os.name == "nt", "native Windows launcher contract")
     def test_python_shebang_preserves_argv(self):

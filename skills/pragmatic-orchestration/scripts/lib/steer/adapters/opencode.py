@@ -1,56 +1,81 @@
-"""OpenCode steerable adapter: ephemeral serve + SSE + prompt_async.
-
-Contracts:
-- step_inject while session is busy (prompt_async accepted mid-run)
-- terminal when session goes idle for this delegate-run (not a permanent idle session)
-- SSE read uses blocking buffered chunks (never byte-at-a-time) without frame loss
-- base_url must be loopback after URL parse (no external exfiltration)
-- HTTP redirects re-validated to loopback only (custom opener)
-- OPENCODE_SERVER_PASSWORD + Basic auth on every request (password never logged)
-- message.part.updated is a cumulative snapshot per part id (not append-delta)
-- message.part.delta remains incremental
-"""
+"""OpenCode 2 private-server adapter with durable prompt and history checks."""
 from __future__ import annotations
 
 import base64
+from contextlib import ExitStack, contextmanager
 import json
+import os
 import queue
 import re
 import secrets
+import string
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
-from http.client import HTTPResponse
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 from urllib.parse import quote, urlparse
 
-from ..util import detached_popen_kwargs, is_loopback_url, kill_process_group, resolve_argv
+from ..util import detached_popen_kwargs, flock_exclusive, is_loopback_url, kill_process_group, resolve_argv
 from .base import AdapterEvent, BackendAdapter, DeliveryClass, SteerResult
-
-# Default OpenCode basic-auth username when OPENCODE_SERVER_USERNAME is unset.
-_DEFAULT_SERVER_USERNAME = "opencode"
 
 
 class _LoopbackRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Follow redirects only when every hop stays on loopback."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         if not is_loopback_url(newurl):
-            raise urllib.error.HTTPError(
-                newurl,
-                code,
-                f"refusing non-loopback redirect target: {newurl}",
-                headers,
-                fp,
-            )
+            raise urllib.error.HTTPError(newurl, code, "refusing non-loopback redirect target", headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _build_loopback_opener() -> urllib.request.OpenerDirector:
+def _build_loopback_opener():
     return urllib.request.build_opener(_LoopbackRedirectHandler)
+
+
+def _startup_lock_path(binary: str, cwd: str, env: Dict[str, str]) -> Optional[Path]:
+    """All Porch processes targeting one OpenCode database share this lock."""
+    # Channel builds can select a different default database. Ask the same
+    # binary that will serve, instead of guessing its build-time channel.
+    try:
+        result = subprocess.run(resolve_argv([binary, "debug", "paths", "db"], cwd=cwd),
+                                cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, encoding="utf-8", timeout=30, check=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("could not determine the OpenCode 2 database path") from exc
+    path = result.stdout.strip()
+    if path == ":memory:":
+        return None
+    elif not path or "\n" in path or not Path(path).is_absolute():
+        raise RuntimeError("OpenCode 2 returned an invalid database path")
+    else:
+        db = Path(path).resolve()
+    if db.is_dir():
+        raise RuntimeError("OpenCode 2 database path is a directory, not a database file")
+    db.parent.mkdir(parents=True, exist_ok=True)
+    # A directory-wide lock also covers case-insensitive filename aliases.
+    return db.parent / ".porch-opencode-locks" / "startup.lock"
+
+
+@contextmanager
+def _startup_lock(path: Optional[Path], timeout: float = 120.0) -> Iterator[None]:
+    """Bound lock contention without changing the shared lock helper's semantics."""
+    if path is None:
+        yield
+        return
+    deadline = time.monotonic() + timeout
+    with ExitStack() as stack:
+        while True:
+            try:
+                stack.enter_context(flock_exclusive(path, blocking=False))
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("timed out waiting for OpenCode database startup lock")
+                time.sleep(min(.05, remaining))
+        yield
 
 
 class OpenCodeAdapter(BackendAdapter):
@@ -61,214 +86,158 @@ class OpenCodeAdapter(BackendAdapter):
         super().__init__(**kwargs)
         self.proc: Optional[subprocess.Popen] = None
         self.base_url: Optional[str] = None
-        self.session_id: Optional[str] = None
-        self._events: "queue.Queue[AdapterEvent]" = queue.Queue()
+        self._events: queue.Queue[AdapterEvent] = queue.Queue()
         self._raw_path = Path(self.artifacts_dir) / "raw" / f"{self.agent_id or 'opencode'}.jsonl"
-        self._sse_thread: Optional[threading.Thread] = None
-        self._stderr_thread: Optional[threading.Thread] = None
-        self._stdout_thread: Optional[threading.Thread] = None
-        self._busy = False
-        # Incremental delta pieces (message.part.delta).
-        self._text_parts: List[str] = []
-        # Cumulative snapshot text keyed by part id (message.part.updated).
-        self._part_snapshots: Dict[str, str] = {}
-        # Stable insertion order of part ids for final assembly.
-        self._part_order: List[str] = []
-        # Global SSE sends user, assistant, and reasoning parts through the same
-        # message.part.* event types. Remember message roles so final output can
-        # include assistant text only.
-        self._message_roles: Dict[str, str] = {}
-        self._tool_status: Dict[str, str] = {}
-        # Turn liveness: session.idle is turn-idle. Do not require one idle per
-        # prompt_async. Track busy + replacement so the latest accepted work can
-        # terminalize on a single idle when no replacement is pending.
-        # Set around abort→replacement so an idle from the aborted turn cannot
-        # permanently complete the run before the new prompt is accepted.
-        self._replacement_pending = False
-        self._verify_interrupt_idle = False
-        self._lock = threading.Lock()
-        self._cancelled = False
-        # Per-run Basic auth — generated here, passed only to child env.
-        self._server_username = _DEFAULT_SERVER_USERNAME
+        self._server_username = "opencode"
         self._server_password = secrets.token_urlsafe(32)
         self._opener = _build_loopback_opener()
+        self._lock = threading.RLock()
+        self._ready = threading.Event()
+        self._stdio_threads: List[threading.Thread] = []
+        self._sse_thread: Optional[threading.Thread] = None
+        self._reconciler_thread: Optional[threading.Thread] = None
+        self._busy = False
+        self._cancelled = False
+        self._replacement_pending = False
+        self._ignore_interrupt_once = False
+        self._pending: set[str] = set()
+        self._generation = 0
+        self._first_prompt: Optional[str] = None
+        self._last_prompt: Optional[str] = None
+        self._started_at: Optional[int] = None
+        self._parts: Dict[str, str] = {}
+        self._part_order: List[str] = []
+        self._tools: Dict[str, Dict[str, Any]] = {}
+        self._reconciler_running = False
+        self._child_sessions: set[str] = set()
+        self._id_millis = 0
+        self._id_counter = 0
 
     def _auth_header_value(self) -> str:
-        token = base64.b64encode(
-            f"{self._server_username}:{self._server_password}".encode("utf-8")
-        ).decode("ascii")
+        token = base64.b64encode(f"opencode:{self._server_password}".encode()).decode("ascii")
         return f"Basic {token}"
 
-    def _auth_headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-        headers = dict(extra or {})
-        headers["Authorization"] = self._auth_header_value()
-        return headers
+    def _auth_headers(self, extra=None):
+        return {**(extra or {}), "Authorization": self._auth_header_value()}
 
     def _argv(self) -> List[str]:
-        # port 0 = ephemeral loopback
-        return [
-            self.binary,
-            "serve",
-            "--pure",
-            "--hostname",
-            "127.0.0.1",
-            "--port",
-            "0",
-            "--print-logs",
-        ]
+        return [self.binary, "serve", "--hostname", "127.0.0.1", "--port", "0"]
 
     def _child_env(self) -> Dict[str, str]:
-        """Env for opencode serve only — never log or persist the password."""
-        import os
-
         env = os.environ.copy()
-        env["OPENCODE_SERVER_PASSWORD"] = self._server_password
-        env["OPENCODE_SERVER_USERNAME"] = self._server_username
+        env.pop("OPENCODE_SERVER_PASSWORD", None)
+        env["OPENCODE_PASSWORD"] = self._server_password
         return env
 
-    def start(self, task: str) -> None:
+    def _model_ref(self) -> Dict[str, str]:
+        provider, sep, model = self.model.partition("/")
+        if not sep or not provider or not model or "#" in self.model:
+            raise ValueError("OpenCode 2 model must be provider/model; configure effort separately")
+        result = {"providerID": provider, "id": model}
+        if self.effort:
+            result["variant"] = self.effort
+        return result
+
+    def _start_server(self) -> None:
         self._raw_path.parent.mkdir(parents=True, exist_ok=True)
-        # Note: password is in child env only — never written to raw/meta.
-        self._log_raw(
-            {
-                "event": "server_start",
-                "auth": "basic",
-                "username": self._server_username,
-                # password intentionally omitted
-            }
-        )
-        self.proc = subprocess.Popen(
-            resolve_argv(self._argv(), cwd=self.cwd),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=self.cwd,
-            env=self._child_env(),
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-            **detached_popen_kwargs(),
-        )
-        # Drain both pipes so a chatty serve process cannot block on a full buffer.
-        self._stderr_thread = threading.Thread(
-            target=self._read_stdio_for_url, args=("stderr",), daemon=True
-        )
-        self._stderr_thread.start()
-        self._stdout_thread = threading.Thread(
-            target=self._read_stdio_for_url, args=("stdout",), daemon=True
-        )
-        self._stdout_thread.start()
-        deadline = time.time() + 30.0
-        while time.time() < deadline and not self.base_url:
-            if self.proc.poll() is not None:
-                raise RuntimeError("opencode serve exited early before publishing URL")
-            time.sleep(0.05)
-        if not self.base_url:
-            raise RuntimeError("opencode serve did not print listening URL")
-        self._log_raw({"event": "server_url", "url": self.base_url})
-        self._http_json("GET", "/global/health", timeout=10.0)
-        body: Dict[str, Any] = {}
-        path = f"/session?directory={quote(self.cwd, safe='')}"
-        sess = self._http_json("POST", path, body=body, timeout=30.0)
-        self.session_id = (sess or {}).get("id") or (sess or {}).get("sessionID")
+        # OpenCode 2's schema bootstrap lock is process-local. Keep independent
+        # servers from migrating the same SQLite database at the same time.
+        lock_path = _startup_lock_path(self.binary, self.cwd, self._child_env())
+        with _startup_lock(lock_path):
+            try:
+                self.proc = subprocess.Popen(resolve_argv(self._argv(), cwd=self.cwd), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=self.cwd, env=self._child_env(),
+                    text=True, encoding="utf-8", bufsize=1, **detached_popen_kwargs())
+                for name in ("stdout", "stderr"):
+                    thread = threading.Thread(target=self._read_stdio_for_url, args=(name,), daemon=True)
+                    self._stdio_threads.append(thread)
+                    thread.start()
+                deadline = time.monotonic() + 30
+                while not self.base_url and time.monotonic() < deadline:
+                    if self.proc.poll() is not None:
+                        raise RuntimeError("OpenCode 2 server exited before publishing its URL; check its configuration and database")
+                    time.sleep(.05)
+                if not self.base_url:
+                    raise RuntimeError("OpenCode 2 server did not publish its URL")
+                info = self._http_json("GET", "/api/info", timeout=10)
+                version = info.get("version") if isinstance(info, dict) else None
+                match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z.-]+)?", version) if isinstance(version, str) else None
+                if not match or int(match.group(1)) != 2 or tuple(map(int, match.groups())) < (2, 2, 6):
+                    raise RuntimeError(f"OpenCode 2.2.6 or newer in the 2.x series is required (server reported {version!r})")
+            except BaseException as startup_error:
+                # Do not let another process migrate while this child is alive.
+                try:
+                    self.cancel()
+                except Exception as cleanup_error:
+                    raise RuntimeError(
+                        f"OpenCode startup failed ({startup_error}); server cleanup also failed "
+                        f"({cleanup_error}), so it may still be running"
+                    ) from cleanup_error
+                raise
+
+    def start(self, task: str) -> None:
+        self._start_server()
+        result = self._http_json("POST", "/api/session", body={
+            "location": {"directory": self.cwd}, "agent": "build", "model": self._model_ref(),
+        }, timeout=30)
+        session = result.get("data") if isinstance(result, dict) else None
+        self.session_id = session.get("id") if isinstance(session, dict) else None
         if not self.session_id:
-            self.session_id = (
-                (sess or {}).get("data", {}).get("id") if isinstance(sess, dict) else None
-            )
-        if not self.session_id:
-            raise RuntimeError(f"opencode session create failed: {sess}")
+            raise RuntimeError("OpenCode 2 returned an invalid session")
+        self._child_sessions.add(self.session_id)
         self._sse_thread = threading.Thread(target=self._sse_loop, daemon=True)
         self._sse_thread.start()
-        time.sleep(0.05)
-        self._prompt_async(task, client_id="initial")
+        if not self._ready.wait(30) or self._error:
+            raise RuntimeError(self._error or "OpenCode 2 event subscription timed out")
+        self._send_prompt(task, "initial", "steer")
 
-    def _read_stdio_for_url(self, stream_name: str) -> None:
+    def _read_stdio_for_url(self, name: str) -> None:
         assert self.proc
-        stream = self.proc.stderr if stream_name == "stderr" else self.proc.stdout
-        assert stream is not None
+        stream = self.proc.stdout if name == "stdout" else self.proc.stderr
+        assert stream
         for line in stream:
             line = line.rstrip("\n")
-            # Redact password if a log line ever echoed the env value.
-            safe = line
-            if self._server_password and self._server_password in safe:
-                safe = safe.replace(self._server_password, "<redacted>")
-            self._log_raw({stream_name: safe})
-            self._maybe_set_url(line)
+            # Server diagnostics may contain provider credentials. Drain them
+            # without persisting them; the listening URL is emitted on stdout.
+            if name == "stdout":
+                self._maybe_set_url(line)
 
     def _maybe_set_url(self, line: str) -> None:
         if self.base_url:
             return
-        candidate = None
-        m = re.search(r"listening on (https?://[^\s]+)", line, re.I)
-        if m:
-            candidate = m.group(1).rstrip("/")
-        else:
-            m2 = re.search(r"https?://127\.0\.0\.1:(\d+)", line)
-            if m2:
-                candidate = f"http://127.0.0.1:{m2.group(1)}"
-            else:
-                m3 = re.search(r"https?://\[?::1\]?:(\d+)", line)
-                if m3:
-                    candidate = f"http://127.0.0.1:{m3.group(1)}"
-        if not candidate:
+        match = re.search(r"listening on (https?://[^\s]+)", line, re.I)
+        if not match:
             return
-        # Validate loopback *after* parsing — reject external hosts.
-        if not is_loopback_url(candidate):
-            self._log_raw({"rejected_url": candidate, "reason": "not_loopback"})
-            self._events.put(
-                AdapterEvent(
-                    kind="error",
-                    data=f"opencode URL is not loopback (rejected): {candidate}",
-                )
-            )
+        url = match.group(1).rstrip("/")
+        if not is_loopback_url(url):
+            self._fail("refusing non-loopback OpenCode server URL")
             return
-        # Normalize host to 127.0.0.1 for consistency
-        parsed = urlparse(candidate)
-        port = parsed.port
-        if port:
-            self.base_url = f"http://127.0.0.1:{port}"
-        else:
-            self.base_url = "http://127.0.0.1"
+        parsed = urlparse(url)
+        self.base_url = f"{parsed.scheme}://{parsed.netloc}"
 
     def _log_raw(self, obj: Any) -> None:
-        # Never persist the server password into raw artifacts.
         if isinstance(obj, dict):
-            scrubbed = dict(obj)
-            for key in ("password", "OPENCODE_SERVER_PASSWORD", "Authorization", "authorization"):
-                scrubbed.pop(key, None)
-            body = scrubbed.get("body")
-            if isinstance(body, dict):
-                body = dict(body)
-                body.pop("password", None)
-                scrubbed["body"] = body
-            obj = scrubbed
+            obj = {k: v for k, v in obj.items() if k not in
+                   ("password", "OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD", "Authorization", "authorization")}
+        encoded = json.dumps(obj, ensure_ascii=False).replace(self._server_password, "<redacted>")
         with open(self._raw_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+            f.write(encoded + "\n")
 
     def _assert_loopback_url(self, url: str) -> None:
         if not is_loopback_url(url):
             raise RuntimeError(f"refusing non-loopback OpenCode URL: {url}")
 
-    def _http_json(
-        self,
-        method: str,
-        path: str,
-        body: Optional[Dict[str, Any]] = None,
-        timeout: float = 60.0,
-        expect_empty: bool = False,
-    ) -> Any:
+    def _http_json(self, method: str, path: str, body=None, timeout: float = 60.0, expect_empty=False):
         assert self.base_url
-        self._assert_loopback_url(self.base_url)
         url = self.base_url + path
         self._assert_loopback_url(url)
-        data = None
         headers = self._auth_headers({"Accept": "application/json"})
+        data = None
         if body is not None:
-            data = json.dumps(body).encode("utf-8")
+            data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
+        self._log_raw({"http": method, "url": url, "body": body})
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        # Log without Authorization header.
-        self._log_raw({"http": method, "url": url, "body": body, "auth": "basic"})
         try:
             with self._opener.open(req, timeout=timeout) as resp:
                 raw = resp.read()
@@ -276,431 +245,301 @@ class OpenCodeAdapter(BackendAdapter):
                     return {"status": resp.status}
                 try:
                     return json.loads(raw.decode("utf-8"))
-                except json.JSONDecodeError:
-                    return {
-                        "raw": raw.decode("utf-8", errors="replace"),
-                        "status": resp.status,
-                    }
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace")
-            self._log_raw({"http_error": e.code, "body": err_body, "url": url})
-            raise RuntimeError(f"HTTP {e.code} {method} {path}: {err_body}") from e
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(f"invalid OpenCode 2 JSON response to {method} {path}") from exc
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"HTTP {exc.code} {method} {path}: {detail}") from exc
 
-    def _prompt_async(self, text: str, client_id: str) -> None:
-        assert self.session_id
-        payload: Dict[str, Any] = {
-            "parts": [{"type": "text", "text": text}],
-            "agent": "build",
-        }
-        if self.model:
-            # OpenCode 1.x prompt_async expects model.modelID (not model.id).
-            if "/" in self.model:
-                provider, mid = self.model.split("/", 1)
-                payload["model"] = {"providerID": provider, "modelID": mid}
-            else:
-                payload["model"] = {"modelID": self.model}
-        if self.effort:
-            # prompt_async calls SessionPrompt.PromptInput, where reasoning
-            # effort is the top-level `variant` field (same semantics as
-            # `opencode run --variant`).
-            payload["variant"] = self.effort
-        payload["metadata"] = {"clientId": client_id}
-        path = f"/session/{quote(self.session_id, safe='')}/prompt_async"
-        if self.cwd:
-            path += f"?directory={quote(self.cwd, safe='')}"
-        self._http_json("POST", path, body=payload, timeout=30.0, expect_empty=True)
+    def _message_id(self) -> str:
+        alphabet = string.ascii_letters + string.digits
         with self._lock:
+            millis = int(time.time() * 1000)
+            self._id_counter = self._id_counter + 1 if millis == self._id_millis else 1
+            self._id_millis = millis
+            timestamp = (millis * 4096 + self._id_counter) & ((1 << 48) - 1)
+        return "msg_" + f"{timestamp:012x}" + "".join(secrets.choice(alphabet) for _ in range(14))
+
+    def _send_prompt(self, text: str, client_id: str, delivery: str) -> None:
+        assert self.session_id
+        mid = self._message_id()
+        with self._lock:
+            self._generation += 1
+            self._pending.add(mid)
             self._busy = True
-            # Latest accepted/replacement turn supersedes prior work accounting.
-            # Abort does not leave a residual "prompt in flight" to drain.
+            self._last_prompt = mid
+            if self._first_prompt is None:
+                self._first_prompt = mid
+        payload = {"id": mid, "text": text, "delivery": delivery, "metadata": {"clientId": client_id}}
+        result = self._http_json("POST", f"/api/session/{quote(self.session_id, safe='')}/prompt", body=payload, timeout=30)
+        item = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(item, dict) or item.get("id") != mid:
+            raise RuntimeError("OpenCode 2 prompt admission returned an invalid message ID")
+        with self._lock:
+            if self._started_at is None:
+                created = item.get("time", {}).get("created")
+                if not isinstance(created, (int, float)):
+                    raise RuntimeError("OpenCode 2 prompt admission omitted creation time")
+                self._started_at = int(created)
             self._replacement_pending = False
-            self._done = False
 
     def _abort(self) -> None:
         if not self.session_id:
             return
-        path = f"/session/{quote(self.session_id, safe='')}/abort"
         try:
-            result = self._http_json("POST", path, body={}, timeout=15.0)
-            if result is False:
-                raise RuntimeError("provider rejected abort")
-        except Exception as e:
-            self._log_raw({"abort_error": str(e)})
-            raise RuntimeError(f"OpenCode abort outcome unknown: {e}") from e
-        # Abort ends the current turn but a replacement prompt may follow;
-        # do not treat the session as permanently done here.
+            result = self._http_json("POST", f"/api/session/{quote(self.session_id, safe='')}/interrupt", timeout=15)
+            if not isinstance(result, dict) or not isinstance(result.get("interrupted"), bool):
+                raise RuntimeError("invalid interrupt response")
+            if not result["interrupted"]:
+                with self._lock:
+                    self._ignore_interrupt_once = False
+        except Exception as exc:
+            raise RuntimeError(f"OpenCode interrupt outcome unknown: {exc}") from exc
 
     def _runner_is_idle(self, timeout: float = 5.0) -> bool:
-        path = "/session/status"
-        if self.cwd:
-            path += f"?directory={quote(self.cwd, safe='')}"
-        statuses = self._http_json("GET", path, timeout=timeout)
-        if not isinstance(statuses, dict) or any(
-            not isinstance(value, dict) or value.get("type") not in ("idle", "busy", "retry")
-            for value in statuses.values()
-        ):
-            raise RuntimeError("OpenCode returned an invalid session status map")
-        # The provider removes idle sessions from this map.
-        status = statuses.get(self.session_id)
-        return status is None or status.get("type") == "idle"
+        result = self._http_json("GET", "/api/session/active", timeout=timeout)
+        active = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(active, dict):
+            raise RuntimeError("invalid OpenCode 2 active session map")
+        return self.session_id not in active
 
     def _wait_for_abort_idle(self, timeout: float = 15.0) -> None:
-        """A settled abort and confirmed idle are both needed before replacement.
-
-        Abort does not guarantee a matching SSE event. Query the provider's
-        runner state rather than treating missing events as evidence of a stop.
-        """
         deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError("OpenCode abort outcome unknown: runner did not become idle")
-            if self._runner_is_idle(timeout=min(5.0, remaining)):
+        while time.monotonic() < deadline:
+            if self._runner_is_idle(timeout=min(5, max(.1, deadline - time.monotonic()))):
                 return
-            time.sleep(min(.1, max(0.0, deadline - time.monotonic())))
+            time.sleep(.1)
+        raise RuntimeError("OpenCode interrupt outcome unknown: session did not become idle")
+
+    def _fail(self, message: str, raw=None) -> None:
+        with self._lock:
+            if self._done:
+                return
+            self._error, self._exit_code, self._done = message, 1, True
+        self._events.put(AdapterEvent(kind="error", data=message, raw=raw))
+        self._events.put(AdapterEvent(kind="done", data="error", raw=raw))
+        self._ready.set()
 
     def _sse_loop(self) -> None:
         assert self.base_url
-        self._assert_loopback_url(self.base_url)
-        url = self.base_url + "/global/event"
+        url = self.base_url + "/api/event"
         self._assert_loopback_url(url)
-        req = urllib.request.Request(
-            url, headers=self._auth_headers({"Accept": "text/event-stream"})
-        )
         try:
-            resp: HTTPResponse = self._opener.open(req, timeout=30.0)  # type: ignore[assignment]
-        except Exception as e:
-            self._events.put(AdapterEvent(kind="error", data=f"sse_connect_failed: {e}"))
-            return
-        # Buffered line reader (not read(1)): assemble SSE frames on blank-line
-        # boundaries. readline returns as soon as a line is available; incomplete
-        # frames stay in the line buffer until the blank separator arrives.
-        event_lines: List[str] = []
-        try:
-            while not self._done:
-                try:
-                    # HTTPResponse is a binary/text file-like; prefer fp.readline
-                    fp = getattr(resp, "fp", resp)
-                    # A size limit splits a single SSE data line into fragments;
-                    # treating those fragments as lines silently corrupts JSON.
-                    raw_line = fp.readline()
-                except Exception:
-                    if self._done:
-                        break
-                    time.sleep(0.05)
-                    continue
-                if raw_line == b"" or raw_line == "":
-                    # True EOF from server
-                    break
-                if isinstance(raw_line, bytes):
-                    line = raw_line.decode("utf-8", errors="replace")
-                else:
-                    line = str(raw_line)
-                # Strip only the line terminator; preserve payload spaces
-                if line.endswith("\r\n"):
-                    line = line[:-2]
-                elif line.endswith("\n"):
-                    line = line[:-1]
-                elif line.endswith("\r"):
-                    line = line[:-1]
-                if line == "":
-                    # End of one SSE event
-                    if event_lines:
-                        self._handle_sse_block("\n".join(event_lines))
-                        event_lines = []
-                else:
-                    event_lines.append(line)
-        except Exception as e:
-            if not self._done:
-                self._events.put(AdapterEvent(kind="error", data=f"sse_error: {e}"))
-        finally:
-            if event_lines:
-                self._handle_sse_block("\n".join(event_lines))
+            req = urllib.request.Request(url, headers=self._auth_headers({"Accept": "text/event-stream"}))
+            resp = self._opener.open(req, timeout=30)
             try:
-                resp.close()
-            except Exception:
+                # A healthy inference can exceed the connection timeout.
+                resp.fp.raw._sock.settimeout(None)
+            except AttributeError:
                 pass
-            # SSE EOF is never success solely because partial text exists.
-            # Preserve the process return code when the serve process has exited;
-            # if it is still running and no clean terminal evidence exists, fail.
+            lines: List[str] = []
+            try:
+                while not self._done:
+                    line = resp.readline()
+                    if not line:
+                        break
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8", errors="replace")
+                    line = line.rstrip("\r\n")
+                    if not line:
+                        if lines:
+                            self._handle_sse_block("\n".join(lines))
+                            lines = []
+                    elif line.startswith("data:"):
+                        lines.append(line[5:].lstrip(" "))
+            finally:
+                resp.close()
             if not self._done:
-                proc_rc = self.proc.poll() if self.proc is not None else None
-                self._done = True
-                if proc_rc is not None:
-                    self._exit_code = 0 if proc_rc == 0 else (proc_rc if proc_rc else 1)
-                    self._events.put(
-                        AdapterEvent(
-                            kind="done",
-                            data="sse_eof",
-                            raw={"proc_rc": proc_rc},
-                        )
-                    )
-                else:
-                    self._exit_code = 1
-                    self._error = "sse_eof_without_terminal"
-                    self._events.put(
-                        AdapterEvent(kind="error", data=self._error)
-                    )
-                    self._events.put(
-                        AdapterEvent(kind="done", data="sse_eof_failure")
-                    )
+                self._fail("OpenCode 2 event stream disconnected before completion")
+        except Exception as exc:
+            if not self._done:
+                self._fail(f"OpenCode 2 event stream failed: {exc}")
 
     def _handle_sse_block(self, block: str) -> None:
-        data_lines = []
-        for line in block.split("\n"):
-            if line.startswith("data:"):
-                # Accept both "data:" and "data: " prefixes
-                data_lines.append(line[5:].lstrip() if line.startswith("data: ") else line[5:].lstrip())
-        if not data_lines:
-            return
-        payload = "\n".join(data_lines)
-        # Full SSE payload in raw artifacts — never truncate.
-        self._log_raw({"sse": payload})
+        self._log_raw({"sse": block})
         try:
-            obj = json.loads(payload)
-        except json.JSONDecodeError:
-            # Full malformed payload too
-            self._events.put(AdapterEvent(kind="raw", data=payload))
-            return
-        self._handle_event(obj)
-
-    def _session_matches(self, props: Dict[str, Any], obj: Dict[str, Any]) -> bool:
-        """Global SSE must filter to this session only (exact sessionID match)."""
-        if not self.session_id:
-            return True
-        sources = (props, obj, props.get("part"), props.get("info"))
-        for src in sources:
-            if not isinstance(src, dict):
-                continue
-            for key in ("sessionID", "sessionId", "session_id"):
-                val = src.get(key)
-                if val is not None and str(val) == str(self.session_id):
-                    return True
-            sess = src.get("session")
-            if isinstance(sess, dict):
-                for key in ("id", "sessionID", "sessionId"):
-                    val = sess.get(key)
-                    if val is not None and str(val) == str(self.session_id):
-                        return True
-        # If no session field is present, accept (some event types omit it).
-        has_any = False
-        for src in sources:
-            if isinstance(src, dict) and any(
-                k in src for k in ("sessionID", "sessionId", "session_id", "session")
-            ):
-                has_any = True
-        return not has_any
-
-    def _apply_part_updated(self, part: Dict[str, Any], obj: Dict[str, Any]) -> None:
-        """Shared cumulative snapshot assembler (one-shot and steerable)."""
-        part_id = (
-            part.get("id")
-            or part.get("partID")
-            or part.get("partId")
-            or ""
-        )
-        text = part.get("text") if isinstance(part.get("text"), str) else ""
-        if not text:
-            return
-        key = str(part_id) if part_id else "_default"
-        with self._lock:
-            if key not in self._part_snapshots and key not in self._part_order:
-                self._part_order.append(key)
-            prev = self._part_snapshots.get(key, "")
-            self._part_snapshots[key] = text
-        # Emit only genuine growth (suffix), never H+He+Hello concatenation.
-        if text.startswith(prev) and len(text) > len(prev):
-            suffix = text[len(prev) :]
-            self._events.put(AdapterEvent(kind="text", data=suffix, raw=obj))
-        elif text != prev and not text.startswith(prev):
-            # Non-prefix replacement of this part only.
-            self._events.put(AdapterEvent(kind="text", data=text, raw=obj))
-
-    def _is_assistant_text_part(self, part: Dict[str, Any]) -> bool:
-        """Accept assistant text; reject user/reasoning/tool snapshots."""
-        if part.get("type") != "text":
-            return False
-        message_id = part.get("messageID") or part.get("messageId") or part.get("message_id")
-        if not message_id:
-            # Older transports and deterministic fakes omit message identity.
-            return True
-        role = self._message_roles.get(str(message_id))
-        return role == "assistant"
+            obj = json.loads(block)
+            if not isinstance(obj, dict):
+                raise ValueError("event is not an object")
+            self._handle_event(obj)
+        except (json.JSONDecodeError, ValueError) as exc:
+            self._fail(f"invalid OpenCode 2 event: {exc}")
 
     def _handle_event(self, obj: Dict[str, Any]) -> None:
-        # Real OpenCode 1.18 SSE wraps events as:
-        #   { "directory": "...", "project": "...", "payload": { "type": "...", "properties": {...} } }
-        # Fake transports and some older shapes put type at the top level.
-        if (
-            isinstance(obj.get("payload"), dict)
-            and (obj.get("type") is None or obj.get("type") == "sync")
-            and obj["payload"].get("type")
-        ):
-            # Prefer the inner event; keep outer for raw audit already logged.
-            obj = obj["payload"]
-        # Nested syncEvent envelope (type=sync)
-        if obj.get("type") == "sync" and isinstance(obj.get("syncEvent"), dict):
-            # syncEvent.type looks like "session.updated.1" — strip trailing version
-            se = obj["syncEvent"]
-            se_type = str(se.get("type") or "")
-            if se_type.endswith(".1") or se_type.endswith(".0"):
-                se_type = se_type.rsplit(".", 1)[0]
-            if se_type:
-                # Rebuild a normal event from syncEvent for idle/text handling
-                data = se.get("data") if isinstance(se.get("data"), dict) else {}
-                obj = {
-                    "type": se_type,
-                    "properties": data if data else se,
-                }
-        typ = obj.get("type") or obj.get("event") or ""
-        props = obj.get("properties") or obj.get("payload") or obj
-        if not isinstance(props, dict):
-            props = {}
-        # Filter global SSE events to this session when a session id is present.
-        if not self._session_matches(props, obj):
+        typ, data = obj.get("type"), obj.get("data")
+        if typ == "server.connected":
+            self._ready.set()
+            return
+        if not isinstance(data, dict):
+            return
+        if typ == "session.created":
+            with self._lock:
+                if data.get("parentID") in self._child_sessions and data.get("sessionID"):
+                    self._child_sessions.add(str(data["sessionID"]))
+            return
+        if typ == "form.created" and isinstance(data.get("form"), dict):
+            form_session = data["form"].get("sessionID")
+            location = obj.get("location") if isinstance(obj.get("location"), dict) else {}
+            if form_session == self.session_id or form_session in self._child_sessions or (form_session == "global" and location.get("directory") == self.cwd):
+                self._fail("input_required: " + json.dumps(data, ensure_ascii=False), obj)
+            return
+        if data.get("sessionID") != self.session_id and data.get("sessionID") not in self._child_sessions:
+            return
+        if typ == "session.inbox.delivered" and data.get("sessionID") == self.session_id:
+            with self._lock:
+                self._pending.discard(str(data.get("inboxID")))
             return
         if typ == "permission.asked":
-            # This headless adapter has no permission-response UI. Do not leave
-            # a request waiting forever or silently grant additional access.
-            detail = {
-                "request_id": props.get("id"),
-                "permission": props.get("permission"),
-                "patterns": props.get("patterns"),
-                "command": (props.get("metadata") or {}).get("command"),
-            }
-            self._error = "permission_required: " + json.dumps(detail, ensure_ascii=False)
-            self._exit_code = 1
-            self._events.put(AdapterEvent(kind="error", data=self._error, raw=obj))
-            self._events.put(AdapterEvent(kind="done", data="permission_required", raw=obj))
-            self._done = True
+            detail = {"request_id": data.get("id"), "permission": data.get("action"),
+                      "patterns": data.get("resources"), "command": (data.get("metadata") or {}).get("command")}
+            self._fail("permission_required: " + json.dumps(detail, ensure_ascii=False), obj)
             return
-        if typ == "message.updated":
-            info = props.get("info") if isinstance(props.get("info"), dict) else props
-            message_id = info.get("id") if isinstance(info, dict) else None
-            role = info.get("role") if isinstance(info, dict) else None
-            if message_id and role:
-                self._message_roles[str(message_id)] = str(role)
-            self._events.put(AdapterEvent(kind="progress", data=typ, raw=obj))
+        if data.get("sessionID") != self.session_id:
             return
-        if typ == "message.part.delta":
-            # Incremental append only (genuine deltas).
-            part = props.get("part") or props
-            if not isinstance(part, dict) or not self._is_assistant_text_part(part):
+        if typ in ("session.text.delta", "session.text.ended"):
+            key = f"{data.get('assistantMessageID')}:{data.get('ordinal')}"
+            value = data.get("delta") if typ.endswith("delta") else data.get("text")
+            if not isinstance(value, str):
                 return
-            delta = props.get("delta") or ""
-            text = ""
-            if isinstance(delta, str) and delta:
-                text = delta
-            elif isinstance(part, dict):
-                # Delta-only updated branch: some emitters put the delta on part
-                # without a full snapshot field.
-                text = ""
-                if isinstance(part.get("delta"), str):
-                    text = part["delta"]
-            if text:
-                self._text_parts.append(str(text))
-                self._events.put(AdapterEvent(kind="text", data=str(text), raw=obj))
+            with self._lock:
+                if key not in self._parts:
+                    self._part_order.append(key)
+                    self._parts[key] = ""
+                previous = self._parts[key]
+                self._parts[key] = previous + value if typ.endswith("delta") else value
+            delta = value if typ.endswith("delta") else (value[len(previous):] if value.startswith(previous) else "")
+            if delta:
+                self._events.put(AdapterEvent(kind="text", data=delta, raw=obj))
             return
-        if typ == "message.part.updated":
-            part = props.get("part") if isinstance(props.get("part"), dict) else props
-            if not isinstance(part, dict):
-                part = {}
-            if part.get("type") == "tool":
-                state = part.get("state") or {}
-                status = str(state.get("status") or "unknown")
-                key = str(part.get("id") or part.get("callID") or "")
-                if key and self._tool_status.get(key) == status:
+        if typ in ("session.tool.input.started", "session.tool.called", "session.tool.success", "session.tool.failed"):
+            call_id = str(data.get("id") or "")
+            detail = self._tools.setdefault(call_id, {"call_id": call_id})
+            if typ == "session.tool.input.started":
+                detail["tool"] = data.get("name")
+                return
+            if typ == "session.tool.called":
+                detail.update({"status": "running", "input": data.get("input")})
+                kind = "tool_started"
+            else:
+                detail["status"] = "completed" if typ.endswith("success") else "error"
+                kind = "tool_completed"
+            self._events.put(AdapterEvent(kind=kind, data=json.dumps(detail, ensure_ascii=False), raw=obj))
+            return
+        if typ in ("session.execution.failed", "session.execution.interrupted"):
+            with self._lock:
+                replacing = typ == "session.execution.interrupted" and self._ignore_interrupt_once
+                if replacing:
+                    self._ignore_interrupt_once = False
+            if not replacing:
+                self._fail("OpenCode execution failed: " + json.dumps(data, ensure_ascii=False), obj)
+            return
+        if typ == "session.execution.succeeded":
+            self._events.put(AdapterEvent(kind="turn_completed", data=typ, raw=obj))
+            with self._lock:
+                if self._reconciler_running:
                     return
-                if key:
-                    self._tool_status[key] = status
-                detail = {"tool": part.get("tool"), "call_id": part.get("callID"),
-                          "status": status, "input": state.get("input"), "time": state.get("time")}
-                kind = "tool_completed" if status in ("completed", "error") else "tool_started"
-                self._events.put(AdapterEvent(kind=kind, data=json.dumps(detail, ensure_ascii=False), raw=obj))
-                return
-            if not self._is_assistant_text_part(part):
-                return
-            # Delta-only updated: if text is missing but delta is present, treat
-            # as incremental rather than a full snapshot.
-            if not isinstance(part.get("text"), str) and isinstance(props.get("delta"), str):
-                d = props["delta"]
-                if d:
-                    self._text_parts.append(str(d))
-                    self._events.put(AdapterEvent(kind="text", data=str(d), raw=obj))
-                return
-            self._apply_part_updated(part, obj)
+                self._reconciler_running = True
+                self._reconciler_thread = threading.Thread(target=self._reconcile, daemon=True)
+                self._reconciler_thread.start()
             return
-        if typ in ("session.idle", "session.status", "session.completed", "session.complete"):
-            status = props.get("status") if "status" in props else typ
-            # Exact status matching — never substring incomplete/not_idle.
-            status_s = str(status)
-            is_idle = (
-                typ == "session.idle"
-                or status_s == "idle"
-                or (isinstance(status, dict) and status.get("type") == "idle")
-            )
-            is_complete = typ in ("session.completed", "session.complete") or status_s in (
-                "completed",
-                "complete",
-            )
-            if is_idle or is_complete:
+        self._events.put(AdapterEvent(kind="progress", data=str(typ or "event"), raw=obj))
+
+    def _history(self) -> List[Dict[str, Any]]:
+        assert self.session_id
+        path = f"/api/session/{quote(self.session_id, safe='')}/message?limit=200&order=asc"
+        messages: List[Dict[str, Any]] = []
+        seen_cursors: set[str] = set()
+        while True:
+            page = self._http_json("GET", path, timeout=30)
+            if not isinstance(page, dict) or not isinstance(page.get("data"), list) or not isinstance(page.get("cursor"), dict):
+                raise RuntimeError("invalid OpenCode 2 message page")
+            messages.extend(page["data"])
+            cursor = page["cursor"].get("next")
+            if not cursor:
+                return messages
+            if not isinstance(cursor, str) or cursor in seen_cursors:
+                raise RuntimeError("invalid or repeated OpenCode 2 history cursor")
+            seen_cursors.add(cursor)
+            path = f"/api/session/{quote(self.session_id, safe='')}/message?limit=200&cursor={quote(cursor, safe='')}"
+
+    def _reconcile(self) -> None:
+        try:
+            while not self._done:
                 with self._lock:
-                    self._busy = False
-                    replacement = self._replacement_pending
-                self._events.put(
-                    AdapterEvent(kind="turn_completed", data=str(status_s), raw=obj)
-                )
-                # session.idle = turn idle for the latest accepted work.
-                # One idle terminalizes when no abort→replacement is pending.
-                # Do not require one idle per historical prompt_async (auto/queue
-                # step_inject mid-run remains a single session that goes idle once).
-                if replacement:
-                    # Idle from the aborted turn before the replacement prompt
-                    # was accepted — observe the turn end, stay open for the
-                    # successor prompt.
-                    return
-                if self._verify_interrupt_idle:
-                    # An old idle event can arrive after replacement acceptance.
-                    # Reconcile against the current runner before declaring done.
-                    try:
-                        if not self._runner_is_idle():
-                            with self._lock:
-                                self._busy = True
-                            return
-                    except Exception as e:
-                        self._error = f"cannot confirm OpenCode completion: {e}"
-                        self._exit_code = 1
-                        self._done = True
-                        self._events.put(AdapterEvent(kind="error", data=self._error))
-                        return
-                if not self._done:
-                    self._done = True
-                    self._exit_code = 0
-                    self._events.put(
-                        AdapterEvent(kind="done", data="idle", raw=obj)
-                    )
-            return
-        if typ in ("session.error", "error"):
-            self._error = str(props)
-            self._events.put(AdapterEvent(kind="error", data=self._error, raw=obj))
-            # Provider/stream errors should end the steerable run (not hang forever).
-            if not self._done:
-                self._done = True
-                self._exit_code = 1
-                self._events.put(AdapterEvent(kind="done", data="session_error", raw=obj))
-            return
-        if "message" in typ or "session" in typ or "part" in typ:
-            self._events.put(AdapterEvent(kind="progress", data=typ, raw=obj))
-            return
-        self._events.put(AdapterEvent(kind="progress", data=typ or "event", raw=obj))
+                    generation = self._generation
+                    first_prompt, last_prompt = self._first_prompt, self._last_prompt
+                    if self._replacement_pending or self._pending or self._started_at is None:
+                        waiting = True
+                    else:
+                        waiting = False
+                if waiting:
+                    time.sleep(.1)
+                    continue
+                assert self.session_id
+                sid = quote(self.session_id, safe="")
+                jobs_result = self._http_json("GET", f"/api/experimental/job?sessionID={sid}&descendants=true", timeout=10)
+                jobs = jobs_result.get("data") if isinstance(jobs_result, dict) else None
+                if not isinstance(jobs, list):
+                    raise RuntimeError("invalid OpenCode 2 background job list")
+                running = [job for job in jobs if isinstance(job, dict) and
+                           (job.get("time") or {}).get("started", 0) >= self._started_at]
+                for job in running:
+                    with self._lock:
+                        self._child_sessions.add(str(job.get("sessionID") or self.session_id))
+                        if job.get("childSessionID"):
+                            self._child_sessions.add(str(job["childSessionID"]))
+                if running:
+                    time.sleep(.25)
+                    continue
+                pending = False
+                with self._lock:
+                    children = list(self._child_sessions)
+                for child in children:
+                    inbox = self._http_json("GET", f"/api/session/{quote(child, safe='')}/inbox", timeout=10)
+                    if not isinstance(inbox, dict) or not isinstance(inbox.get("data"), list):
+                        raise RuntimeError("invalid OpenCode 2 inbox")
+                    pending = pending or bool(inbox["data"])
+                active = self._http_json("GET", "/api/session/active", timeout=10)
+                if not isinstance(active, dict) or not isinstance(active.get("data"), dict):
+                    raise RuntimeError("invalid OpenCode 2 active sessions")
+                if pending or any(child in active["data"] for child in children):
+                    time.sleep(.25)
+                    continue
+                messages = self._history()
+                first = next((i for i, msg in enumerate(messages) if msg.get("id") == first_prompt), None)
+                last = next((i for i, msg in enumerate(messages) if msg.get("id") == last_prompt), None)
+                if first is None or last is None:
+                    raise RuntimeError("OpenCode 2 history does not contain the admitted prompt")
+                relevant = messages[first + 1:]
+                idle = next((msg for msg in reversed(messages[last + 1:]) if msg.get("type") == "idle"), None)
+                if not idle:
+                    time.sleep(.1)
+                    continue
+                if idle.get("outcome") != "succeeded":
+                    raise RuntimeError("OpenCode 2 recorded unsuccessful completion: " + json.dumps(idle))
+                final = []
+                for message in relevant:
+                    if message.get("type") == "assistant":
+                        for part in message.get("content") or []:
+                            if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                                final.append(part["text"])
+                with self._lock:
+                    if generation != self._generation or self._pending or self._replacement_pending:
+                        continue
+                    self._parts = {"history": "".join(final)}
+                    self._part_order = ["history"]
+                    self._busy, self._done, self._exit_code = False, True, 0
+                self._events.put(AdapterEvent(kind="done", data="completed"))
+                return
+        except Exception as exc:
+            self._fail(f"cannot confirm OpenCode 2 completion: {exc}")
+        finally:
+            with self._lock:
+                self._reconciler_running = False
 
     def poll_events(self) -> Iterator[AdapterEvent]:
         if self.proc and self.proc.poll() is not None and not self._done:
-            self._done = True
-            rc = self.proc.returncode
-            # Do not mask non-zero process failures merely because partial text exists.
-            self._exit_code = 0 if rc == 0 else (rc if rc is not None else 1)
-            self._events.put(AdapterEvent(kind="done", data=str(rc)))
+            self._fail(f"OpenCode 2 server exited unexpectedly: {self.proc.returncode}")
         while True:
             try:
                 yield self._events.get_nowait()
@@ -712,101 +551,74 @@ class OpenCodeAdapter(BackendAdapter):
             return self._busy and not self._done
 
     def _queue_class(self) -> DeliveryClass:
-        return DeliveryClass.STEP_INJECT
+        return DeliveryClass.QUEUE_NEXT_TURN
 
     def _interrupt_class(self) -> DeliveryClass:
         return DeliveryClass.ABORT_AND_PROMPT
 
     def steer(self, content: str, mode: str, client_id: str) -> SteerResult:
         if self._done or not self.session_id:
-            return SteerResult(
-                ok=False,
-                delivery_class=self.auto_delivery,
-                status="rejected",
-                error="backend not ready or already completed",
-            )
+            return SteerResult(ok=False, delivery_class=self.auto_delivery, status="rejected", error="backend not ready or completed")
+        dclass = self.map_mode(mode)
         try:
-            dclass = self.map_mode(mode)
-        except NotImplementedError as e:
-            return SteerResult(
-                ok=False,
-                delivery_class=self.auto_delivery,
-                status="rejected",
-                error=str(e),
-            )
-        if mode == "interrupt" or dclass == DeliveryClass.ABORT_AND_PROMPT:
-            with self._lock:
-                self._replacement_pending = True
-                self._done = False
-            try:
+            if mode == "interrupt":
+                with self._lock:
+                    self._replacement_pending = True
+                    self._ignore_interrupt_once = True
                 self._abort()
                 self._wait_for_abort_idle()
-                self._verify_interrupt_idle = True
-                self._prompt_async(content, client_id=client_id)
-            except Exception as e:
                 with self._lock:
-                    self._replacement_pending = False
-                    # A transport failure may have happened after delivery. Do
-                    # not report success or retry a possibly applied operation.
-                    self._error = str(e)
-                    self._exit_code = 1
-                    self._done = True
-                return SteerResult(
-                    ok=False,
-                    delivery_class=dclass,
-                    status="failed",
-                    error=str(e),
-                )
-            return SteerResult(
-                ok=True,
-                delivery_class=DeliveryClass.ABORT_AND_PROMPT,
-                status="request_sent",
-                evidence="abort_then_prompt_async",
-            )
-        # step_inject while busy is the intended OpenCode contract
-        try:
-            self._prompt_async(content, client_id=client_id)
-        except Exception as e:
-            return SteerResult(
-                ok=False,
-                delivery_class=dclass,
-                status="failed",
-                error=str(e),
-            )
-        with self._lock:
-            busy = self._busy
-        return SteerResult(
-            ok=True,
-            delivery_class=DeliveryClass.STEP_INJECT,
-            status="request_sent",
-            evidence="prompt_async_accepted" + ("_while_busy" if busy else ""),
-            meta={"busy": busy},
-        )
+                    pending = list(self._pending)
+                for mid in pending:
+                    self._http_json("DELETE", f"/api/session/{quote(self.session_id, safe='')}/inbox/{quote(mid, safe='')}", timeout=15)
+                    with self._lock:
+                        self._pending.discard(mid)
+                with self._lock:
+                    self._first_prompt = None
+                    self._parts.clear()
+                    self._part_order.clear()
+                self._send_prompt(content, client_id, "steer")
+            else:
+                self._send_prompt(content, client_id, "queue" if mode == "queue" else "steer")
+        except Exception as exc:
+            self._fail(str(exc))
+            return SteerResult(ok=False, delivery_class=dclass, status="failed", error=str(exc))
+        return SteerResult(ok=True, delivery_class=dclass, status="request_sent", evidence="prompt_admitted")
 
     def child_pid(self) -> Optional[int]:
         return self.proc.pid if self.proc else None
 
     def cancel(self) -> None:
         self._cancelled = True
-        try:
-            self._abort()
-        except Exception:
-            pass
-        if self.proc and self.proc.poll() is None:
-            kill_process_group(self.proc.pid, timeout=3.0)
+        if not self._done:
+            try:
+                self._abort()
+            except Exception:
+                pass
         self._done = True
+        if self.proc and self.proc.poll() is None:
+            kill_process_group(self.proc.pid, timeout=3.0, process=self.proc)
+        if self.proc:
+            self.proc.wait(timeout=3.0)
+            for thread in self._stdio_threads:
+                thread.join(timeout=1.0)
+            for stream in (self.proc.stdout, self.proc.stderr):
+                if stream:
+                    stream.close()
+        if self._sse_thread:
+            self._sse_thread.join(timeout=5.0)
+            if self._sse_thread.is_alive():
+                raise RuntimeError("OpenCode event reader did not stop during cleanup")
+        with self._lock:
+            reconciler = self._reconciler_thread
+        if reconciler:
+            reconciler.join(timeout=35.0)
+            if reconciler.is_alive():
+                raise RuntimeError("OpenCode completion reader did not stop during cleanup")
 
     def final_text(self) -> str:
-        # Prefer cumulative snapshots in insertion order (part order preserved),
-        # else incremental deltas. Never concatenate H+He+Hello snapshots.
         with self._lock:
-            order = list(self._part_order)
-            snaps = dict(self._part_snapshots)
-        if snaps:
-            if order:
-                return "".join(snaps[k] for k in order if k in snaps)
-            return "".join(snaps[k] for k in sorted(snaps.keys()))
-        return "".join(self._text_parts)
+            return "".join(self._parts[k] for k in self._part_order)
 
     def close(self) -> None:
         self.cancel()

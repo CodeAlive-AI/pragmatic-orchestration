@@ -296,27 +296,7 @@ class Supervisor:
             self._finalize(status="failed", exit_code=1, error=str(e))
             return 1
         finally:
-            self._cleanup_adapter()
-            if self._session_lease:
-                self._session_lease.close()
-            try:
-                from debug_tape import close_global_tape
-
-                stats = close_global_tape()
-                if stats and (
-                    stats.get("dropped")
-                    or stats.get("overflow")
-                    or stats.get("sequence_gaps")
-                ):
-                    # Counters only — never event content on normal stderr.
-                    progress(
-                        "steer",
-                        f"run_id={self.run_id}",
-                        f"debug-events dropped={stats.get('dropped', 0)} "
-                        f"overflow={stats.get('overflow')} gaps={stats.get('sequence_gaps', 0)}",
-                    )
-            except Exception:
-                pass
+            self._finish_cleanup()
 
     def _loop(self) -> int:
         assert self.adapter and self.mailbox and self.run_id
@@ -1062,22 +1042,45 @@ class Supervisor:
         if changed:
             self._update_registry_state(steers=steers, recover=False)
 
-    def _cleanup_adapter(self) -> None:
+    def _cleanup_adapter(self) -> Optional[Exception]:
         if getattr(self, "_adapter_cleanup_done", False):
-            return
+            return None
         if not self.adapter:
-            self._update_registry_meta(cleanup_status="completed", cleanup_error=None)
-            return
+            return None
         try:
             child = self.adapter.child_pid()
             self.adapter.close()
             if child:
                 kill_process_group(child, timeout=2.0)
             self._adapter_cleanup_done = True
-            self._update_registry_meta(cleanup_status="completed", cleanup_error=None)
+            return None
         except Exception as error:
-            self._update_registry_meta(cleanup_status="failed", cleanup_error=str(error))
+            return error
+
+    def _finish_cleanup(self) -> None:
+        error = self._cleanup_adapter()
+        try:
+            if self._session_lease:
+                self._session_lease.close()
+        except Exception as lease_error:
+            error = error or lease_error
+        try:
+            from debug_tape import close_global_tape
+
+            stats = close_global_tape()
+            if stats and (stats.get("dropped") or stats.get("overflow") or stats.get("sequence_gaps")):
+                progress("steer", f"run_id={self.run_id}",
+                         f"debug-events dropped={stats.get('dropped', 0)} "
+                         f"overflow={stats.get('overflow')} gaps={stats.get('sequence_gaps', 0)}")
+        except Exception:
+            pass
+        # Recovery treats this as permission to acquire the old session. Publish
+        # it only after its writer and lease have both stopped.
+        if error:
             self._registry_notice("adapter_cleanup_failed", str(error))
+            self._update_registry_meta(cleanup_status="failed", cleanup_error=str(error))
+        else:
+            self._update_registry_meta(cleanup_status="completed", cleanup_error=None)
 
     def _artifacts_need_private_home(self, path: str) -> bool:
         """True when protocol artifacts must not land in project cwd."""

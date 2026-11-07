@@ -1,273 +1,203 @@
 #!/usr/bin/env python3
-"""Steerable OpenCode fake: ephemeral HTTP serve + SSE + prompt_async + abort."""
+"""OpenCode 2 HTTP/SSE test server with durable session messages."""
 from __future__ import annotations
-
+import base64
 import json
 import os
 import sys
+from pathlib import Path
 import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 
 class LoopbackHTTPServer(ThreadingHTTPServer):
     def server_bind(self):
-        # HTTPServer resolves getfqdn() during bind. Reverse DNS can stall on
-        # hosted macOS; this offline fake only needs its numeric loopback URL.
         TCPServer.server_bind(self)
         self.server_name, self.server_port = self.server_address[:2]
 
 
 class State:
     def __init__(self):
-        self.session_id = "sess_" + uuid.uuid4().hex[:8]
-        self.prompts: List[Dict[str, Any]] = []
-        self.aborted = False
-        self.done = False
-        self.lock = threading.Lock()
-        self.sse_queues: List[List[str]] = []
+        self.session_id = "ses_" + uuid.uuid4().hex[:8]
+        self.prompts = []
+        self.messages = []
+        self.queues = []
+        self.active = False
+        self.generation = 0
+        self.lock = threading.RLock()
         self.slow = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.35"))
 
 
 STATE = State()
 
 
-def broadcast(event: Dict[str, Any]) -> None:
-    data = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+def broadcast(kind, data):
+    frame = "data: " + json.dumps({"type": kind, "data": data}, ensure_ascii=False) + "\n\n"
     with STATE.lock:
-        for q in STATE.sse_queues:
-            q.append(data)
-
-
-def _expected_auth() -> Optional[str]:
-    """Return expected Basic token, or None if auth is disabled (tests only)."""
-    password = os.environ.get("OPENCODE_SERVER_PASSWORD") or ""
-    if not password:
-        return None
-    username = os.environ.get("OPENCODE_SERVER_USERNAME") or "opencode"
-    import base64
-
-    return "Basic " + base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+        for q in STATE.queues:
+            q.append(frame)
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        return
+    protocol_version = "HTTP/1.1"
 
-    def _check_auth(self) -> bool:
-        expected = _expected_auth()
-        if expected is None:
+    def log_message(self, fmt, *args):
+        pass
+
+    def auth(self):
+        password = os.environ.get("OPENCODE_PASSWORD", "")
+        expected = "Basic " + base64.b64encode(f"opencode:{password}".encode()).decode()
+        if self.headers.get("Authorization") == expected:
             return True
-        got = self.headers.get("Authorization") or ""
-        if got == expected:
-            return True
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="Secure Area"')
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        self.reply(401, {"error": "unauthorized"})
         return False
 
-    def _json(self, code: int, obj: Any) -> None:
-        body = json.dumps(obj).encode("utf-8")
-        self.send_response(code)
+    def reply(self, status, obj):
+        raw = json.dumps(obj).encode() if obj is not None else b""
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
-        self.wfile.write(body)
-
-    def _empty(self, code: int = 204) -> None:
-        self.send_response(code)
-        self.end_headers()
+        if raw:
+            self.wfile.write(raw)
 
     def do_GET(self):
-        if not self._check_auth():
+        if not self.auth():
             return
         path = urlparse(self.path).path
-        if path == "/session/status":
+        if path == "/api/info":
+            return self.reply(200, {"version": os.environ.get("PORCH_FAKE_OPENCODE_VERSION", "2.2.6")})
+        if path == "/api/session/active":
             with STATE.lock:
-                idle = STATE.done or STATE.aborted or not STATE.prompts
-            self._json(200, {} if idle else {STATE.session_id: {"type": "busy"}})
-            return
-        if path == "/global/health":
-            self._json(200, {"healthy": True})
-            return
-        if path in ("/global/event", "/event"):
+                return self.reply(200, {"data": {STATE.session_id: {"type": "running"}} if STATE.active else {}})
+        if path == "/api/experimental/job":
+            return self.reply(200, {"data": []})
+        if path == f"/api/session/{STATE.session_id}/inbox":
+            return self.reply(200, {"data": []})
+        if path == f"/api/session/{STATE.session_id}/message":
+            with STATE.lock:
+                return self.reply(200, {"data": list(STATE.messages), "cursor": {}})
+        if path == "/api/event":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
+            self.send_header("Connection", "close")
             self.end_headers()
-            q: List[str] = []
+            q = []
             with STATE.lock:
-                STATE.sse_queues.append(q)
+                STATE.queues.append(q)
             try:
-                # Keep open until done
-                while not STATE.done:
+                self.wfile.write(b'data: {"type":"server.connected","data":{}}\n\n')
+                self.wfile.flush()
+                while True:
                     with STATE.lock:
                         items = list(q)
                         q.clear()
                     for item in items:
-                        self.wfile.write(item.encode("utf-8"))
+                        self.wfile.write(item.encode())
                         self.wfile.flush()
-                    time.sleep(0.05)
-                # flush remaining
-                with STATE.lock:
-                    items = list(q)
-                for item in items:
-                    self.wfile.write(item.encode("utf-8"))
-                    self.wfile.flush()
-            except BrokenPipeError:
+                    time.sleep(.03)
+            except (BrokenPipeError, ConnectionResetError):
                 pass
+            finally:
+                with STATE.lock:
+                    STATE.queues.remove(q)
             return
-        self._json(404, {"error": "not found", "path": path})
+        self.reply(404, {"error": "not found", "path": path})
 
     def do_POST(self):
-        if not self._check_auth():
+        if not self.auth():
             return
-        parsed = urlparse(self.path)
-        path = parsed.path
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
-        body: Dict[str, Any] = {}
-        if raw:
-            try:
-                body = json.loads(raw.decode("utf-8"))
-            except json.JSONDecodeError:
-                body = {}
-
-        if path == "/session" or path.startswith("/session?"):
-            self._json(
-                200,
-                {"id": STATE.session_id, "title": "fake", "directory": body.get("directory") or ""},
-            )
-            return
-
-        if path.startswith("/session/") and path.endswith("/prompt_async"):
-            parts = body.get("parts") or []
-            text = ""
-            for p in parts:
-                if isinstance(p, dict) and p.get("type") == "text":
-                    text += p.get("text") or ""
-            client = (body.get("metadata") or {}).get("clientId") or ""
+        path = urlparse(self.path).path
+        size = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(size)) if size else {}
+        if path == "/api/session":
+            return self.reply(200, {"data": {"id": STATE.session_id}})
+        if path == f"/api/session/{STATE.session_id}/interrupt":
             with STATE.lock:
-                STATE.aborted = False
-                STATE.prompts.append({"text": text, "clientId": client, "t": time.time()})
-            # Emit delta after short delay in background
-            def work(prompt_index: int):
-                time.sleep(STATE.slow * 0.4)
-                if os.environ.get("PORCH_FAKE_OC_PERMISSION"):
-                    broadcast({"type": "message.part.updated", "properties": {
-                        "sessionID": STATE.session_id, "part": {"id": "tool-permission",
-                        "type": "tool", "tool": "bash", "callID": "call-permission",
-                        "state": {"status": "running", "input": {"command": "mkdir /tmp/example"}}}}})
-                    for _ in range(6):
-                        broadcast({"type": "server.heartbeat", "properties": {}})
-                    time.sleep(float(os.environ.get("PORCH_FAKE_OC_PERMISSION_DELAY", "0")))
-                    broadcast({"type": "permission.asked", "properties": {
-                        "sessionID": STATE.session_id, "id": "permission-example",
-                        "permission": "external_directory", "patterns": ["/tmp/example/*"],
-                        "metadata": {"command": "mkdir /tmp/example"}}})
-                    return  # Real backend waits for a permission response here.
-                chunk = "FAKE_OC"
-                if client and client != "initial":
-                    chunk += f"+{client[:6]}"
-                broadcast(
-                    {
-                        "type": "message.part.delta",
-                        "properties": {
-                            "sessionID": STATE.session_id,
-                            "delta": chunk,
-                            "part": {"type": "text", "text": chunk, "sessionID": STATE.session_id},
-                        },
-                    }
-                )
-                time.sleep(STATE.slow * 0.3)
-                # Idle when this is still the latest prompt (step boundary)
+                was_active = STATE.active
+                STATE.generation += 1
+                STATE.active = False
+            if was_active:
+                broadcast("session.execution.interrupted", {"sessionID": STATE.session_id, "reason": "user"})
+            return self.reply(200, {"interrupted": was_active})
+        if path == f"/api/session/{STATE.session_id}/prompt":
+            mid = body["id"]
+            client = body.get("metadata", {}).get("clientId", "")
+            created = int(time.time() * 1000)
+            with STATE.lock:
+                STATE.prompts.append(body)
+                STATE.messages.append({"id": mid, "type": "user", "text": body["text"]})
+                STATE.active = True
+                generation = STATE.generation
+                count = len(STATE.prompts)
+            self.reply(200, {"data": {"id": mid, "time": {"created": created}}})
+            def work():
+                broadcast("session.inbox.delivered", {"sessionID": STATE.session_id, "inboxID": mid})
+                time.sleep(STATE.slow * .4)
                 with STATE.lock:
-                    latest = len(STATE.prompts)
-                if prompt_index == latest:
-                    broadcast(
-                        {
-                            "type": "session.idle",
-                            "properties": {"sessionID": STATE.session_id, "status": "idle"},
-                        }
-                    )
-                    # Allow a short window for more steers, then finish process
-                    def finish(expected: int):
-                        time.sleep(0.55)
-                        with STATE.lock:
-                            if len(STATE.prompts) == expected:
-                                STATE.done = True
-
-                    threading.Thread(target=finish, args=(latest,), daemon=True).start()
-
-            with STATE.lock:
-                idx = len(STATE.prompts)
-            threading.Thread(target=work, args=(idx,), daemon=True).start()
-            self._empty(204)
+                    if generation != STATE.generation:
+                        return
+                if os.environ.get("PORCH_FAKE_OC_PERMISSION"):
+                    base = {"sessionID": STATE.session_id, "id": "call-permission", "assistantMessageID": "msg_tool"}
+                    broadcast("session.tool.input.started", {**base, "name": "shell"})
+                    broadcast("session.tool.called", {**base, "input": {"command": "mkdir /tmp/example"}, "executed": True})
+                    time.sleep(float(os.environ.get("PORCH_FAKE_OC_PERMISSION_DELAY", "0")))
+                    broadcast("permission.asked", {"sessionID": STATE.session_id, "id": "permission-example",
+                        "action": "external_directory", "resources": ["/tmp/example/*"],
+                        "metadata": {"command": "mkdir /tmp/example"}})
+                    return
+                chunk = "FAKE_OC" + (f"+{client[:6]}" if client and client != "initial" else "")
+                msg = "msg_answer_" + mid
+                data = {"sessionID": STATE.session_id, "assistantMessageID": msg, "ordinal": 0}
+                broadcast("session.text.delta", {**data, "delta": chunk})
+                broadcast("session.text.ended", {**data, "text": chunk})
+                with STATE.lock:
+                    STATE.messages.append({"id": msg, "type": "assistant", "content": [{"type": "text", "text": chunk}]})
+                time.sleep(STATE.slow * .3)
+                with STATE.lock:
+                    if generation != STATE.generation or count != len(STATE.prompts):
+                        return
+                    STATE.active = False
+                    STATE.messages.append({"id": "idle_" + mid, "type": "idle", "outcome": "succeeded"})
+                broadcast("session.execution.succeeded", {"sessionID": STATE.session_id})
+            threading.Thread(target=work, daemon=True).start()
             return
+        self.reply(404, {"error": "not found", "path": path})
 
-        if path.startswith("/session/") and path.endswith("/abort"):
-            with STATE.lock:
-                STATE.aborted = True
-            broadcast(
-                {
-                    "type": "session.status",
-                    "properties": {"sessionID": STATE.session_id, "status": "aborted"},
-                }
-            )
-            self._empty(204)
-            return
-
-        self._json(404, {"error": "not found", "path": path})
+    def do_DELETE(self):
+        if self.auth():
+            self.reply(204, None)
 
 
-def main() -> int:
+def main():
+    if sys.argv[1:] == ["debug", "paths", "db"]:
+        data = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local/share")) / "opencode"
+        filename = os.environ.get("OPENCODE_DB", os.environ.get("PORCH_FAKE_OPENCODE_CHANNEL_DB", "opencode.db"))
+        print(filename if filename == ":memory:" else (data / filename).resolve())
+        return 0
+    pid_file = os.environ.get("PORCH_FAKE_OPENCODE_SERVER_PID_FILE")
+    if pid_file:
+        with open(pid_file, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
     log = os.environ.get("PORCH_FAKE_ARGV_LOG")
     if log:
         with open(log, "a", encoding="utf-8") as f:
             f.write(json.dumps({"bin": "opencode-steer", "argv": sys.argv[1:]}) + "\n")
-
-    # Parse --port 0 / --hostname
-    host = "127.0.0.1"
-    port = 0
     args = sys.argv[1:]
-    for i, a in enumerate(args):
-        if a == "--hostname" and i + 1 < len(args):
-            host = args[i + 1]
-        if a == "--port" and i + 1 < len(args):
-            port = int(args[i + 1])
-
-    # Threading server so SSE clients do not block prompt_async / abort.
-    httpd = LoopbackHTTPServer((host, port), Handler)
-    real_port = httpd.server_address[1]
-    # Match real opencode log line
-    print(f"opencode server listening on http://{host}:{real_port}", flush=True)
-    # Also stderr as some adapters read stderr
-    print(f"opencode server listening on http://{host}:{real_port}", file=sys.stderr, flush=True)
-
-    t = threading.Thread(target=httpd.serve_forever, daemon=True)
-    t.start()
-    # Run until STATE.done or hard deadline (always terminate)
-    deadline = time.time() + 12
-    while time.time() < deadline and not STATE.done:
-        time.sleep(0.1)
-    with STATE.lock:
-        STATE.done = True
+    host = args[args.index("--hostname") + 1] if "--hostname" in args else "127.0.0.1"
+    port = int(args[args.index("--port") + 1]) if "--port" in args else 0
+    server = LoopbackHTTPServer((host, port), Handler)
+    print(f"server listening on http://{host}:{server.server_address[1]}", flush=True)
     try:
-        httpd.shutdown()
-    except Exception:
-        pass
-    try:
-        httpd.server_close()
-    except Exception:
-        pass
+        server.serve_forever()
+    finally:
+        server.server_close()
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

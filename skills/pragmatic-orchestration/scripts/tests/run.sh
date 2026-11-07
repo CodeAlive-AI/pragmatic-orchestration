@@ -171,6 +171,8 @@ dump_delegate() {
 }
 
 TMP=$(mktemp -d)
+export XDG_DATA_HOME="$TMP/xdg-data"
+unset OPENCODE_DB OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD OPENCODE_CONFIG_CONTENT
 
 # Production profiles must reach their native harnesses with the exact current
 # model IDs, not merely appear correctly in --list-agents output.
@@ -214,20 +216,20 @@ env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/muse-spa
   "$LIB_DIR/backend_run.sh" --mode review --agent-id opencode-go-muse-spark-1.3-contributor --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/muse-spark-review.json"'"))["argv"]))')
 assert_contains "Muse Spark production profile uses exact model" "$argv" "-m opencode-go/muse-spark-1.3-contributor"
-assert_contains "Muse Spark production profile uses maximum effort" "$argv" "--variant xhigh"
+assert_contains "Muse Spark production profile uses maximum effort" "$argv" "#xhigh"
 
 env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/deepseek-v41-flash-review.json" \
   "$LIB_DIR/backend_run.sh" --mode review --agent-id opencode-go-deepseek-v4.1-flash --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/deepseek-v41-flash-review.json"'"))["argv"]))')
 assert_contains "DeepSeek V4.1 Flash production profile uses exact model" "$argv" "-m opencode-go/deepseek-v4.1-flash"
-assert_contains "DeepSeek V4.1 Flash production profile uses maximum effort" "$argv" "--variant max"
+assert_contains "DeepSeek V4.1 Flash production profile uses maximum effort" "$argv" "#max"
 
 for mode in review delegate; do
   env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/argon-$mode.json" \
     "$LIB_DIR/backend_run.sh" --mode "$mode" --agent-id opencode-go-gemini-4-argon-contributor --raw "hello" >/dev/null
   argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/argon-$mode.json")
   assert_contains "Gemini 4 Argon $mode uses exact Go model" "$argv" "-m opencode-go/gemini-4-argon-contributor"
-  assert_contains "Gemini 4 Argon $mode defaults to high effort" "$argv" "--variant high"
+  assert_contains "Gemini 4 Argon $mode defaults to high effort" "$argv" "#high"
 done
 
 for mode in review delegate; do
@@ -242,7 +244,7 @@ for mode in review delegate; do
   assert_contains "Gemini 4 Argon $mode completes with fake OpenCode" "$out" "FAKE_OPENCODE_OK"
   argv=$(python3 -c 'import json,sys; print(" ".join(json.loads(open(sys.argv[1]).readline())["argv"]))' "$argon_log")
   assert_contains "Gemini 4 Argon $mode runtime uses Go catalog id" "$argv" "-m opencode-go/gemini-4-argon-contributor"
-  assert_contains "Gemini 4 Argon $mode runtime uses high variant" "$argv" "--variant high"
+  assert_contains "Gemini 4 Argon $mode runtime uses high variant" "$argv" "#high"
 done
 
 # Exercise profile selection through public review and one-shot delegate paths.
@@ -340,18 +342,18 @@ assert_not_contains "opencode delegate no plan" "$argv" "--agent plan"
 dump_review opencode-go-kimi-k3 "$TMP/oc-go-kimi-k3-review.json"
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/oc-go-kimi-k3-review.json"'"))["argv"]))')
 assert_contains "OpenCode Go Kimi K3 exact model" "$argv" "-m opencode-go/kimi-k3"
-assert_contains "OpenCode Go Kimi K3 uses max reasoning" "$argv" "--variant max"
+assert_contains "OpenCode Go Kimi K3 uses max reasoning" "$argv" "#max"
 
 # New OpenCode Go profiles: exact catalog model ids and supported reasoning variants.
 dump_review opencode-go-muse-spark-1.3-contributor "$TMP/oc-go-muse-spark-review.json"
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/oc-go-muse-spark-review.json"'"))["argv"]))')
 assert_contains "OpenCode Go Muse Spark 1.3 Contributor exact model" "$argv" "-m opencode-go/muse-spark-1.3-contributor"
-assert_contains "OpenCode Go Muse Spark 1.3 Contributor uses maximum reasoning" "$argv" "--variant xhigh"
+assert_contains "OpenCode Go Muse Spark 1.3 Contributor uses maximum reasoning" "$argv" "#xhigh"
 
 dump_review opencode-go-deepseek-v4.1-flash "$TMP/oc-go-deepseek-v41-flash-review.json"
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/oc-go-deepseek-v41-flash-review.json"'"))["argv"]))')
 assert_contains "OpenCode Go DeepSeek V4.1 Flash exact model" "$argv" "-m opencode-go/deepseek-v4.1-flash"
-assert_contains "OpenCode Go DeepSeek V4.1 Flash uses maximum reasoning" "$argv" "--variant max"
+assert_contains "OpenCode Go DeepSeek V4.1 Flash uses maximum reasoning" "$argv" "#max"
 
 PORCH_FAKE_ARGV_LOG="$TMP/oc-go-kimi-k3-prompt.jsonl" \
   "$LIB_DIR/backend_run.sh" --mode review --agent-id opencode-go-kimi-k3 "review this" >/dev/null
@@ -359,8 +361,7 @@ kimi_prompt=$(python3 -c 'import json; print(json.loads(open("'"$TMP/oc-go-kimi-
 assert_contains "OpenCode Go Kimi K3 adds adversarial review prompt" "$kimi_prompt" "KIMI_K3_ADVERSARIAL_REVIEW_MARKER"
 oc_review_policy=$(python3 -c 'import json; print(json.loads(open("'"$TMP/oc-go-kimi-k3-prompt.jsonl"'").readline())["review_policy"])')
 assert_contains "opencode review policy denies edits" "$oc_review_policy" "'edit': 'deny'"
-assert_contains "opencode review policy denies delegation" "$oc_review_policy" "'task': 'deny'"
-assert_contains "opencode review policy permits Bash" "$oc_review_policy" "'bash': 'allow'"
+assert_contains "opencode review policy denies delegation" "$oc_review_policy" "'subagent': 'deny'"
 oc_review_agent_prompt=$(python3 -c 'import json; print(json.loads(open("'"$TMP/oc-go-kimi-k3-prompt.jsonl"'").readline())["review_agent_prompt"])')
 assert_contains "opencode review agent prompt requires work alone" "$oc_review_agent_prompt" "Work alone"
 assert_contains "opencode review agent prompt requires blast-radius search" "$oc_review_agent_prompt" "real blast radius"
@@ -370,12 +371,12 @@ OPENCODE_MODEL="provider/model-override" OPENCODE_EFFORT="thinking" \
   "$LIB_DIR/backend_run.sh" --mode delegate --agent-id opencode --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/opencode-overrides.json"'"))["argv"]))')
 assert_contains "opencode shell runner honors OPENCODE_MODEL" "$argv" "-m provider/model-override"
-assert_contains "opencode shell runner honors OPENCODE_EFFORT" "$argv" "--variant thinking"
+assert_contains "opencode shell runner honors OPENCODE_EFFORT" "$argv" "provider/model-override#thinking"
 
 OPENCODE_EFFORT="none" PORCH_DUMP_ARGV="$TMP/opencode-none.json" \
   "$LIB_DIR/backend_run.sh" --mode delegate --agent-id opencode --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/opencode-none.json"'"))["argv"]))')
-assert_not_contains "opencode shell runner treats none as no variant" "$argv" "--variant"
+assert_not_contains "opencode shell runner treats none as no variant" "$argv" "#none"
 
 # Grok review: sandbox read-only + tool allow/deny
 dump_review grok "$TMP/grok-review.json"
@@ -1276,56 +1277,15 @@ assert_contains "claude is_error norm has run_failed" \
   "$(cat "$PORCH_RUN_DIR/normalized/claude-code.jsonl")" "run_failed"
 export PORCH_FAKE_CLAUDE_MODE=ok
 
-echo "=== OpenCode cumulative part snapshots assemble Hello not HHeHello ==="
-# Production-shaped message.part.updated stream through normalize extract-text.
+echo "=== OpenCode 2 JSON text chunks ==="
 printf '%s\n' \
-  '{"directory":"/tmp","payload":{"type":"message.part.updated","properties":{"part":{"id":"p1","type":"text","text":"H"}}}}' \
-  '{"directory":"/tmp","payload":{"type":"message.part.updated","properties":{"part":{"id":"p1","type":"text","text":"He"}}}}' \
-  '{"directory":"/tmp","payload":{"type":"message.part.updated","properties":{"part":{"id":"p1","type":"text","text":"Hello"}}}}' \
-  '{"type":"session.idle"}' \
+  '{"type":"text","part":{"type":"text","text":"Hel"}}' \
+  '{"type":"text","part":{"type":"text","text":"lo"}}' \
   > "$TMP/oc-hello.jsonl"
 python3 "$LIB_DIR/normalize_stream.py" --backend opencode --agent-id opencode \
   --input "$TMP/oc-hello.jsonl" --extract-text --text-out "$TMP/oc-hello.txt" \
   --no-validate >/dev/null
-assert_eq "opencode oneshot Hello assembly" "$(cat "$TMP/oc-hello.txt")" "Hello"
-assert_not_contains "opencode oneshot not HHeHello" "$(cat "$TMP/oc-hello.txt")" "HHe"
-
-echo "=== OpenCode terminal event bounds a hung CLI ==="
-export PORCH_RUN_DIR="$TMP/run-opencode-terminal-guard"
-mkdir -p "$PORCH_RUN_DIR"
-set +e
-PORCH_FAKE_OPENCODE_HANG_AFTER_COMPLETE=1 \
-PORCH_FAKE_OPENCODE_HANG_SECONDS=30 \
-PORCH_FAKE_OPENCODE_IDLE_BEFORE_TEXT=1 \
-PORCH_FAKE_OPENCODE_TEXT_AFTER_COMPLETE=1 \
-PORCH_TERMINAL_GRACE=0.05 \
-python3 - "$LIB_DIR/backend_run.sh" "$TMP/opencode-guard.out" "$TMP/opencode-guard.err" <<'PY'
-import subprocess, sys, time
-
-started = time.monotonic()
-try:
-    with open(sys.argv[2], "w") as stdout, open(sys.argv[3], "w") as stderr:
-        proc = subprocess.run(
-            ["bash", sys.argv[1], "--mode", "review", "--agent-id", "opencode", "--raw", "ping"],
-            text=True,
-            stdout=stdout,
-            stderr=stderr,
-            timeout=5,
-        )
-except subprocess.TimeoutExpired:
-    raise SystemExit(124)
-elapsed = time.monotonic() - started
-# The subprocess timeout already distinguishes the 30-second hung fake from a
-# drained terminal stream. A 1.5-second wall-clock oracle also measured machine
-# contention and intermittently failed on the shared VM.
-if proc.returncode != 0:
-    raise SystemExit(proc.returncode)
-PY
-guard_state=$?
-set -e
-assert_eq "opencode terminal guard returns promptly" "$guard_state" "0"
-assert_eq "opencode terminal guard ignores idle and drains late text" \
-  "$(cat "$TMP/opencode-guard.out")" "FAKE_OPENCODE_OKAFTER_COMPLETE"
+assert_eq "opencode v2 oneshot text assembly" "$(cat "$TMP/oc-hello.txt")" "Hello"
 
 # Unit-level: normalize_stream extract-text with *distinct* delta+result
 printf '%s\n' \

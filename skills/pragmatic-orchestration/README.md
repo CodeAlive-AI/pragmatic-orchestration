@@ -71,7 +71,7 @@ You also need Python 3 and at least one supported coding-agent CLI:
 |---|---|---|
 | [Codex CLI](https://github.com/openai/codex) | `codex` | review, delegate |
 | [Claude Code](https://docs.claude.com/claude-code) | `claude` | review, delegate |
-| [OpenCode](https://opencode.ai) | `opencode` | review, delegate |
+| [OpenCode 2.2.6+ (2.x)](https://opencode.ai) | `opencode` | review, delegate |
 | [Grok Build](https://grok.x.ai) | `grok` | review, delegate |
 | [Devin CLI](https://devin.ai) | `devin` | review, delegate |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini` | review only |

@@ -55,7 +55,6 @@ def main() -> int:
     from workflow_plans import get_plan, assign_agents_to_roles, max_parallel
     from debug_tape import DebugTape
     from backend_contract import backend_capabilities, resolve_binary, list_backend_capabilities
-    from terminal_guard import is_terminal
     from normalize_stream import normalize_grok, normalize_opencode
 
     print("=== Event schema ===")
@@ -190,22 +189,8 @@ def main() -> int:
     ok("grok steerable acp-stdio", g.steerable_transport == "acp-stdio")
     ok("grok transports distinct", g.oneshot_transport != g.steerable_transport)
     oc = backend_capabilities("opencode")
-    ok(
-        "opencode notes mention part snapshots / step_inject",
-        "step_inject" in oc.notes and "cumulative" in oc.notes.lower(),
-    )
-    ok(
-        "opencode session.complete is terminal",
-        is_terminal(b'{"type":"session.complete"}', "opencode"),
-    )
-    ok(
-        "opencode session.idle is not process-terminal",
-        not is_terminal(b'{"type":"session.idle"}', "opencode"),
-    )
-    ok(
-        "opencode normalizer records idle as progress",
-        normalize_opencode({"type": "session.idle"}) == ("progress", "session.idle"),
-    )
+    ok("opencode v2 advertises durable steering", "step_inject" in oc.notes and "history reconciliation" in oc.notes)
+    ok("opencode v2 text uses JSON part", normalize_opencode({"type": "text", "part": {"text": "Hello"}}) == ("text", "Hello"))
     ok(
         "grok tool call exposes tool liveness",
         normalize_grok(
@@ -227,56 +212,6 @@ def main() -> int:
         normalize_grok({"type": "tool_call_update", "status": "completed"})
         == ("tool_completed", "completed"),
     )
-    if os.name == "posix":
-        with tempfile.TemporaryDirectory() as td:
-            child_pid_file = Path(td) / "child.pid"
-            child_code = (
-                "import json,os,signal,sys,time;"
-                "open(sys.argv[1],'w').write(str(os.getpid()));"
-                "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
-                "print(json.dumps({'type':'session.complete'}),flush=True);"
-                "time.sleep(30)"
-            )
-            guard = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(LIB / "terminal_guard.py"),
-                    "--backend",
-                    "opencode",
-                    "--terminal-grace",
-                    "30",
-                    "--",
-                    sys.executable,
-                    "-c",
-                    child_code,
-                    str(child_pid_file),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            deadline = time.monotonic() + 3
-            while not child_pid_file.is_file() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            child_pid = int(child_pid_file.read_text()) if child_pid_file.is_file() else -1
-            guard.terminate()
-            try:
-                guard.wait(timeout=4)
-            except subprocess.TimeoutExpired:
-                guard.kill()
-                guard.wait()
-            child_alive = child_pid > 0
-            if child_alive:
-                try:
-                    os.kill(child_pid, 0)
-                except ProcessLookupError:
-                    child_alive = False
-            ok(
-                "terminal guard SIGTERM reaps resistant child",
-                guard.returncode == 143 and not child_alive,
-                f"guard_rc={guard.returncode} child_pid={child_pid} alive={child_alive}",
-            )
-
     print("=== Workflow plans and concurrency ===")
     os.environ.pop("PORCH_MAX_PARALLEL", None)
     ok("default unlimited concurrency", max_parallel() == 0)
@@ -739,33 +674,9 @@ def main() -> int:
         )
         ok("grok EndTurn still success", proc.returncode == 0, proc.stderr[-200:])
 
-        # OpenCode production-shaped cumulative snapshots → Hello not HHeHello
+        # OpenCode 2 run JSON emits text chunks under part.text.
         ocraw = td / "oc-hello.jsonl"
-        ocraw.write_text(
-            "\n".join(
-                [
-                    json.dumps(
-                        {
-                            "directory": "/tmp/proj",
-                            "payload": {
-                                "type": "message.part.updated",
-                                "properties": {
-                                    "part": {
-                                        "id": "prt_1",
-                                        "type": "text",
-                                        "text": snap,
-                                    }
-                                },
-                            },
-                        }
-                    )
-                    for snap in ("H", "He", "Hello")
-                ]
-                + [json.dumps({"type": "session.idle"})]
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        ocraw.write_text("\n".join(json.dumps({"type": "text", "part": {"text": chunk}}) for chunk in ("H", "e", "llo")) + "\n", encoding="utf-8")
         octext = td / "oc-hello.txt"
         proc = subprocess.run(
             [
@@ -787,7 +698,7 @@ def main() -> int:
             cwd=str(LIB),
         )
         got = octext.read_text() if octext.is_file() else ""
-        ok("opencode H/He/Hello → Hello", got == "Hello", repr(got))
+        ok("opencode v2 text chunks → Hello", got == "Hello", repr(got))
         ok("opencode not HHeHello", got != "HHeHello", repr(got))
 
         # Gemini backend identity + plain text

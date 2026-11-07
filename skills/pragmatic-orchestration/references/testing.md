@@ -46,6 +46,14 @@ message completion without duplicate progress text.
 OpenCode regressions exercise a permission-blocked fake server through detached
 launch and wait-any, retained failure details, tool command visibility, nested
 foreign-session filtering, and SSE lines larger than 64 KiB with Unicode content.
+An additional local-model integration exercises the actual OpenCode 2 binary,
+including one-shot review, steering, interrupts, history and simultaneous server
+startup against the same cold and warm database. It uses a loopback fixture and
+isolated data directories; it does not use provider credentials or spend tokens:
+
+```bash
+PORCH_REAL_OPENCODE_BIN=/path/to/opencode python3 scripts/tests/opencode_v2_real_test.py -v
+```
 
 Opt-in real smoke tests spend tokens:
 
@@ -59,7 +67,7 @@ Run `python scripts/tests/platform_test.py -v` from the skill directory with
 native Python (3.11+). These tests spend no model tokens and cover all steer
 imports, non-destructive PID probes, locks shared by two processes, nonblocking
 wait deadlines, exclusive session claims/no replay, process-tree cleanup,
-terminal-guard shutdown, and native supervisor Codex continuation. Windows also
+process cleanup, and native supervisor Codex continuation. Windows also
 checks Python/shell/batch launcher argument handling. Steering guidance after
 options is tested on Python 3.11 as well as newer runtimes. Symlink rejection is
 checked where the OS permits creating symlinks.

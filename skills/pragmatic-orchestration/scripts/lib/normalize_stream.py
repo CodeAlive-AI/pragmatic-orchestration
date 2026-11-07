@@ -420,76 +420,21 @@ def normalize_claude(obj: Dict[str, Any]) -> tuple[str, Any]:
     return "event", typ
 
 
-def _opencode_unwrap(obj: Dict[str, Any]) -> Dict[str, Any]:
-    """Unwrap production payload / syncEvent envelopes (same as steerable)."""
-    if (
-        isinstance(obj.get("payload"), dict)
-        and (obj.get("type") is None or obj.get("type") == "sync")
-        and obj["payload"].get("type")
-    ):
-        obj = obj["payload"]
-    if obj.get("type") == "sync" and isinstance(obj.get("syncEvent"), dict):
-        se = obj["syncEvent"]
-        se_type = str(se.get("type") or "")
-        if se_type.endswith(".1") or se_type.endswith(".0"):
-            se_type = se_type.rsplit(".", 1)[0]
-        if se_type:
-            data = se.get("data") if isinstance(se.get("data"), dict) else {}
-            obj = {"type": se_type, "properties": data if data else se}
-    return obj
-
-
 def normalize_opencode(obj: Dict[str, Any]) -> tuple[str, Any]:
-    """One-shot OpenCode JSONL.
-
-    message.part.updated is a cumulative snapshot per part id (not append-delta).
-    The live extract-text path in main() applies part-id last-write-wins; this
-    mapper still returns the full snapshot text so progress/normalized events
-    remain observable. Callers must not concatenate successive snapshots.
-    """
-    obj = _opencode_unwrap(obj)
-    typ = obj.get("type") or obj.get("event") or "event"
-    props = obj.get("properties") if isinstance(obj.get("properties"), dict) else None
-    part = None
-    if props and isinstance(props.get("part"), dict):
-        part = props["part"]
-    elif isinstance(obj.get("part"), dict):
-        part = obj["part"]
-    else:
-        part = obj
-
-    if typ in ("text", "message.part.delta"):
-        text = ""
-        if props and isinstance(props.get("delta"), str):
-            text = props["delta"]
-        if not text and isinstance(part, dict):
-            # Genuine deltas only — do not treat full snapshot text on delta events
-            # as incremental when a delta field is present elsewhere.
-            if isinstance(part.get("delta"), str):
-                text = part["delta"]
-            elif not (props and isinstance(props.get("delta"), str)):
-                text = part.get("text") or ""
-        if not text:
-            text = obj.get("text") or obj.get("delta") or ""
-        if text:
-            return "text", text
-    if typ == "message.part.updated":
-        # Cumulative snapshot — return full text; main() last-write-wins for
-        # extract-text. Backend post-pass also reassembles from raw.
-        text = ""
-        if isinstance(part, dict) and isinstance(part.get("text"), str):
-            text = part["text"]
-        if text:
-            return "text", text
-    if typ == "session.idle":
-        # Idle is a turn-liveness signal, not proof that the one-shot process
-        # has emitted all answer bytes or completed its lifecycle.
-        return "progress", typ
-    if typ in ("session.complete", "session.completed", "done"):
-        return "end", typ
-    if typ == "error" or obj.get("error"):
-        return "error", obj.get("error") or json.dumps(obj)
-    return "event", typ
+    """Map the OpenCode 2 run --format json stream."""
+    typ = obj.get("type")
+    part = obj.get("part") if isinstance(obj.get("part"), dict) else {}
+    if typ == "text":
+        text = part.get("text")
+        return ("text", text) if isinstance(text, str) and text else ("progress", "text")
+    if typ == "reasoning":
+        return "thought", part.get("text") or ""
+    if typ == "tool_use":
+        return "tool_completed", part.get("tool") or "tool"
+    if typ == "error":
+        error = obj.get("error")
+        return "error", error.get("message", str(error)) if isinstance(error, dict) else str(error or "OpenCode error")
+    return "progress", str(typ or "event")
 
 
 def _devin_content_text(content: Any) -> str:
@@ -672,11 +617,6 @@ def main() -> int:
     collected_for_final = []  # PorchEvent-like for assembly
     rejected_count = 0
     rejected_types: Dict[str, int] = {}
-    # OpenCode message.part.updated: part-id last-write-wins (not H+He+Hello).
-    # Live extract-text path must use this always, not only when empty.
-    oc_part_snaps: Dict[str, str] = {}
-    oc_part_order: list = []
-    oc_delta_parts: list = []
     # Cap how many distinct unknown types we name on the bounded stderr signal.
     REJECTED_SIGNAL_MAX = 8
     reporter: Any = None
@@ -778,39 +718,6 @@ def main() -> int:
             emit_event(sys.stdout, evt)
             collected_for_final.append(evt)
 
-            # OpenCode cumulative part snapshots: track part-id last-write-wins
-            # for extract-text. Still emit answer_delta events for observability.
-            if args.backend == "opencode" and isinstance(raw, dict):
-                oc_obj = _opencode_unwrap(dict(raw))
-                oc_typ = oc_obj.get("type") or oc_obj.get("event") or ""
-                oc_props = (
-                    oc_obj.get("properties")
-                    if isinstance(oc_obj.get("properties"), dict)
-                    else oc_obj
-                )
-                if not isinstance(oc_props, dict):
-                    oc_props = {}
-                oc_part = (
-                    oc_props.get("part")
-                    if isinstance(oc_props.get("part"), dict)
-                    else (oc_obj.get("part") if isinstance(oc_obj.get("part"), dict) else None)
-                )
-                if oc_typ == "message.part.updated" and isinstance(oc_part, dict):
-                    pid = str(
-                        oc_part.get("id")
-                        or oc_part.get("partID")
-                        or oc_part.get("partId")
-                        or "_default"
-                    )
-                    t = oc_part.get("text")
-                    if isinstance(t, str) and t:
-                        if pid not in oc_part_snaps and pid not in oc_part_order:
-                            oc_part_order.append(pid)
-                        oc_part_snaps[pid] = t
-                elif oc_typ in ("message.part.delta", "text") and evt.type == "answer_delta":
-                    if data is not None:
-                        oc_delta_parts.append(str(data))
-
             # Progress uses legacy display vocabulary for BC.
             prog_typ = stream_to_progress_type(stream_typ)
             progress_types = {
@@ -832,20 +739,9 @@ def main() -> int:
 
             if evt.type == "answer_delta" and data is not None:
                 # Stream deltas only until a non-empty authoritative result arrives.
-                # OpenCode snapshots: rewrite text-out from last-write-wins parts
-                # rather than appending H+He+Hello.
                 if text_out_f is not None and final_result_text is None:
-                    if args.backend == "opencode" and oc_part_snaps:
-                        assembled_oc = "".join(
-                            oc_part_snaps[k] for k in oc_part_order if k in oc_part_snaps
-                        )
-                        text_out_f.seek(0)
-                        text_out_f.truncate()
-                        text_out_f.write(assembled_oc)
-                        text_out_f.flush()
-                    else:
-                        text_out_f.write(str(data))
-                        text_out_f.flush()
+                    text_out_f.write(str(data))
+                    text_out_f.flush()
             elif evt.type == "result":
                 # Empty/whitespace authoritative result must NOT erase deltas.
                 if data is not None and str(data).strip():
@@ -874,18 +770,10 @@ def main() -> int:
     # Re-assemble final text.
     if args.text_out:
         assembled = ""
-        if args.backend == "opencode" and oc_part_snaps:
-            # Always prefer part-id last-write-wins over concatenated deltas.
-            assembled = "".join(
-                oc_part_snaps[k] for k in oc_part_order if k in oc_part_snaps
-            )
-        elif args.backend == "opencode" and oc_delta_parts:
-            assembled = "".join(oc_delta_parts)
-        elif collected_for_final:
+        if collected_for_final:
             assembled = assemble_final_text(collected_for_final)
         if assembled and (
             final_result_text is None or assembled != final_result_text
-            or args.backend == "opencode"
         ):
             try:
                 with open(args.text_out, "w", encoding="utf-8") as f:

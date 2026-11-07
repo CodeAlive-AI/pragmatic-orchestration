@@ -9,8 +9,7 @@ not imply that every storage variant has been verified on a live installation.
 |---|---|---|
 | Codex JSONL rollouts, state, catalog, summaries, history | Conversation, metadata, lineage | Existing reader previously verified against local installations. Cloud catalog entries may not have local transcripts. |
 | Codex `.jsonl.zst` | Compressed rollouts | Synthetic compressed and corrupt fixtures; needs Python 3.14+ standard-library Zstandard. Missing decoder or corrupt data returns partial. |
-| OpenCode v1 SQLite and JSON tree | Conversation, tools, lineage | Existing reader previously verified locally. |
-| OpenCode v2 SQLite | Conversation, reasoning, tools, shell, metadata | Synthetic native and migrated fixtures; the older v1 transcript wins when the migrated copy is no newer. Live v2 compatibility not yet verified here. |
+| OpenCode 2 SQLite | Conversation, reasoning, tools, shell, metadata | Inline and row-based fixtures; assistant text verified against an isolated OpenCode 2.2.6 session. |
 | Cursor VS Code SQLite | Composer and bubbles | Fixture-verified; installed version coverage is not established. |
 | Cursor ACP SQLite/protobuf | User and assistant text | Synthetic graph and broken-reference fixtures. Tool, shell and reasoning nodes are explicitly reported as unsupported; not live-verified. |
 | Hermes `state.db` | Conversation, reasoning and tools | Synthetic SQLite fixture and local schema inspection; local database had no sessions. Legacy JSON exports are not covered. |

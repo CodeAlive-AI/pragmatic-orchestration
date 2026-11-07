@@ -52,6 +52,9 @@ def env_base(reg_root: Path, art: Path) -> dict:
     e["PORCH_RUN_DIR"] = str(art)
     e["PORCH_OUTPUT_DIR"] = str(art)
     e["PORCH_SAVE_OUTPUTS"] = "1"
+    e["XDG_DATA_HOME"] = str(reg_root.parent / "opencode-data")
+    for key in ("OPENCODE_DB", "OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD", "OPENCODE_CONFIG_CONTENT"):
+        e.pop(key, None)
     e["PYTHONPATH"] = str(LIB_DIR) + (os.pathsep + e["PYTHONPATH"] if e.get("PYTHONPATH") else "")
     e["PORCH_FAKE_STEER_SLOW"] = "0.35"
     # Point backends at steerable fakes
@@ -2152,304 +2155,34 @@ def test_backend_settings_consistency_unit(tmp: Path) -> None:
                 os.environ[key] = value
 
 
-def test_opencode_effort_payload_unit(tmp: Path) -> None:
-    """OpenCode prompt_async must carry the resolved effort as `variant`."""
-    print("=== unit: opencode effort payload ===")
+def test_opencode_v2_event_contract(tmp: Path) -> None:
+    """V2 model selection, text reconciliation and disconnected-stream failure."""
+    print("=== unit: opencode 2 event contract ===")
+    import io
+    from unittest.mock import patch
     sys.path.insert(0, str(LIB_DIR))
-    from steer.adapters.opencode import OpenCodeAdapter  # type: ignore
+    from steer.adapters.opencode import OpenCodeAdapter
 
-    art = tmp / "art-oc-effort"
-    art.mkdir(parents=True)
+    art = tmp / "art-opencode-v2-unit"
     (art / "raw").mkdir(parents=True)
-    calls = []
-    adapter = OpenCodeAdapter(
-        binary="false",
-        model="provider/model",
-        effort="thinking",
-        cwd=str(tmp),
-        artifacts_dir=str(art),
-        agent_id="opencode",
-    )
-    assert_true("opencode steerable serve uses pure mode", "--pure" in adapter._argv(), str(adapter._argv()))
-    adapter.session_id = "session-test"
-    adapter.base_url = "http://127.0.0.1:1"
-    adapter._http_json = lambda method, path, **kwargs: calls.append(kwargs.get("body"))  # type: ignore[method-assign]
-    adapter._prompt_async("task", "client")
-    assert_true("opencode steerable sends effort variant", calls[-1].get("variant") == "thinking", str(calls[-1]))
-
-    calls.clear()
-    adapter.effort = ""
-    adapter._prompt_async("task", "client-none")
-    assert_true("opencode steerable omits empty variant", "variant" not in calls[-1], str(calls[-1]))
-
-
-def test_opencode_part_updated_cumulative(tmp: Path) -> None:
-    """message.part.updated snapshots H/He/Hello → final Hello once."""
-    print("=== unit: opencode cumulative part.updated ===")
-    sys.path.insert(0, str(LIB_DIR))
-    from steer.adapters.opencode import OpenCodeAdapter  # type: ignore
-
-    art = tmp / "art-oc-snap"
-    art.mkdir(parents=True)
-    (art / "raw").mkdir(parents=True)
-    adapter = OpenCodeAdapter(
-        binary="false",
-        model="m",
-        effort="",
-        cwd=str(tmp),
-        artifacts_dir=str(art),
-        agent_id="opencode",
-    )
-    for snap in ("H", "He", "Hello"):
-        adapter._handle_event(
-            {
-                "type": "message.part.updated",
-                "properties": {
-                    "part": {"id": "part_1", "type": "text", "text": snap},
-                },
-            }
-        )
-    final = adapter.final_text()
-    assert_true("snapshot final Hello once", final == "Hello", final)
-    assert_true("not HHeHello", final != "HHeHello", final)
-
-    # Nested production payload envelope
-    adapter_nested = OpenCodeAdapter(
-        binary="false",
-        model="m",
-        effort="",
-        cwd=str(tmp),
-        artifacts_dir=str(art),
-        agent_id="opencode",
-    )
-    for snap in ("H", "He", "Hello"):
-        adapter_nested._handle_event(
-            {
-                "directory": "/tmp",
-                "payload": {
-                    "type": "message.part.updated",
-                    "properties": {
-                        "part": {"id": "part_1", "type": "text", "text": snap},
-                    },
-                },
-            }
-        )
-    assert_true(
-        "nested payload snapshot Hello",
-        adapter_nested.final_text() == "Hello",
-        adapter_nested.final_text(),
-    )
-
-    # delta path still incremental
-    adapter2 = OpenCodeAdapter(
-        binary="false",
-        model="m",
-        effort="",
-        cwd=str(tmp),
-        artifacts_dir=str(art),
-        agent_id="opencode",
-    )
-    for d in ("H", "e", "llo"):
-        adapter2._handle_event(
-            {
-                "type": "message.part.delta",
-                "properties": {"delta": d, "part": {"type": "text", "text": d}},
-            }
-        )
-    assert_true(
-        "delta still incremental",
-        adapter2.final_text() == "Hello",
-        adapter2.final_text(),
-    )
-
-    # Production SSE includes user text and assistant reasoning on the same
-    # message.part.updated channel. Only assistant text belongs in final output.
-    adapter3 = OpenCodeAdapter(
-        binary="false",
-        model="m",
-        effort="",
-        cwd=str(tmp),
-        artifacts_dir=str(art),
-        agent_id="opencode",
-    )
-    for message_id, role in (("msg_user", "user"), ("msg_assistant", "assistant")):
-        adapter3._handle_event(
-            {
-                "type": "message.updated",
-                "properties": {"info": {"id": message_id, "role": role}},
-            }
-        )
-    for part in (
-        {"id": "part_user", "messageID": "msg_user", "type": "text", "text": "PROMPT"},
-        {
-            "id": "part_reasoning",
-            "messageID": "msg_assistant",
-            "type": "reasoning",
-            "text": "THOUGHT",
-        },
-        {
-            "id": "part_answer",
-            "messageID": "msg_assistant",
-            "type": "text",
-            "text": "ANSWER",
-        },
-    ):
-        adapter3._handle_event(
-            {"type": "message.part.updated", "properties": {"part": part}}
-        )
-    assert_true(
-        "opencode final excludes user echo and reasoning",
-        adapter3.final_text() == "ANSWER",
-        adapter3.final_text(),
-    )
-
-
-def test_opencode_abort_single_idle_completion(tmp: Path) -> None:
-    """abort (no abort-idle) → replacement → single idle completes; no double-count."""
-    print("=== unit: opencode abort without idle then single idle ===")
-    sys.path.insert(0, str(LIB_DIR))
-    from steer.adapters.opencode import OpenCodeAdapter  # type: ignore
-
-    art = tmp / "art-oc-abort"
-    art.mkdir(parents=True)
-    (art / "raw").mkdir(parents=True)
-    adapter = OpenCodeAdapter(
-        binary="false",
-        model="m",
-        effort="",
-        cwd=str(tmp),
-        artifacts_dir=str(art),
-        agent_id="opencode",
-    )
-    adapter.session_id = "sess-abort"
-    adapter.base_url = "http://127.0.0.1:1"
-    adapter._http_json = lambda *args, **kwargs: {}  # type: ignore[method-assign]
-
-    adapter._prompt_async("initial work", "initial")
-    assert_true("busy after initial", adapter.is_busy())
-
-    # Interrupt: abort without an idle for the aborted turn, then replacement.
-    result = adapter.steer("replacement work", "interrupt", "rep-client")
-    assert_true("interrupt accepted", result.ok, str(result))
-    assert_true(
-        "replacement_pending cleared after accepted prompt",
-        not adapter._replacement_pending,
-        str(adapter._replacement_pending),
-    )
-
-    # Single idle for the latest accepted (replacement) work — must terminalize.
-    adapter._handle_event(
-        {
-            "type": "session.idle",
-            "properties": {"sessionID": "sess-abort", "status": "idle"},
-        }
-    )
-    assert_true(
-        "single idle after abort+replacement completes",
-        adapter.is_done(),
-        f"done={adapter.is_done()} exit={adapter.exit_code()}",
-    )
-    assert_true("idle exit 0", adapter.exit_code() == 0, str(adapter.exit_code()))
-
-    # Auto/queue: multiple prompt_async mid-run still need only one idle.
-    adapter2 = OpenCodeAdapter(
-        binary="false",
-        model="m",
-        effort="",
-        cwd=str(tmp),
-        artifacts_dir=str(art),
-        agent_id="opencode",
-    )
-    adapter2.session_id = "sess-queue"
-    adapter2.base_url = "http://127.0.0.1:1"
-    adapter2._http_json = lambda *args, **kwargs: {}  # type: ignore[method-assign]
-    adapter2._prompt_async("t0", "initial")
-    adapter2._prompt_async("t1", "s1")
-    adapter2._prompt_async("t2", "s2")
-    adapter2._handle_event(
-        {
-            "type": "session.idle",
-            "properties": {"sessionID": "sess-queue", "status": "idle"},
-        }
-    )
-    assert_true(
-        "one idle terminalizes multi step_inject",
-        adapter2.is_done(),
-        f"done={adapter2.is_done()}",
-    )
-
-
-def test_opencode_sse_eof_partial_preserves_process_rc(tmp: Path) -> None:
-    """SSE EOF never upgrades partial text to exit 0 when process rc is non-zero."""
-    print("=== unit: opencode sse eof partial + process rc ===")
-    sys.path.insert(0, str(LIB_DIR))
-    from steer.adapters.opencode import OpenCodeAdapter  # type: ignore
-
-    art = tmp / "art-oc-eof"
-    art.mkdir(parents=True)
-    (art / "raw").mkdir(parents=True)
-    adapter = OpenCodeAdapter(
-        binary="false",
-        model="m",
-        effort="",
-        cwd=str(tmp),
-        artifacts_dir=str(art),
-        agent_id="opencode",
-    )
-    adapter._part_snapshots["p1"] = "partial"
-    adapter._part_order.append("p1")
-    adapter._text_parts.append("partial")
-
-    class _Proc:
-        def poll(self):
-            return 1
-
-    adapter.proc = _Proc()  # type: ignore[assignment]
-    # Simulate SSE finally-path with process already exited rc=1.
-    if not adapter._done:
-        proc_rc = adapter.proc.poll()
-        adapter._done = True
-        if proc_rc is not None:
-            adapter._exit_code = 0 if proc_rc == 0 else (proc_rc if proc_rc else 1)
-        else:
-            adapter._exit_code = 1
-    assert_true(
-        "partial text does not force exit 0",
-        adapter.exit_code() == 1,
-        str(adapter.exit_code()),
-    )
-    assert_true("final still has partial for forensics", "partial" in adapter.final_text())
-
-    # Still-running process + EOF without terminal evidence → failure.
-    adapter3 = OpenCodeAdapter(
-        binary="false",
-        model="m",
-        effort="",
-        cwd=str(tmp),
-        artifacts_dir=str(art),
-        agent_id="opencode",
-    )
-    adapter3._text_parts.append("partial-running")
-
-    class _Running:
-        def poll(self):
-            return None
-
-    adapter3.proc = _Running()  # type: ignore[assignment]
-    # Invoke the same policy as _sse_loop finally.
-    if not adapter3._done:
-        proc_rc = adapter3.proc.poll() if adapter3.proc is not None else None
-        adapter3._done = True
-        if proc_rc is not None:
-            adapter3._exit_code = 0 if proc_rc == 0 else (proc_rc if proc_rc else 1)
-        else:
-            adapter3._exit_code = 1
-            adapter3._error = "sse_eof_without_terminal"
-    assert_true(
-        "running process sse eof is failure",
-        adapter3.exit_code() == 1 and adapter3._error == "sse_eof_without_terminal",
-        f"exit={adapter3.exit_code()} err={adapter3._error}",
-    )
+    a = OpenCodeAdapter(binary="fake", model="provider/model", effort="high",
+                        cwd=str(tmp), artifacts_dir=str(art), agent_id="opencode")
+    assert_true("opencode v2 model and variant", a._model_ref() == {
+        "providerID": "provider", "id": "model", "variant": "high"})
+    assert_true("opencode v2 serve avoids obsolete pure flag", "--pure" not in a._argv())
+    a.session_id = "ses_ours"
+    base = {"sessionID": "ses_ours", "assistantMessageID": "msg_1", "ordinal": 0}
+    a._handle_event({"type": "session.text.delta", "data": {**base, "delta": "Hel"}})
+    a._handle_event({"type": "session.text.ended", "data": {**base, "text": "Hello"}})
+    a._handle_event({"type": "session.reasoning.delta", "data": {**base, "delta": "private"}})
+    a._handle_event({"type": "session.text.delta", "data": {**base, "sessionID": "ses_other", "delta": "foreign"}})
+    assert_true("opencode v2 snapshots reconcile without duplication", a.final_text() == "Hello", a.final_text())
+    assert_true("opencode v2 streams only assistant suffix", [x.data for x in a.poll_events() if x.kind == "text"] == ["Hel", "lo"])
+    a.base_url = "http://127.0.0.1:1"
+    with patch.object(a._opener, "open", return_value=io.BytesIO(b'')):
+        a._sse_loop()
+    assert_true("opencode v2 EOF fails despite partial text", a.is_done() and a.exit_code() != 0)
+    assert_true("opencode v2 preserves partial text on failure", a.final_text() == "Hello")
 
 
 def test_claude_content_block_stop_unknown_index(tmp: Path) -> None:
@@ -3232,10 +2965,7 @@ def main() -> int:
         test_codex_interrupt_resets_result_text(tmp)
         test_codex_completed_items_xor_deltas(tmp)
         test_backend_settings_consistency_unit(tmp)
-        test_opencode_effort_payload_unit(tmp)
-        test_opencode_part_updated_cumulative(tmp)
-        test_opencode_abort_single_idle_completion(tmp)
-        test_opencode_sse_eof_partial_preserves_process_rc(tmp)
+        test_opencode_v2_event_contract(tmp)
         test_opencode_redirect_and_auth_unit(tmp)
         test_claude_content_block_stop_unknown_index(tmp)
         test_mailbox_cursor_on_exception(tmp)

@@ -226,19 +226,13 @@ Codex stores the same threads in several layers with different authority.
   User-role authorship is unknown because the record does not establish whether
   the text came from a person or an integration. Fixture-verified.
 
-### opencode — `~/.local/share/opencode/opencode.db` + `storage/{session,message,part}/`
+### opencode — `~/.local/share/opencode/opencode.db`
 
-- OpenCode 2.x also stores sessions in `session_v2` and typed messages in
-  `session_message`. Migrated sessions can exist in both generations: the v1
-  record wins when the v2 copy is no newer, because that copy can omit steps;
-  a newer or newly archived v2 record wins. Locators name the selected table.
-- SQLite `session` table: id, project_id, parent_id (subagent link),
-  directory, title, agent, model, time_created/updated, token counters.
-- Messages live in `message` (role on the message), content in `part`
-  (type `text`/`tool`/`reasoning`/…, `message_id` foreign key). **A text
-  part inherits its message's role** — never classify by part type alone.
-- File-tree storage mirrors the same shape under `storage/` when the db is
-  absent; both are read.
+- Reads OpenCode 2 `session_v2`, `session_message`, and `session_part` tables
+  read-only. Assistant content may be stored inline or in separate ordered rows.
+  Honors `XDG_DATA_HOME` and `OPENCODE_DB`, and discovers channel-specific
+  databases when no database is configured. In-memory databases have no disk
+  history to read. Earlier OpenCode storage formats are not supported.
 
 ### grok — `~/.grok/sessions/<encoded-cwd>/<session-id>/`
 

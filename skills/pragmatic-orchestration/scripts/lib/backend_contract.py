@@ -147,18 +147,16 @@ _BACKEND_CAPS: Dict[str, BackendCapabilities] = {
         steerable_transport="http-sse",
         steerable=True,
         steer_auto="step_inject",
-        steer_queue="step_inject",
+        steer_queue="queue_next_turn",
         steer_interrupt="abort_and_prompt",
-        live_queue=False,
+        live_queue=True,
         oneshot=True,
         supports_delegate=True,
-        final_text_rule="opencode_part_snapshots",
+        final_text_rule="opencode_text_parts",
         notes=(
-            "One-shot: opencode run --format json. "
-            "Steerable: loopback HTTP + SSE; message.part.updated is cumulative "
-            "per part id (not append-delta); session.idle is turn-idle, not "
-            "automatic permanent run completion while a prompt/steer is in flight. "
-            "auto/queue = step_inject (prompt_async); interrupt = abort_and_prompt."
+            "OpenCode 2: one-shot uses run --server with a private coordinated server and JSON output. "
+            "Steerable: authenticated loopback HTTP and SSE, with durable prompt "
+            "admission, step_inject or queue delivery, interrupt and history reconciliation."
         ),
     ),
     "grok-build": BackendCapabilities(
@@ -392,7 +390,7 @@ def final_text_from_normalized(
     if rule == "grok_text_events_require_end":
         # Completeness is validated separately (end present, no error).
         return assemble_final_text(events)
-    if rule in ("opencode_text_parts", "opencode_part_snapshots", "plain_stdout",
+    if rule in ("opencode_text_parts", "plain_stdout",
                 "devin_agent_message_chunks"):
         return assemble_final_text(events)
     return assemble_final_text(events)

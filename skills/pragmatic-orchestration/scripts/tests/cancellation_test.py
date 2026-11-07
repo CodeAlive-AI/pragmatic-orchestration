@@ -61,9 +61,10 @@ class CancellationTests(unittest.TestCase):
         supervisor=Supervisor.__new__(Supervisor)
         supervisor.adapter=Mock()
         supervisor.adapter.close.side_effect=RuntimeError('cleanup failed')
+        supervisor._session_lease=None
         supervisor._update_registry_meta=Mock()
         supervisor._registry_notice=Mock()
-        supervisor._cleanup_adapter()
+        supervisor._finish_cleanup()
         supervisor._update_registry_meta.assert_called_with(cleanup_status='failed',cleanup_error='cleanup failed')
         supervisor._registry_notice.assert_called_once()
 

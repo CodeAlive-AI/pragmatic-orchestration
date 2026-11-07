@@ -101,7 +101,7 @@ CLAUDE_EFFORT=medium "$PORCH" review ask \
 |---|---|---|---|
 | Codex CLI | `CODEX_MODEL` | `CODEX_EFFORT` | `--model`, `model_reasoning_effort` |
 | Claude Code | `CLAUDE_MODEL` | `CLAUDE_EFFORT` | `--model`, `--effort` |
-| OpenCode | `OPENCODE_MODEL` | `OPENCODE_EFFORT` | `-m`, `--variant`; `none` omits variant |
+| OpenCode | `OPENCODE_MODEL` | `OPENCODE_EFFORT` | `-m provider/model#variant`; `none` omits variant |
 | Grok Build | `GROK_MODEL` | `GROK_EFFORT` | `-m`, `--reasoning-effort` |
 | Gemini CLI | `GEMINI_MODEL` | none | `--model` |
 

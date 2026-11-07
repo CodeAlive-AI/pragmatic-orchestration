@@ -176,7 +176,7 @@ so `wait-any` returns control to the parent. It does not grant additional access
 Review the partial work and requested action before choosing an authorized
 recovery. A queued `auto` steer cannot resolve a permission request. Do not
 diagnose a hung test from heartbeat-only output: inspect tool events and errors.
-OpenCode tool snapshots expose the tool name, input command, state, and timings
+OpenCode tool events expose the tool name, input command, and state
 through `events`. Active calls remain in `status --json` under
 `state.active_tools` and in each wait snapshot's `active_tools`, even after later
 heartbeats; this is observed tool state, not proof that an OS command is executing
@@ -294,15 +294,25 @@ Steerable runs always retain the private service registry and protocol artifacts
 |---|---|---|
 | Claude Code | `queue_next_turn` through stream-json user replay | Rejected; no downgrade |
 | Codex CLI | `same_turn` through `turn/steer` and expected turn id | Abort active turn, wait for its completion acknowledgement, then start a prompt |
-| OpenCode | `step_inject` through loopback HTTP/SSE `prompt_async` | Abort session then prompt |
+| OpenCode 2 | `auto`: step injection; `queue`: next turn, via authenticated loopback HTTP/SSE | Interrupt, verify idle, then prompt |
 | Grok Build | `queue_next_turn` through concurrent ACP prompt FIFO | Cancel-and-send using `sendNow` and its own prompt id |
 | Devin CLI | `same_turn` through concurrent ACP `session/prompt` merge | Cancel-and-send through `session/cancel` (stopReason `cancelled`) |
 
-OpenCode replacement requires both a successful abort and confirmation of idle
-through `/session/status`. An unsuccessful or unresolved stop fails the run and
-sends no replacement. Later idle events are checked against current runner status
-so a delayed old event cannot finish a busy replacement.
+OpenCode replacement requires both a successful interrupt and confirmation of idle
+through `/api/session/active`. An unsuccessful or unresolved stop fails the run and
+sends no replacement. Completion is reconciled against the durable inbox, active
+sessions and message history so an earlier execution cannot finish a later prompt.
 
 OpenCode's server is loopback-only with redirect revalidation and per-run Basic auth; the password is never logged or stored. Claude's authoritative `result` completes the adapter even while stdin remains open; user replay proves transport acknowledgement, not semantic compliance. Codex interrupt uses a bounded local protocol handshake, not a run deadline.
+
+Porch asks OpenCode for its database path and coordinates server startup across its
+own processes per database directory, then releases the lock as soon as the server
+is ready. Sessions execute in parallel. If another startup holds the lock for
+more than two minutes, the waiting run fails with an explicit timeout.
+Unrelated OpenCode clients do not participate in this lock; concurrent first-time
+database migration by those clients is outside this guarantee. Forced termination
+of Porch or failure to stop its server can also release the lock before the server
+exits. A disconnected
+event stream fails the run explicitly instead of claiming completion from partial output.
 
 Grok attribution uses prompt ids and queue snapshots. Combined followers move through `awaiting_queue_resolution` to `merged` or `dropped`; stop reasons map to `completed`, `incomplete`, `rejected`, `cancelled`, `superseded`, or `failed`. The adapter never claims `applied` because transport events cannot prove semantic compliance. Only agent message chunks contribute to final text; thoughts and replayed user messages do not. The final answer covers the lineage from the current final prompt to the end of the prompt order, so `auto`/`queue` steer turns are included and an `interrupt` still discards the superseded prefix.

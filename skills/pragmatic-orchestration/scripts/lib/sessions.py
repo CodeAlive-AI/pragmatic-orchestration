@@ -442,12 +442,18 @@ def stores_for(harness: str) -> list[Store]:
         return out
     if harness == "opencode":
         if ov:
-            return [Store(harness, "custom", ov, "json_dir")]
-        base = (_win_localapp() / "opencode") if IS_WINDOWS else (HOME / ".local" / "share" / "opencode")
-        return [
-            Store(harness, "db", base / "opencode.db", "sqlite"),
-            Store(harness, "storage", base / "storage", "json_dir"),
-        ]
+            db = ov if ov.is_file() or ov.suffix in (".db", ".sqlite", ".sqlite3") else ov / "opencode.db"
+            return [Store(harness, "db", db, "sqlite")]
+        base = Path(os.environ.get("XDG_DATA_HOME") or (HOME / ".local" / "share")) / "opencode"
+        configured = os.environ.get("OPENCODE_DB")
+        if configured == ":memory:":
+            return []
+        if configured is not None:
+            return [Store(harness, "db", Path(os.path.abspath(base / configured)), "sqlite")]
+        # Stable and non-stable OpenCode channels can use different files.
+        paths = [base / "opencode.db", *sorted(base.glob("opencode-*.db"))]
+        return [Store(harness, "db" if i == 0 else f"db:{path.name}", path, "sqlite")
+                for i, path in enumerate(paths)]
     if harness == "grok":
         return [Store(harness, "sessions", ov or (HOME / ".grok" / "sessions"), "session_dirs")]
     if harness == "devin":
@@ -1100,100 +1106,56 @@ def _codex_message_text(payload: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# opencode — storage JSON tree + opencode.db sqlite
+# OpenCode 2 — SQLite session projection
 # ---------------------------------------------------------------------------
 
-def _opencode_part_kind(part: dict[str, Any]) -> str:
-    t = part.get("type")
-    return {
-        "text": "assistant", "reasoning": "reasoning", "tool": "tool_call",
-        "step-start": "boundary", "step-finish": "boundary", "patch": "metadata",
-        "subtask": "metadata", "file": "context", "agent": "metadata",
-    }.get(str(t), "unknown")
-
-
 def opencode_iter_sessions(store: Store) -> Iterator[SessionRef]:
-    if store.name == "db":
-        try:
-            conn = open_sqlite_ro(store.path)
-        except sqlite3.Error as e:
-            store.status, store.error = "unavailable", str(e)
+    try:
+        conn = open_sqlite_ro(store.path)
+    except sqlite3.Error as exc:
+        store.status, store.error = "unavailable", str(exc)
+        return
+    try:
+        if not table_exists(conn, "session_v2") or not table_exists(conn, "session_message"):
+            store.status, store.error = "unavailable", "OpenCode 2 session tables not found"
             return
-        try:
-            has_v1 = table_exists(conn, "session")
-            has_v2 = table_exists(conn, "session_v2") and table_exists(conn, "session_message")
-            if not has_v1 and not has_v2:
-                store.status, store.error = "unavailable", "no supported OpenCode session tables"
-                return
-            v2_rows = {}
-            if has_v2:
-                for row in conn.execute("SELECT id, directory, title, time_created, time_updated, parent_id, agent, model, version, time_archived FROM session_v2"):
-                    v2_rows[row[0]] = row
-            v1_rows = conn.execute(
-                "SELECT s.id, s.directory, s.title, s.time_created, s.time_updated, s.parent_id, s.agent, s.model, s.version, p.worktree "
-                "FROM session s LEFT JOIN project p ON p.id = s.project_id"
-            ).fetchall() if has_v1 else []
-            v1_cols = table_columns(conn, "session") if has_v1 else set()
-            archived = dict(conn.execute("SELECT id, time_archived FROM session")) if "time_archived" in v1_cols else {}
-            for row in v1_rows:
-                v2 = v2_rows.get(row[0])
-                # The v2 background migration can lose v1 assistant messages.
-                # Prefer v1 when the copy has not subsequently changed.
-                if v2 and (v2[4] > row[4] or (v2[9] is not None and archived.get(row[0]) is None)):
-                    continue
-                v2_rows.pop(row[0], None)
-                model = None
-                try:
-                    model = json.loads(row[7]).get("id") if row[7] else None
-                except (json.JSONDecodeError, AttributeError):
-                    model = row[7]
-                yield SessionRef(
-                    "opencode", "db", row[0],
-                    locator={"table": "session", "key": row[0], "db": str(store.path)},
-                    title=row[2], cwd=row[1] or row[9], created=row[3], updated=row[4],
-                    parent=row[5], models=[m for m in (model,) if m],
-                    extra={"agent": row[6], "version": row[8]},
-                )
-            for row in v2_rows.values():
-                try:
-                    model = json.loads(row[7]).get("id") if row[7] else None
-                except (json.JSONDecodeError, AttributeError):
-                    model = row[7]
-                yield SessionRef("opencode", "db", row[0],
-                    locator={"table": "session_v2", "key": row[0], "db": str(store.path)},
-                    title=row[2], cwd=row[1], created=row[3], updated=row[4],
-                    parent=row[5], models=[model] if model else [],
-                    extra={"agent": row[6], "version": row[8]})
-        except sqlite3.Error as e:
-            store.status, store.error = "unavailable", str(e)
-        finally:
-            conn.close()
-        return
-    sess_root = store.path / "session"
-    if not sess_root.is_dir():
-        store.status = "missing"
-        return
-    for path in sorted(sess_root.rglob("ses_*.json")):
-        data = read_json(path)
-        if not isinstance(data, dict):
-            continue
-        time_block = data.get("time") or {}
-        yield SessionRef(
-            "opencode", "storage", str(data.get("id") or path.stem),
-            locator={"file": str(path)},
-            title=data.get("title"), cwd=data.get("directory"),
-            created=time_block.get("created"), updated=time_block.get("updated"),
-            parent=data.get("parentID"),
-            extra={"agent": data.get("agent"), "version": data.get("version"), "projectID": data.get("projectID")},
-        )
+        rows = conn.execute("SELECT id, directory, title, time_created, time_updated, parent_id, agent, model, version FROM session_v2")
+        for row in rows:
+            try:
+                model = json.loads(row[7]).get("id") if row[7] else None
+            except (json.JSONDecodeError, AttributeError):
+                model = row[7]
+            yield SessionRef("opencode", store.name, row[0],
+                locator={"table": "session_v2", "key": row[0], "db": str(store.path)},
+                title=row[2], cwd=row[1], created=row[3], updated=row[4],
+                parent=row[5], models=[model] if model else [],
+                extra={"agent": row[6], "version": row[8]})
+    except sqlite3.Error as exc:
+        store.status, store.error = "unavailable", str(exc)
+    finally:
+        conn.close()
 
 
 def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
     conn = open_sqlite_ro(store.path)
     try:
         rows = conn.execute("SELECT id, type, time_created, data FROM session_message WHERE session_id=? ORDER BY seq", (ref.session_id,)).fetchall()
+        part_rows = conn.execute(
+            "SELECT message_id, type, data FROM session_part WHERE session_id=? ORDER BY message_id, ordinal",
+            (ref.session_id,),
+        ).fetchall() if table_exists(conn, "session_part") else []
     finally:
         conn.close()
+    parts_by_message: dict[str, list[dict[str, Any]]] = {}
+    for message_id, part_type, raw_part in part_rows:
+        try:
+            part = json.loads(raw_part)
+            if not isinstance(part, dict):
+                raise ValueError("part is not an object")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            stats["malformed"] = stats.get("malformed", 0) + 1
+            continue
+        parts_by_message.setdefault(message_id, []).append({**part, "type": part_type})
     seq = 0
     for row_id, row_type, timestamp, raw in rows:
         try:
@@ -1210,7 +1172,9 @@ def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats:
         if row_type == "user":
             fragments.append(("prompt", data.get("text"), "human", None))
         elif row_type == "assistant":
-            for part in data.get("content") or []:
+            # V2 may store parts in rows, inline, or both after a downgrade.
+            # OpenCode reads stored rows first and appends inline parts.
+            for part in parts_by_message.get(row_id, []) + (data.get("content") or []):
                 if not isinstance(part, dict):
                     stats["malformed"] = stats.get("malformed", 0) + 1
                     continue
@@ -1235,161 +1199,13 @@ def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats:
             fragments.append(("metadata", data, "system", None))
         for kind, text_value, authorship, rel in fragments:
             seq += 1
-            yield frag("opencode", "db", ref.session_id, seq, kind, f"session_message.{row_type}", locator,
+            yield frag("opencode", store.name, ref.session_id, seq, kind, f"session_message.{row_type}", locator,
                        text=text_value, ts=timestamp, authorship=authorship, model=model, provider=provider,
                        cwd=ref.cwd, visible=kind in KINDS_CONVO, rel=rel, max_chars=max_chars)
 
 
 def opencode_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
-    seq = 0
-    if store.name == "db" and ref.locator.get("table") == "session_v2":
-        yield from _opencode_v2_fragments(store, ref, max_chars, stats)
-        return
-    if store.name == "db":
-        conn = open_sqlite_ro(store.path)
-        try:
-            messages = conn.execute(
-                "SELECT id, time_created, data FROM message WHERE session_id=? ORDER BY time_created",
-                (ref.session_id,),
-            ).fetchall()
-            parts = conn.execute(
-                "SELECT id, message_id, time_created, data FROM part WHERE session_id=? ORDER BY time_created",
-                (ref.session_id,),
-            ).fetchall()
-        finally:
-            conn.close()
-        parts_by_msg: dict[str, list[tuple[str, int, dict[str, Any]]]] = {}
-        for pid, mid, ptime, pdata in parts:
-            try:
-                parts_by_msg.setdefault(mid, []).append((pid, ptime, json.loads(pdata)))
-            except json.JSONDecodeError:
-                stats["malformed"] = stats.get("malformed", 0) + 1
-        for mid, mtime, mdata in messages:
-            try:
-                msg = json.loads(mdata)
-            except json.JSONDecodeError:
-                stats["malformed"] = stats.get("malformed", 0) + 1
-                continue
-            seq += 1
-            loc = {"db": str(store.path), "table": "message", "key": mid}
-            role = msg.get("role")
-            model = msg.get("modelID") or (msg.get("model") or {}).get("modelID")
-            provider = msg.get("providerID") or (msg.get("model") or {}).get("providerID")
-            cwd = (msg.get("path") or {}).get("cwd")
-            if role == "user":
-                yield frag("opencode", "db", ref.session_id, seq, "prompt", "message.user", loc,
-                           ts=mtime, authorship="human" if not msg.get("format") else "unknown",
-                           visible=True, basis="role=user" + ("; format set → SDK/structured, authorship unproven" if msg.get("format") else ""),
-                           model=model, provider=provider, cwd=cwd,
-                           rel={"message_id": mid}, max_chars=max_chars)
-            elif role == "assistant":
-                seq += 0  # fragments come from parts; emit a boundary when finish is set
-                if msg.get("finish"):
-                    yield frag("opencode", "db", ref.session_id, seq, "boundary", f"message.finish.{msg['finish']}", loc,
-                               ts=(msg.get("time") or {}).get("completed") or mtime, authorship="system",
-                               status="completed" if msg["finish"] == "stop" else msg["finish"],
-                               error=bool(msg.get("error")),
-                               model=model, cwd=cwd, rel={"message_id": mid}, max_chars=max_chars)
-            for pid, ptime, part in parts_by_msg.get(mid, []):
-                seq += 1
-                ploc = {"db": str(store.path), "table": "part", "key": pid}
-                ptype = part.get("type")
-                kind = _opencode_part_kind(part)
-                if ptype == "text" and role == "user":
-                    yield frag("opencode", "db", ref.session_id, seq, "prompt", "part.text(user)", ploc,
-                               text=part.get("text"), ts=ptime, authorship="human", visible=True,
-                               basis="text part of role=user message", cwd=cwd,
-                               rel={"message_id": mid}, max_chars=max_chars)
-                    continue
-                if ptype == "tool":
-                    st = part.get("state") or {}
-                    is_err = st.get("status") == "error" or bool(st.get("error"))
-                    yield frag("opencode", "db", ref.session_id, seq, "tool_call", "part.tool", ploc,
-                               text=json.dumps({"tool": part.get("tool"), "input": st.get("input"), "status": st.get("status")}, ensure_ascii=False),
-                               ts=ptime, authorship="agent", model=model, cwd=cwd, error=is_err,
-                               usage=msg.get("tokens") or msg.get("usage"),
-                               rel={"call_id": part.get("callID"), "tool": part.get("tool")}, max_chars=max_chars)
-                    if st.get("output") or st.get("error"):
-                        seq += 1
-                        yield frag("opencode", "db", ref.session_id, seq, "tool_result", "part.tool.output", ploc,
-                                   text=st.get("output") or st.get("error"), ts=ptime, authorship="system",
-                                   visible=False, error=is_err,
-                                   rel={"call_id": part.get("callID")}, max_chars=max_chars)
-                elif ptype == "subtask":
-                    yield frag("opencode", "db", ref.session_id, seq, "metadata", "part.subtask", ploc,
-                               text=part.get("description") or part.get("prompt"), ts=ptime,
-                               authorship="agent", visible=False,
-                               rel={"child_agent": part.get("agent")}, basis="subtask part — child session link",
-                               max_chars=max_chars)
-                else:
-                    yield frag("opencode", "db", ref.session_id, seq, kind, f"part.{ptype}", ploc,
-                               text=part.get("text") or part.get("output"), ts=ptime,
-                               authorship="agent" if role == "assistant" else "system",
-                               visible=(kind == "assistant"), model=model, cwd=cwd,
-                               rel={"message_id": mid}, max_chars=max_chars)
-        return
-    # storage JSON tree
-    msg_root = store.path / "message" / ref.session_id
-    for mpath in sorted(msg_root.glob("msg_*.json")):
-        msg = read_json(mpath)
-        if not isinstance(msg, dict):
-            continue
-        seq += 1
-        role = msg.get("role")
-        loc = {"file": str(mpath)}
-        model, provider = msg.get("modelID"), msg.get("providerID")
-        cwd = (msg.get("path") or {}).get("cwd")
-        if role == "user":
-            yield frag("opencode", "storage", ref.session_id, seq, "prompt", "message.user", loc,
-                       ts=(msg.get("time") or {}).get("created"),
-                       authorship="human" if not msg.get("format") else "unknown",
-                       visible=True, basis="role=user" + ("; format set" if msg.get("format") else ""),
-                       cwd=cwd, rel={"message_id": msg.get("id")}, max_chars=max_chars)
-        elif role == "assistant" and msg.get("finish"):
-            yield frag("opencode", "storage", ref.session_id, seq, "boundary", f"message.finish.{msg['finish']}", loc,
-                       ts=(msg.get("time") or {}).get("completed"), authorship="system",
-                       status="completed" if msg["finish"] == "stop" else msg["finish"],
-                       model=model, cwd=cwd, rel={"message_id": msg.get("id")}, max_chars=max_chars)
-        part_root = store.path / "part" / str(msg.get("id"))
-        for ppath in sorted(part_root.glob("prt_*.json")):
-            part = read_json(ppath)
-            if not isinstance(part, dict):
-                continue
-            seq += 1
-            ptype = part.get("type")
-            ploc = {"file": str(ppath)}
-            if ptype == "text" and role == "user":
-                yield frag("opencode", "storage", ref.session_id, seq, "prompt", "part.text(user)", ploc,
-                           text=part.get("text"), ts=(part.get("time") or {}).get("start") if isinstance(part.get("time"), dict) else None,
-                           authorship="human", visible=True, basis="text part of role=user message",
-                           cwd=cwd, rel={"message_id": msg.get("id")}, max_chars=max_chars)
-                continue
-            if ptype == "tool":
-                st = part.get("state") or {}
-                is_err = st.get("status") == "error" or bool(st.get("error"))
-                yield frag("opencode", "storage", ref.session_id, seq, "tool_call", "part.tool", ploc,
-                           text=json.dumps({"tool": part.get("tool"), "input": st.get("input"), "status": st.get("status")}, ensure_ascii=False),
-                           ts=(st.get("time") or {}).get("start"), authorship="agent", error=is_err,
-                           model=model, cwd=cwd, rel={"call_id": part.get("callID"), "tool": part.get("tool")},
-                           max_chars=max_chars)
-                if st.get("output") or st.get("error"):
-                    seq += 1
-                    yield frag("opencode", "storage", ref.session_id, seq, "tool_result", "part.tool.output", ploc,
-                               text=st.get("output") or st.get("error"), ts=(st.get("time") or {}).get("end"),
-                               authorship="system", visible=False, error=is_err,
-                               rel={"call_id": part.get("callID")}, max_chars=max_chars)
-            elif ptype == "subtask":
-                yield frag("opencode", "storage", ref.session_id, seq, "metadata", "part.subtask", ploc,
-                           text=part.get("description") or part.get("prompt"),
-                           authorship="agent", visible=False, rel={"child_agent": part.get("agent")},
-                           basis="subtask part — child session link", max_chars=max_chars)
-            else:
-                kind = _opencode_part_kind(part)
-                yield frag("opencode", "storage", ref.session_id, seq, kind, f"part.{ptype}", ploc,
-                           text=part.get("text"), ts=(part.get("time") or {}).get("start") if isinstance(part.get("time"), dict) else None,
-                           authorship="agent" if role == "assistant" else "system",
-                           visible=(kind == "assistant"), model=model, cwd=cwd,
-                           rel={"message_id": msg.get("id")}, max_chars=max_chars)
+    yield from _opencode_v2_fragments(store, ref, max_chars, stats)
 
 
 # ---------------------------------------------------------------------------
@@ -2825,14 +2641,7 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
             return SessionRef("grok", store.name, query_id, locator={"dir": str(hits[0])},
                               cwd=info.get("cwd"), title=summary.get("generated_title"))
     elif store.harness == "opencode":
-        if store.name == "db":
-            return next((ref for ref in opencode_iter_sessions(store) if ref.session_id == query_id), None)
-        else:
-            hits = list(p.glob(f"session/*/{query_id}.json"))
-            if len(hits) == 1:
-                data = read_json(hits[0]) or {}
-                return SessionRef("opencode", "storage", query_id, locator={"file": str(hits[0])},
-                                  title=data.get("title"), cwd=data.get("directory"))
+        return next((ref for ref in opencode_iter_sessions(store) if ref.session_id == query_id), None)
     elif store.harness == "devin":
         if store.name == "sessions.db":
             try:
@@ -3050,10 +2859,10 @@ def _store_for_file(path: Path) -> tuple[Store, SessionRef]:
                     store = Store("cursor", "custom", path, "sqlite")
                     sid = _pick_single_session(conn, "cursorDiskKV", "key", like="composerData:%")
                     return store, SessionRef("cursor", "custom", sid.split(":", 1)[-1], locator={"db": str(path), "table": "cursorDiskKV", "key": sid})
-                if table_exists(conn, "session"):
+                if table_exists(conn, "session_v2"):
                     store = Store("opencode", "db", path, "sqlite")
-                    sid = _pick_single_session(conn, "session", "id")
-                    return store, SessionRef("opencode", "db", sid, locator={"table": "session", "key": sid, "db": str(path)})
+                    sid = _pick_single_session(conn, "session_v2", "id")
+                    return store, SessionRef("opencode", "db", sid, locator={"table": "session_v2", "key": sid, "db": str(path)})
             finally:
                 conn.close()
         except sqlite3.Error as e:

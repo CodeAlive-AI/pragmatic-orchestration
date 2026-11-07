@@ -1,8 +1,7 @@
 {
   "retrieved_on": "2026-10-30",
   "source": "https://opencode.ai/inference/go/v1/models",
-  "variants_source": "opencode models opencode-go --verbose --refresh --pure",
-  "opencode_version": "1.19.0",
+  "variants_source": "Historical catalog snapshot; verify variants against the current OpenCode 2 catalog",
   "models": [
     {
       "id": "beam-free",

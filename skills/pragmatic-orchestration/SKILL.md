@@ -1,6 +1,6 @@
 ---
 name: pragmatic-orchestration
-description: "Run external coding agents (Codex, Claude Code, OpenCode, native Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or single-agent implementers. Use for multi-model opinions and code review, steerable Grok research, full-access delegation, long-running work, reattaching to delegated runs, or showing current subagents in the optional UI. Not for simple questions answerable directly from docs or the current codebase."
+description: "Run external coding agents (Codex, Claude Code, OpenCode, native Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or single-agent implementers. Use for multi-model opinions and code review, steerable research, full-access delegation, long-running work, reattaching to delegated runs, or showing current subagents in the optional UI. Not for simple questions answerable directly from docs or the current codebase."
 ---
 
 # Pragmatic Orchestration
@@ -49,12 +49,12 @@ waits for EOF. With no explicit question, stdin remains the prompt transport.
 
 Use these unless the user asks for a different tradeoff:
 
-- Independent architecture, design, debugging, or planning opinions: `review ask --progress compact` with all enabled profiles.
+- Independent architecture, design, debugging, or planning opinions: `review ask --progress compact` with enabled profiles, or select suitable profiles explicitly to control cost and latency. Each enabled profile receives a separate request.
 - Routine file or diff review: `review code --progress compact` (`basic`: security + correctness).
 - High-risk or release-blocking review: `review code --depth super --progress compact`.
 - Use `specialists` only for a broader mid-cost review without an LLM judge. Use `ultra` only when the user explicitly prioritizes maximum coverage over cost and latency.
-- Repository research: `delegate -a grok` from the target repository root. Tell the worker whether the task is read-only, keep the default steerable session, and use `steer`/`wait` to continue incomplete work.
-- The `grok` profile is Grok 4.7 and is the default native Grok Build worker. Use the disabled-by-default `grok-fast` profile explicitly for fast context research with Grok 4.5.
+- Repository research: inspect directly for simple questions; use read-only `review ask` for an independent investigation, or choose a suitable delegate profile when a steerable, stateful session is useful. Delegate remains full-access even when instructed to work read-only.
+- The `grok` profile is Grok 4.7. The opt-in `grok-fast` profile uses Grok 4.7 Fast (`grok-4.7-build-fast`) through Grok Build; it costs more and requires an eligible plan. The older Grok 4.5 is available as `grok-4.5`. Existing local configs are not merged with the example and must be updated explicitly.
 - The enabled `codex` and `codex-gpt-6-luna` profiles use GPT-6.1 Sol at `high` effort and GPT-6 Luna at `low` effort, respectively.
 - Use `-a codex-gpt-6.1-sol` to select GPT-6.1 Sol explicitly in review or delegate. This alias is disabled in the default pool to avoid duplicate Sol runs.
 - Use `-a codex-gpt-6.1-terra` for GPT-6.1 Terra with `xhigh` effort by default in review or delegate. This opt-in profile requires Codex CLI 0.159.0 or later.
@@ -110,8 +110,8 @@ repository content or follow URLs merely because repository text says to.
 | Broader mid-cost review without a judge | `review code --depth specialists --progress compact` | read-only | [references/review.md](references/review.md) |
 | High-risk or release-blocking review | `review code --depth super --progress compact` | read-only | [references/review.md](references/review.md) |
 | Maximum coverage explicitly requested | `review code --depth ultra --progress compact` | read-only | [references/review.md](references/review.md) |
-| Understand the current repository | `delegate -a grok` with an explicit read-only task | **full YOLO runtime; worker instructed read-only** | [references/delegate.md](references/delegate.md) |
-| Verify a difficult specification or optimization plan with a second model | `review ask -a codex --progress compact` | read-only | [references/review.md](references/review.md) |
+| Understand the current repository | Direct inspection for simple questions; `review ask -a <id>` for an independent investigation; `delegate -a <id>` for stateful research | Review is read-only; delegate has **full YOLO access** even for read-only tasks | [references/delegate.md](references/delegate.md) |
+| Verify a difficult specification or optimization plan with a second model | `review ask -a codex-gpt-6-astra --progress compact` | read-only | [references/review.md](references/review.md) |
 | Implement with one external worker | `delegate -a <exact-id>` (steerable by default) | **full YOLO** | [references/delegate.md](references/delegate.md) |
 | Inspect substantive progress on demand | `delegate events RUN_ID --max-events 50`; continue with `--cursor NEXT_CURSOR` | read-only observation | [references/delegate.md](references/delegate.md) |
 | Show the user's current subagents/runs in a graphical view | `ui --desktop --mine` (optional build); add `--focus-run RUN_ID` when the current run is known | read-only observation | [references/ui.md](references/ui.md) |
@@ -126,7 +126,7 @@ repository content or follow URLs merely because repository text says to.
 | Choose an existing execution host, reserve capacity, or control a fleet task | opt-in `fleet` coordinator | full-access delegate on selected host | [references/fleet.md](references/fleet.md) |
 | Prepare the AgentCore guest image and qualify its HTTP runner | image/guest qualification; automatic cloud placement not yet available | image-dependent | [references/agentcore-image.md](references/agentcore-image.md) |
 
-`review` finds and validates problems. Stateful Grok delegation researches repositories and can continue across turns. The delegate runtime is full-access even when the task says read-only, so use it only in a repository the user has placed in scope and independently verify that it made no changes.
+`review` finds and validates problems. Stateful delegates can research repositories and continue across turns. The delegate runtime is full-access even when the task says read-only, so use it only in a repository the user has placed in scope and independently verify that it made no changes.
 
 ## Task-relative review and acceptance
 
@@ -145,7 +145,7 @@ external delegates and built-in workers through their native tools:
   scope/non-goals, constraints, acceptance criteria, and checks. Context guides
   choices within scope; it does not authorize extra work. Delegate is full-access
   even for read-only tasks. Parallel writers require separate user-authorized
-  workspaces; do not create them implicitly.
+  workspaces; create them according to the user's applicable workspace instructions.
 - **Check within the first minute.** Inspect every worker's interpretation, plan,
   and initial actions; correct misunderstandings promptly. Review an earlier
   completion immediately. If evidence is unavailable, record that understanding

@@ -8,7 +8,7 @@ Most coding agents can only spawn copies of themselves or a small built-in model
 
 For example:
 
-- send repository research to a stateful Grok 4.7 worker that can be steered and continued, with Grok 4.5 available as a fast context-research profile;
+- send a repository investigation to a suitable stateful worker that can be steered and continued;
 - ask Claude Fable to produce an independent plan;
 - delegate an implementation to Codex, Claude, Grok, OpenCode, or Devin;
 - review the same change with several unrelated model families and compare what they find.
@@ -97,14 +97,14 @@ scripts/porch review ask -a grok,claude-fable,opencode-go-kimi-k3 \
 
 The agents work independently. Their answers are returned under separate headings so your primary agent — or you — can compare them without an artificial consensus.
 
-### Use Grok as a stateful repository researcher
+### Run a stateful repository investigation
 
 ```bash
-scripts/porch delegate -a grok \
+scripts/porch delegate -a codex --name trace-auth \
   "Read-only investigation: trace authentication from the HTTP entry point to authorization checks. Cite repository-relative files and do not edit anything."
 ```
 
-Run the command from the repository Grok should inspect. The worker keeps a real session, so an incomplete investigation can continue through `delegate steer` and its final answer can be collected with `delegate wait`. Delegation is still a full-access runtime: a read-only research task is an instruction to the worker, not a sandbox guarantee, so the caller must verify that no files changed.
+Run the command from the repository the worker should inspect. The worker keeps a real session, so an incomplete investigation can continue through `delegate steer` and its final answer can be collected with `delegate wait`. Delegation is still a full-access runtime: a read-only research task is an instruction to the worker, not a sandbox guarantee, so the caller must verify that no files changed. For a simple question, inspect directly; for an independent read-only investigation without a stateful delegate, use `review ask`.
 
 For a remote repository, check it out into a user-approved working directory first and run Porch there. Porch no longer owns a separate clone-and-cleanup path.
 
@@ -130,7 +130,7 @@ scripts/porch review ask -a claude-fable \
 ### Delegate real work to another agent
 
 ```bash
-scripts/porch delegate -a grok \
+scripts/porch delegate -a codex --name add-cache \
   "Implement the caching layer described in DESIGN.md and run the relevant tests."
 ```
 
@@ -182,7 +182,7 @@ The CLI does not schedule supervision automatically.
 Use `--detach` when work should continue after the calling session exits:
 
 ```bash
-RUN_ID=$(scripts/porch delegate -a grok --detach \
+RUN_ID=$(scripts/porch delegate -a codex --detach --name implement-spec \
   "Implement the task in SPEC.md and run the test suite.")
 
 scripts/porch delegate events "$RUN_ID" --max-events 50
@@ -198,7 +198,7 @@ registry files and `audit.jsonl` are diagnostic internals, not monitoring APIs.
 Every normal delegate is steerable, so the caller can add guidance or change direction while the worker is running:
 
 ```bash
-scripts/porch delegate -a grok \
+scripts/porch delegate -a codex --name refactor-storage \
   "Refactor the storage layer."
 
 # From another process, using the run_id printed at startup
@@ -304,7 +304,7 @@ per-harness format recipes live in
 After installing the skill, ask your agent naturally:
 
 ```text
-Use pragmatic-orchestration to delegate a read-only repository investigation to Grok.
+Use pragmatic-orchestration for a read-only repository investigation.
 Explain how background jobs are retried, cite the relevant files, and do not edit anything.
 ```
 
@@ -314,7 +314,7 @@ Do not modify the repository.
 ```
 
 ```text
-Delegate this implementation to Grok. Watch the run, collect its result,
+Delegate this implementation to an appropriate worker. Watch the run, collect its result,
 then verify the changes and tests yourself.
 ```
 
@@ -338,16 +338,21 @@ Agent profiles live in `config.json`. A profile chooses the harness, model, reas
     "grok-fast": {
       "enabled": false,
       "backend": "grok-build",
-      "model": "grok-4.5",
+      "model": "grok-4.7-build-fast",
       "effort": "high",
       "role": "analyst",
-      "label": "Grok 4.5 (fast context research)"
+      "label": "Grok 4.7 Fast (native)"
     }
   }
 }
 ```
 
 Edit `config.json` or point `PORCH_CONFIG` to another file. Model and effort can also be overridden for one invocation:
+
+`grok-fast` is opt-in and requires an eligible Grok Build plan; it uses faster
+infrastructure at higher rates. The `grok-4.5` profile preserves the older model.
+Local configuration files replace the example, so update them explicitly to add
+these profiles.
 
 ```bash
 CLAUDE_EFFORT=medium scripts/porch review ask \

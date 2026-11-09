@@ -61,8 +61,8 @@ group membership; the CLI does not infer it from unrelated runs in the global
 registry or the same working directory.
 
 Launch independent tasks with separate `--detach` commands from their exact
-working roots. Parallel writers need separate user-authorized workspaces; do not
-create workspaces implicitly. Save ids and per-run event cursors across caller
+working roots. Parallel writers need separate workspaces; follow the user's
+applicable workspace instructions. Save ids and per-run event cursors across caller
 handoffs. Bounded waiting enables supervision but does not schedule it.
 
 ## Keeping the parent active

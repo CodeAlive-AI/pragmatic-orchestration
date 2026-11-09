@@ -12,6 +12,8 @@ Authentication stays with each harness.
 ## Agent profiles
 
 Profiles live in `config.json`; set `PORCH_CONFIG` to use another file.
+The local file replaces the shipped example rather than merging with it, so its
+models and enabled profiles may differ from the defaults described below.
 
 | Field | Purpose |
 |---|---|
@@ -166,4 +168,4 @@ When both providers are requested, one failure does not discard the successful
 result. Exit `0` means all requested providers succeeded, `2` means partial
 success, and `3` means all requested providers failed.
 
-Current model IDs: `gpt-6.1-sol`, [GPT-6 Luna](https://openai.com/index/introducing-gpt-6-sol-and-luna/) and [Grok 4.7](https://docs.x.ai/developers/models/grok-4.7). The default native `grok` profile uses `grok-4.7` at `high` effort. Existing user-local `config.json` files and environment overrides retain precedence; update them explicitly to adopt these defaults.
+Current model IDs: `gpt-6.1-sol`, [GPT-6 Luna](https://openai.com/index/introducing-gpt-6-sol-and-luna/) and [Grok 4.7](https://docs.x.ai/developers/models/grok-4.7). The default native `grok` profile uses `grok-4.7` at `high` effort. The opt-in `grok-fast` profile uses the Grok Build catalog id `grok-4.7-build-fast`, not a public xAI API id. Grok 4.7 Fast uses faster infrastructure at higher rates and is not available on the free tier; see the [Grok 4.7 guide](https://docs.x.ai/developers/grok-4-7). The opt-in `grok-4.5` profile preserves the old model. Existing user-local `config.json` files and environment overrides retain precedence; update them explicitly to adopt these defaults.

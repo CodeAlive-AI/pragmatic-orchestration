@@ -76,7 +76,7 @@
     "grok-fast": {
       "enabled": false,
       "backend": "grok-build",
-      "model": "grok-4.5",
+      "model": "grok-4.7-build-fast",
       "effort": "high",
       "role": "analyst",
       "label": "Grok Fast Test"

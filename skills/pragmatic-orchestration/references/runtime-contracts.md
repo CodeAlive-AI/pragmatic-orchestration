@@ -166,4 +166,4 @@ deadline; observe long-running work and cancel it explicitly when needed.
 
 ## Native Grok one-shot contract
 
-The default Grok profile uses `grok-build`, model `grok-4.7`, high effort. The disabled `grok-fast` profile keeps Grok 4.5 available for fast context research. One-shot runs use `grok --prompt-file … --output-format streaming-json`. Final text concatenates `type=text` data. Success requires process exit 0, an `end` event, and no `error` event. The OpenCode xAI route remains a disabled fallback profile.
+The default Grok profile uses `grok-build`, model `grok-4.7`, high effort. The disabled `grok-fast` profile selects `grok-4.7-build-fast`; `grok-4.5` retains the older model. Fast requires an eligible Grok Build plan and has higher rates. One-shot runs use `grok --prompt-file … --output-format streaming-json`. Final text concatenates `type=text` data. Success requires process exit 0, an `end` event, and no `error` event. The OpenCode xAI route remains a disabled fallback profile.

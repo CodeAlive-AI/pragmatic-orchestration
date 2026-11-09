@@ -117,13 +117,17 @@ assert_contains "list-agents has grok" "$out" 'id="grok"'
 assert_contains "list-agents has grok-build backend" "$out" 'backend="grok-build"'
 assert_contains "default grok profile uses Grok 4.7" "$out" \
   'id="grok" label="Grok Test" backend="grok-build" model="grok-4.7" role="analyst" enabled="true"'
-assert_contains "Grok 4.5 remains selectable as fast context model" "$out" \
-  'id="grok-fast" label="Grok Fast Test" backend="grok-build" model="grok-4.5" role="analyst" enabled="false"'
+assert_contains "Grok 4.7 Fast is selectable in the fixture" "$out" \
+  'id="grok-fast" label="Grok Fast Test" backend="grok-build" model="grok-4.7-build-fast" role="analyst" enabled="false"'
 
 out=$(env PORCH_CONFIG="$SKILL_DIR/config.example.json" "$PORCH" --list-agents 2>/dev/null)
 assert_contains "production config includes grok" "$out" 'id="grok"'
 assert_contains "skill-root default grok profile uses Grok 4.7" "$out" \
   'id="grok" label="Grok 4.7 (native)" backend="grok-build" model="grok-4.7" role="analyst" enabled="true"'
+assert_contains "Grok 4.7 Fast is opt-in" "$out" \
+  'id="grok-fast" label="Grok 4.7 Fast (native)" backend="grok-build" model="grok-4.7-build-fast" role="analyst" enabled="false"'
+assert_contains "Grok 4.5 remains selectable" "$out" \
+  'id="grok-4.5" label="Grok 4.5 (native)" backend="grok-build" model="grok-4.5" role="analyst" enabled="false"'
 assert_contains "Codex Astra remains selectable but disabled by default" "$out" \
   'id="codex-gpt-6-astra" label="Codex GPT-6 Astra" backend="codex-cli" model="gpt-6-astra" role="analyst" enabled="false"'
 assert_contains "Codex Sol is enabled by default" "$out" \
@@ -182,13 +186,13 @@ argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/astra-revi
 assert_contains "Codex production profile launches GPT-6 Astra" "$argv" "--model gpt-6-astra"
 assert_contains "Codex Astra production profile uses high effort" "$argv" 'model_reasoning_effort="high"'
 
-for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex-gpt-6.1-terra gpt-6.1-terra xhigh' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high'; do
+for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex-gpt-6.1-terra gpt-6.1-terra xhigh' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high' 'grok-fast grok-4.7-build-fast high' 'grok-4.5 grok-4.5 high'; do
   read -r profile model effort <<< "$spec"
   for mode in review delegate; do
     env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/current-model.json" \
       "$LIB_DIR/backend_run.sh" --mode "$mode" --agent-id "$profile" --raw "hello" >/dev/null
     argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/current-model.json")
-    if [[ "$profile" == grok ]]; then
+    if [[ "$profile" == grok* ]]; then
       assert_contains "$profile $mode launches current model" "$argv" "-m $model"
       assert_contains "$profile $mode effort" "$argv" "--reasoning-effort $effort"
     else

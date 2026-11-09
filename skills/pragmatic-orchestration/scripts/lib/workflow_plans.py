@@ -239,9 +239,11 @@ def plan_super(judge_agent: str = "claude-sonnet") -> WorkflowPlan:
 
 
 def plan_ultra(
-    judge_agent: str = "claude-sonnet",
+    judge_agent: str = "claude-code",
     judge_fallback: str = "",
 ) -> WorkflowPlan:
+    if judge_fallback:
+        raise ValueError("ultra does not support a fallback judge")
     broad = [
         ("codex", "analyst", "uncapped", "broad-analyst.txt"),
         ("claude-code", "analyst", "uncapped", "broad-analyst.txt"),
@@ -357,7 +359,7 @@ def get_plan(
     plan_id: str,
     *,
     agents: Optional[Sequence[str]] = None,
-    judge_agent: str = "claude-sonnet",
+    judge_agent: Optional[str] = None,
     judge_fallback: str = "",
 ) -> WorkflowPlan:
     pid = plan_id.strip().lower()
@@ -366,9 +368,9 @@ def get_plan(
     if pid in ("specialists", "code-specialists", "review-code-specialists"):
         return plan_specialists()
     if pid in ("super", "superreview", "review-code-super"):
-        return plan_super(judge_agent=judge_agent)
+        return plan_super(judge_agent=judge_agent or "claude-sonnet")
     if pid in ("ultra", "ultrareview", "review-code-ultra"):
-        return plan_ultra(judge_agent=judge_agent, judge_fallback=judge_fallback)
+        return plan_ultra(judge_agent=judge_agent or "claude-code", judge_fallback=judge_fallback)
     if pid in ("ask", "review-ask"):
         return plan_ask(agents or [])
     raise KeyError(f"unknown workflow plan: {plan_id!r}")
@@ -424,8 +426,8 @@ def _main() -> int:
     ap = argparse.ArgumentParser(description="Porch declarative workflow plans")
     ap.add_argument("plan", help="ask|basic|specialists|super|ultra")
     ap.add_argument("--agents", default="", help="comma-separated agents for ask/basic")
-    ap.add_argument("--judge", default="claude-sonnet")
-    ap.add_argument("--judge-fallback", default="")
+    ap.add_argument("--judge", default=None)
+    ap.add_argument("--judge-fallback", default="", help="legacy option; a non-empty fallback is rejected")
     ap.add_argument("--max-parallel", type=int, default=-1,
                     help="echo effective concurrency (-1 = from env)")
     ap.add_argument("--shell", action="store_true",

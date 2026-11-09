@@ -232,6 +232,15 @@ def main() -> int:
     keys = [p.artifact_key() for p in basic.all_passes()]
     ok("basic keys agent.role form", all("." in k for k in keys), str(keys))
     ultra = get_plan("ultra")
+    ultra_judge = next(s for s in ultra.stages if s.id == "judge")
+    ok("ultra defaults to claude-code judge", ultra_judge.judge_agent == "claude-code")
+    ok("ultra has no fallback judge", ultra_judge.judge_fallback == "")
+    try:
+        get_plan("ultra", judge_fallback="codex")
+    except ValueError:
+        ok("ultra rejects fallback judge", True)
+    else:
+        ok("ultra rejects fallback judge", False)
     ok("ultra has probe stage", any(s.id == "probe" for s in ultra.stages))
     ultra_spec = next(s for s in ultra.stages if s.id == "specialists")
     ok(

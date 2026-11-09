@@ -14,7 +14,7 @@
 #   - code review (basic/specialists): "agent.role" (e.g. "codex.security")
 #   - multi-stage discovery (super/ultra): explicit fan-out keys of the form
 #     "<stage>.<index>.<agent>.<role>" passed via --artifact-key
-#   - judge attempts: "judge.primary.<agent>" / "judge.fallback.<agent>"
+#   - review judge: "judge.primary.<agent>"; fallback keys may appear in older runs
 # Fan-out layers always pass an explicit key. discovery-pass / judge-runner
 # never rely on an ambient inherited PORCH_ARTIFACT_KEY alone — if called
 # without --artifact-key they choose an invocation-unique default.

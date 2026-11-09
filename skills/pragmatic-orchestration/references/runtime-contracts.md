@@ -19,7 +19,7 @@ Use this reference when diagnosing or changing observability, normalized events,
 | stdout | Clean final answer only |
 | artifacts | Per-run `raw/*.jsonl`, `normalized/*.jsonl`, `final/*.txt`, and `final.txt` under `PORCH_OUTPUT_DIR` or `PORCH_RUN_DIR` |
 
-Artifact keys are per invocation: profile id for ask/delegate, `agent.role` for basic/specialist review, `<stage>.<index>.<agent>.<role>` for super/ultra discovery, and `judge.primary.<agent>` / `judge.fallback.<agent>` for judge attempts. Fan-out never relies only on inherited `PORCH_ARTIFACT_KEY`.
+Artifact keys are per invocation: profile id for ask/delegate, `agent.role` for basic/specialist review, `<stage>.<index>.<agent>.<role>` for super/ultra discovery, and `judge.primary.<agent>` for the judge. Neither review mode substitutes a fallback judge. Fan-out never relies only on inherited `PORCH_ARTIFACT_KEY`.
 
 One-shot architecture remains `backend_cmd | normalize_stream.py --raw-out --progress --extract-text`. Raw lines are persisted and normalized immediately. `PIPESTATUS` preserves backend exit and Grok end/error validation independently.
 

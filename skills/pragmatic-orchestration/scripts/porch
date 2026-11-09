@@ -75,7 +75,7 @@ review code
   --depth ultra         multi-stage ultrareview + judge
   Other options: --xml, --diff, --related FILE (repeatable), -a/--agents,
                  -x/--exclude, --dry-run (super/ultra),
-                 --judge, --no-fallback (ultra), --progress full|compact|none
+                 --judge, --no-fallback (ultra compatibility), --progress full|compact|none
 
 Live progress (all review depths)
   full (default)  per-agent thinking / answer previews on stderr, keyed by the

@@ -240,7 +240,7 @@ def plan_super(judge_agent: str = "claude-sonnet") -> WorkflowPlan:
 
 def plan_ultra(
     judge_agent: str = "claude-sonnet",
-    judge_fallback: str = "codex",
+    judge_fallback: str = "",
 ) -> WorkflowPlan:
     broad = [
         ("codex", "analyst", "uncapped", "broad-analyst.txt"),
@@ -358,7 +358,7 @@ def get_plan(
     *,
     agents: Optional[Sequence[str]] = None,
     judge_agent: str = "claude-sonnet",
-    judge_fallback: str = "codex",
+    judge_fallback: str = "",
 ) -> WorkflowPlan:
     pid = plan_id.strip().lower()
     if pid in ("basic", "code-basic", "review-code-basic"):
@@ -425,7 +425,7 @@ def _main() -> int:
     ap.add_argument("plan", help="ask|basic|specialists|super|ultra")
     ap.add_argument("--agents", default="", help="comma-separated agents for ask/basic")
     ap.add_argument("--judge", default="claude-sonnet")
-    ap.add_argument("--judge-fallback", default="codex")
+    ap.add_argument("--judge-fallback", default="")
     ap.add_argument("--max-parallel", type=int, default=-1,
                     help="echo effective concurrency (-1 = from env)")
     ap.add_argument("--shell", action="store_true",

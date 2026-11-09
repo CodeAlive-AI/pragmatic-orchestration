@@ -59,9 +59,9 @@ The opt-in `codex-gpt-6-astra` profile retains `gpt-6-astra` at `high` effort. A
 default Claude Code profile, `claude-opus`, uses `claude-opus-5-5` at
 `medium` effort. `claude-code` is a disabled alias with the same model and
 effort; `claude-sonnet` remains available explicitly. The disabled-by-default
-`claude-fable` profile uses `claude-fable-5-1` at `low` effort and
-supports the same five effort levels. Start Fable 5.1 at `high` for the hardest
-long-horizon work, or retain `low` when it is one reviewer in a larger pool.
+`claude-fable` profile uses `claude-fable-5-1` at `high` effort and
+supports the same five effort levels. Override to `low` when lower cost is more
+important, for example when it is one reviewer in a larger pool.
 The opt-in `opencode-go-gemini-4-argon-contributor` profile uses
 `opencode-go/gemini-4-argon-contributor` with `high` effort for review and
 delegate. Select it with `-a opencode-go-gemini-4-argon-contributor`.

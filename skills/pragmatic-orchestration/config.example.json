@@ -372,7 +372,7 @@
       "enabled": false,
       "backend": "claude-code",
       "model": "claude-fable-5-1",
-      "effort": "low",
+      "effort": "high",
       "role": "analyst",
       "label": "Claude Fable 5.1"
     },

@@ -204,19 +204,8 @@ mkdir -p "$RESP_DIR"
 PLAN_LINES="$TMP_ROOT/plan-lines.txt"
 python3 "$LIB_DIR/workflow_plans.py" super --judge "$JUDGE_AGENT" --shell \
     > "$PLAN_LINES" || {
-    # Fallback: emit static lines from shell arrays if Python plan fails.
-    : > "$PLAN_LINES"
-    pass_idx=0
-    for p in "${SMALL_PASSES[@]}"; do
-        IFS='|' read -r agent role cap prompt_name <<< "$p"
-        echo "discovery-small|${pass_idx}|${agent}|${role}|${cap}|${prompt_name}|discovery-small.${pass_idx}.${agent}.${role}" >> "$PLAN_LINES"
-        pass_idx=$((pass_idx + 1))
-    done
-    for p in "${FRONTIER_PASSES[@]}"; do
-        IFS='|' read -r agent role cap prompt_name <<< "$p"
-        echo "discovery-frontier|${pass_idx}|${agent}|${role}|${cap}|${prompt_name}|discovery-frontier.${pass_idx}.${agent}.${role}" >> "$PLAN_LINES"
-        pass_idx=$((pass_idx + 1))
-    done
+    echo -e "${RED}Failed to generate super review plan.${NC}" >&2
+    exit 4
 }
 
 note "${YELLOW}[Launching $total_passes discovery passes (max_parallel=${PORCH_MAX_PARALLEL:-0})...]${NC}"

@@ -214,7 +214,7 @@ env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/fable51-
   "$LIB_DIR/backend_run.sh" --mode review --agent-id claude-fable --raw "hello" >/dev/null
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/fable51-review.json"'"))["argv"]))')
 assert_contains "Claude production profile launches Fable 5.1" "$argv" "--model claude-fable-5-1"
-assert_contains "Claude Fable 5.1 production profile uses low effort" "$argv" "--effort low"
+assert_contains "Claude Fable 5.1 production profile uses high effort" "$argv" "--effort high"
 
 env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/muse-spark-review.json" \
   "$LIB_DIR/backend_run.sh" --mode review --agent-id opencode-go-muse-spark-1.3-contributor --raw "hello" >/dev/null
@@ -1147,6 +1147,50 @@ assert_eq "ultra dry-run exit 0" "$rc" "0"
 assert_contains "ultra dry-run plan" "$out" "DRY RUN"
 assert_contains "ultra dry-run 15 specialists" "$out" "15-pass"
 assert_contains "ultra dry-run discovery count 20" "$out" "20 discovery"
+assert_contains "ultra judge has no fallback" "$out" "judge: claude-code (no fallback)"
+
+# A broken plan generator must fail instead of silently dispatching a static plan.
+mkdir -p "$TMP/fail-plan-bin"
+real_python=$(command -v python3)
+cat > "$TMP/fail-plan-bin/python3" <<'SH'
+#!/bin/bash
+if [[ "${1:-}" == */workflow_plans.py ]]; then
+  echo 'injected plan generation failure' >&2
+  exit 1
+fi
+exec "$PORCH_TEST_REAL_PYTHON" "$@"
+SH
+chmod +x "$TMP/fail-plan-bin/python3"
+for depth in super ultra; do
+  set +e
+  out=$(PATH="$TMP/fail-plan-bin:$PATH" PORCH_TEST_REAL_PYTHON="$real_python" \
+    PORCH_CONFIG="$SKILL_DIR/config.example.json" \
+    "$PORCH" review code --depth "$depth" --progress none "$FIX/sample.py" 2>&1)
+  rc=$?
+  set -e
+  assert_eq "$depth plan failure exits 4" "$rc" "4"
+  assert_contains "$depth plan failure is explicit" "$out" "Failed to generate $depth review plan."
+done
+
+# A failed judge must preserve findings and fail rather than substitute a judge.
+set +e
+PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_FAKE_CLAUDE_MODE=is-error \
+  PORCH_RUN_DIR="$TMP/ultra-failed-judge" PORCH_MAX_PARALLEL=2 \
+  "$PORCH" review code --depth ultra --progress none "$FIX/sample.py" \
+  >"$TMP/ultra-failed-judge.out" 2>"$TMP/ultra-failed-judge.err"
+rc=$?
+set -e
+assert_eq "ultra judge failure exits 6" "$rc" "6"
+assert_contains "ultra judge failure is explicit" "$(cat "$TMP/ultra-failed-judge.err")" \
+  'Judge (claude-code) failed; emitting unfiltered union.'
+assert_contains "ultra judge failure returns union" "$(cat "$TMP/ultra-failed-judge.out")" '<'
+if compgen -G "$TMP/ultra-failed-judge/final/judge.fallback.*" >/dev/null; then
+  echo "  FAIL  ultra must not run a fallback judge"
+  FAIL=$((FAIL+1))
+else
+  echo "  PASS  ultra did not run a fallback judge"
+  PASS=$((PASS+1))
+fi
 
 # Declarative plan pass counts agree with dry-run keys
 plan_spec=$(python3 "$LIB_DIR/workflow_plans.py" ultra --shell 2>/dev/null | grep -c '^specialists|' || true)

@@ -2,6 +2,9 @@
 
 Use review for independent opinions or defect finding. Review is always read-only. Porch keeps agents independent; it does not merge or rank answers from `ask`, `basic`, or `specialists`. The calling agent judges them. `super` and `ultra` deliberately add an LLM judge after deterministic deduplication.
 
+If the `ultra` judge fails, the command returns exit code 6 and emits the
+unfiltered findings. It does not automatically substitute another judge.
+
 ## Acting on review findings
 
 Apply [review-acceptance.md](review-acceptance.md) before acting on findings,

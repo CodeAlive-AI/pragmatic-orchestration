@@ -23,8 +23,8 @@
 #
 #   Stage 4: dedup (deterministic) — union all findings
 #
-#   Stage 5: judge — claude-code (configured model) by default; on failure falls back to
-#     opencode (GLM-5.2).
+#   Stage 5: judge — claude-code (configured model) by default; failure returns
+#     the unfiltered findings and a non-zero exit.
 #
 # Output: filtered findings (VALID + DOWNGRADE) as markdown or XML.
 #
@@ -34,14 +34,13 @@
 #   ultrareview.sh --xml <file>            # XML output
 #   ultrareview.sh --dry-run <file>        # plan + check config; no LLM calls
 #   ultrareview.sh --judge <agent-id> ..   # override judge (default claude-code)
-#   ultrareview.sh --no-fallback ..        # disable judge fallback
+#   ultrareview.sh --no-fallback ..        # compatibility flag; no fallback is used
 #   ultrareview.sh --progress compact ..   # live progress style: full|compact|none
 #   ultrareview.sh --related FILE ..       # repeatable initial relevance seed
 #   ultrareview.sh --keep-tmp <file>       # retain $RESP_DIR
 #   ultrareview.sh --help
 #
-# Cost depends on the configured models, input size, and provider pricing;
-# fallback uses the configured OpenCode model.
+# Cost depends on the configured models, input size, and provider pricing.
 #
 # Exit codes:
 #   0 — success
@@ -49,7 +48,7 @@
 #   3 — every discovery pass failed
 #   4 — config error
 #   5 — usage error
-#   6 — judge failed (and fallback also failed, if enabled)
+#   6 — judge failed; unfiltered findings are returned
 #
 set -euo pipefail
 
@@ -71,8 +70,6 @@ INPUT_PATH=""
 DRY_RUN=""
 KEEP_TMP=""
 JUDGE_AGENT="claude-code"
-JUDGE_FALLBACK="opencode"
-NO_FALLBACK=""
 PROGRESS="${PORCH_PROGRESS:-full}"
 RELATED_FILES=()
 
@@ -97,7 +94,7 @@ while [[ $# -gt 0 ]]; do
         --dry-run)     DRY_RUN=1; shift ;;
         --keep-tmp)    KEEP_TMP=1; shift ;;
         --judge)       JUDGE_AGENT="$2"; shift 2 ;;
-        --no-fallback) NO_FALLBACK=1; shift ;;
+        --no-fallback) shift ;; # retained for compatibility
         -h|--help)     sed -n '2,46p' "$0"; exit 0 ;;
         --)            shift; INPUT_PATH="${1:-}"; break ;;
         -*)            echo -e "${RED}Error: unknown flag: $1${NC}" >&2; exit 5 ;;
@@ -128,7 +125,6 @@ ALL_AGENTS_NEEDED=(
     "opencode-go-minimax" "opencode-go-kimi" "opencode-go-qwen37-plus" "opencode-go-glm"
     "$JUDGE_AGENT"
 )
-[[ -z "$NO_FALLBACK" ]] && ALL_AGENTS_NEEDED+=("$JUDGE_FALLBACK")
 
 # ------ Config validation --------------------------------------------------
 PORCH_CONFIG="${PORCH_CONFIG:-$SKILL_DIR/config.json}"
@@ -185,23 +181,10 @@ done
 
 # Declarative plan is the source of truth for pass counts and artifact keys.
 PLAN_FULL="$TMP_ROOT/plan-full.txt"
-python3 "$LIB_DIR/workflow_plans.py" ultra --judge "$JUDGE_AGENT" \
-    --judge-fallback "${JUDGE_FALLBACK:-codex}" --shell \
-    > "$PLAN_FULL" 2>/dev/null || {
-    # Fallback mirrors historical matrix when Python plan emission fails.
-    : > "$PLAN_FULL"
-    pass_idx=0
-    for p in "${BROAD_PASSES[@]}"; do
-        IFS='|' read -r agent role cap prompt_name <<< "$p"
-        echo "broad|${pass_idx}|${agent}|${role}|${cap}|${prompt_name}|broad.${pass_idx}.${agent}.${role}" >> "$PLAN_FULL"
-        pass_idx=$((pass_idx + 1))
-    done
-    for p in "${SPECIALIST_PASSES[@]}"; do
-        IFS='|' read -r agent role cap prompt_name <<< "$p"
-        echo "specialists|${pass_idx}|${agent}|${role}|${cap}|${prompt_name}|specialists.${pass_idx}.${agent}.${role}" >> "$PLAN_FULL"
-        pass_idx=$((pass_idx + 1))
-    done
-    echo "probe|${pass_idx}|opencode-go-glm|auditor|uncapped|probe-generic.txt|probe.${pass_idx}.opencode-go-glm.auditor" >> "$PLAN_FULL"
+python3 "$LIB_DIR/workflow_plans.py" ultra --judge "$JUDGE_AGENT" --shell \
+    > "$PLAN_FULL" || {
+    echo -e "${RED}Failed to generate ultra review plan.${NC}" >&2
+    exit 4
 }
 broad_n=$(grep -c '^broad|' "$PLAN_FULL" 2>/dev/null || echo 0)
 spec_n=$(grep -c '^specialists|' "$PLAN_FULL" 2>/dev/null || echo 0)
@@ -227,11 +210,7 @@ if [[ -n "$DRY_RUN" ]]; then
     done
     echo "" >&2
     echo "  Stage 4 — dedup (deterministic union)" >&2
-    if [[ -z "$NO_FALLBACK" ]]; then
-        echo "  Stage 5 — judge: $JUDGE_AGENT (fallback: $JUDGE_FALLBACK)" >&2
-    else
-        echo "  Stage 5 — judge: $JUDGE_AGENT (no fallback)" >&2
-    fi
+    echo "  Stage 5 — judge: $JUDGE_AGENT (no fallback)" >&2
     echo "" >&2
     echo -e "${GREEN}DRY RUN: config + plan validated, no LLM calls made.${NC}" >&2
     exit 0
@@ -282,36 +261,17 @@ python3 "$LIB_DIR/dedup-findings.py" "$UNION_XML" "${non_empty_outputs[@]}" || {
     echo -e "${RED}dedup failed${NC}" >&2; exit 3;
 }
 
-# ------ Stage 5: judge with fallback ---------------------------------------
+# ------ Stage 5: judge -----------------------------------------------------
 VERDICTS_JSON="$TMP_ROOT/verdicts.json"
-judge_ok=""
 note "${YELLOW}[Running primary judge: $JUDGE_AGENT]${NC}" 
-if "$LIB_DIR/judge-runner.sh" \
+if ! "$LIB_DIR/judge-runner.sh" \
         --agent "$JUDGE_AGENT" \
         --findings "$UNION_XML" \
         --source "$SOURCE_FILE" \
         --input-kind "$INPUT_KIND" \
         --out "$VERDICTS_JSON" \
         --artifact-key "judge.primary.${JUDGE_AGENT}"; then
-    judge_ok=1
-else
-    echo -e "${RED}Primary judge ($JUDGE_AGENT) failed.${NC}" >&2
-    if [[ -z "$NO_FALLBACK" ]]; then
-        note "${YELLOW}[Falling back to: $JUDGE_FALLBACK]${NC}" 
-        if "$LIB_DIR/judge-runner.sh" \
-                --agent "$JUDGE_FALLBACK" \
-                --findings "$UNION_XML" \
-                --source "$SOURCE_FILE" \
-                --input-kind "$INPUT_KIND" \
-                --out "$VERDICTS_JSON" \
-                --artifact-key "judge.fallback.${JUDGE_FALLBACK}"; then
-            judge_ok=1
-        fi
-    fi
-fi
-
-if [[ -z "$judge_ok" ]]; then
-    echo -e "${RED}Both primary and fallback judge failed; emitting unfiltered union.${NC}" >&2
+    echo -e "${RED}Judge ($JUDGE_AGENT) failed; emitting unfiltered union.${NC}" >&2
     cat "$UNION_XML"
     exit 6
 fi

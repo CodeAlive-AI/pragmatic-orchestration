@@ -970,6 +970,12 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["status"], "completed")
         self.assertEqual(self.reg.load_meta(rid)["continued_from"], source)
+        # Terminal output can precede detached supervisor cleanup; do not remove
+        # the test registry while the supervisor is still writing to it.
+        deadline = time.monotonic() + 10
+        while self.reg.load_meta(rid).get("cleanup_status") == "pending" and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertEqual(self.reg.load_meta(rid).get("cleanup_status"), "completed")
 
 
 if __name__ == "__main__":

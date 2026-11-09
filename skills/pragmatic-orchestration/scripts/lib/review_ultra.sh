@@ -107,19 +107,7 @@ if ! progress_set_style "$PROGRESS"; then
     exit 5
 fi
 
-# ------ Discovery plan -----------------------------------------------------
-BROAD_PASSES=(
-    "codex|analyst|uncapped|broad-analyst.txt"
-    "claude-code|analyst|uncapped|broad-analyst.txt"
-    "opencode|lateral|uncapped|broad-lateral.txt"
-    "opencode-go-qwen37-max|analyst|uncapped|broad-analyst.txt"
-)
-
-SPECIALIST_ROLES=(security correctness performance architecture consistency)
-SPECIALIST_MODELS=(opencode-go-minimax opencode-go-kimi opencode-go-qwen37-plus)
-
-PROBE_PASS="opencode-go-glm|auditor|uncapped|probe-generic.txt"
-
+# ------ Discovery profiles -------------------------------------------------
 ALL_AGENTS_NEEDED=(
     "codex" "claude-code" "opencode" "opencode-go-qwen37-max"
     "opencode-go-minimax" "opencode-go-kimi" "opencode-go-qwen37-plus" "opencode-go-glm"
@@ -169,15 +157,6 @@ fi
 
 INITIAL_RELEVANT_FILES_FILE="$TMP_ROOT/initial-relevant-files.txt"
 render_initial_relevant_files "$INPUT_LABEL" ${RELATED_FILES[@]+"${RELATED_FILES[@]}"} > "$INITIAL_RELEVANT_FILES_FILE"
-
-# Build specialist plan arrays for dry-run display (must match workflow_plans.py:
-# 3 models × 5 roles = 15 specialist invocations).
-SPECIALIST_PASSES=()
-for model in "${SPECIALIST_MODELS[@]}"; do
-    for role in "${SPECIALIST_ROLES[@]}"; do
-        SPECIALIST_PASSES+=("${model}|${role}|uncapped|specialist.txt")
-    done
-done
 
 # Declarative plan is the source of truth for pass counts and artifact keys.
 PLAN_FULL="$TMP_ROOT/plan-full.txt"

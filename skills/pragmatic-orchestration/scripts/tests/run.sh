@@ -1170,6 +1170,14 @@ for depth in super ultra; do
   set -e
   assert_eq "$depth plan failure exits 4" "$rc" "4"
   assert_contains "$depth plan failure is explicit" "$out" "Failed to generate $depth review plan."
+  set +e
+  out=$(PATH="$TMP/fail-plan-bin:$PATH" PORCH_TEST_REAL_PYTHON="$real_python" \
+    PORCH_CONFIG="$SKILL_DIR/config.example.json" \
+    "$PORCH" review code --depth "$depth" --dry-run "$FIX/sample.py" 2>&1)
+  rc=$?
+  set -e
+  assert_eq "$depth dry-run plan failure exits 4" "$rc" "4"
+  assert_contains "$depth dry-run plan failure is explicit" "$out" "Failed to generate $depth review plan."
 done
 
 # A failed judge must preserve findings and fail rather than substitute a judge.

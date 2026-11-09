@@ -103,22 +103,7 @@ if ! progress_set_style "$PROGRESS"; then
     exit 5
 fi
 
-# ------ Discovery plan -----------------------------------------------------
-# Format: agent|role|cap|prompt-template
-SMALL_PASSES=(
-    "opencode-go-minimax|analyst|uncapped|broad-analyst.txt"
-    "opencode-go-qwen37-plus|analyst|uncapped|broad-analyst.txt"
-    "opencode-go-qwen37-plus|lateral|uncapped|broad-lateral.txt"
-    "opencode-go-glm|architecture|uncapped|specialist.txt"
-    "opencode-go-glm|correctness|uncapped|specialist.txt"
-    "opencode-go-qwen37-max|architecture|uncapped|specialist.txt"
-    "opencode-go-qwen37-max|security|uncapped|specialist.txt"
-)
-FRONTIER_PASSES=(
-    "opencode|analyst|uncapped|broad-analyst.txt"
-    "claude-code|lateral|uncapped|broad-lateral.txt"
-)
-
+# ------ Discovery profiles -------------------------------------------------
 ALL_AGENTS_NEEDED=(
     "opencode-go-minimax"
     "opencode-go-qwen37-plus"
@@ -178,16 +163,26 @@ INITIAL_RELEVANT_FILES_FILE="$TMP_ROOT/initial-relevant-files.txt"
 render_initial_relevant_files "$INPUT_LABEL" ${RELATED_FILES[@]+"${RELATED_FILES[@]}"} > "$INITIAL_RELEVANT_FILES_FILE"
 
 # ------ Plan ---------------------------------------------------------------
-total_passes=$(( ${#SMALL_PASSES[@]} + ${#FRONTIER_PASSES[@]} ))
+PLAN_LINES="$TMP_ROOT/plan-lines.txt"
+python3 "$LIB_DIR/workflow_plans.py" super --judge "$JUDGE_AGENT" --shell \
+    > "$PLAN_LINES" || {
+    echo -e "${RED}Failed to generate super review plan.${NC}" >&2
+    exit 4
+}
+total_passes=$(awk '/^discovery-(small|frontier)\|/ { n++ } END { print n+0 }' "$PLAN_LINES")
 note "${CYAN}superreview (h9): $total_passes discovery + 1 judge ($JUDGE_AGENT) on '$INPUT_LABEL'${NC}" 
 
 if [[ -n "$DRY_RUN" ]]; then
     echo "" >&2
     echo "  Stage 1 — discovery-small (parallel):" >&2
-    for p in "${SMALL_PASSES[@]}"; do echo "    $p" >&2; done
+    grep '^discovery-small|' "$PLAN_LINES" | while IFS='|' read -r st idx agent role cap prompt key; do
+        echo "    $agent|$role|$cap|$prompt  key=$key" >&2
+    done
     echo "" >&2
     echo "  Stage 2 — discovery-frontier (parallel):" >&2
-    for p in "${FRONTIER_PASSES[@]}"; do echo "    $p" >&2; done
+    grep '^discovery-frontier|' "$PLAN_LINES" | while IFS='|' read -r st idx agent role cap prompt key; do
+        echo "    $agent|$role|$cap|$prompt  key=$key" >&2
+    done
     echo "" >&2
     echo "  Stage 3 — dedup (deterministic union)" >&2
     echo "  Stage 4 — judge: $JUDGE_AGENT" >&2
@@ -201,13 +196,6 @@ fi
 # (default 0 = unlimited, historical behaviour).
 RESP_DIR="$TMP_ROOT/responses"
 mkdir -p "$RESP_DIR"
-PLAN_LINES="$TMP_ROOT/plan-lines.txt"
-python3 "$LIB_DIR/workflow_plans.py" super --judge "$JUDGE_AGENT" --shell \
-    > "$PLAN_LINES" || {
-    echo -e "${RED}Failed to generate super review plan.${NC}" >&2
-    exit 4
-}
-
 note "${YELLOW}[Launching $total_passes discovery passes (max_parallel=${PORCH_MAX_PARALLEL:-0})...]${NC}"
 
 set +e

@@ -56,15 +56,15 @@ It requires Codex CLI 0.159.0 or later; see the
 Copy this profile into existing user-local configs to make the new id available.
 The opt-in `codex-gpt-6-astra` profile retains `gpt-6-astra` at `high` effort. Astra accepts
 `low`, `medium`, `high`, `xhigh`, and `max`; it does not accept `none`. The
-default Claude Code profile, `claude-opus`, uses `claude-opus-5-5` at
+default Claude Code profile, `claude-opus`, uses `opus` at
 `medium` effort. `claude-code` is a disabled alias with the same model and
-effort; `claude-sonnet` remains available explicitly. The disabled-by-default
-`claude-fable` profile uses `claude-fable-5-2` at `high` effort and
-supports the same five effort levels. It requires Claude Code 2.1.321 or later;
-see [Anthropic's availability guidance](https://support.claude.com/en/articles/15424964-claude-fable-models-on-your-plan).
-Existing user-local configurations are not merged with the example: update their
-`claude-fable` model to `claude-fable-5-2` to use this version. Override effort
-to `low` when lower cost is more important.
+effort. The opt-in `claude-fable` and `claude-sonnet` profiles use `fable` and
+`sonnet` at `high` effort; `claude-haiku` uses `haiku` at `medium` effort.
+These [Claude Code aliases](https://code.claude.com/docs/en/model-config#model-aliases)
+can resolve to different versions depending on provider, CLI version, and
+configuration. Fable 5.2 requires Claude Code 2.1.321 or later. Existing
+user-local configurations are not merged with the example: update their model
+fields and add `claude-haiku` to adopt these profiles.
 The opt-in `opencode-go-gemini-4-argon-contributor` profile uses
 `opencode-go/gemini-4-argon-contributor` with `high` effort for review and
 delegate. Select it with `-a opencode-go-gemini-4-argon-contributor`.

@@ -117,10 +117,11 @@ scripts/porch review ask --progress compact -a codex-gpt-6-astra \
   "Verify SPEC.md against the implementation and identify mismatches."
 ```
 
-Claude Code defaults to `claude-opus` (Opus 5.5, `medium` effort).
-Fable remains available by explicitly selecting `-a claude-fable`.
+Claude Code defaults to `claude-opus` (`medium` effort). Select
+`claude-fable`, `claude-sonnet`, or `claude-haiku` explicitly for the other
+model families. These profiles use Claude Code's floating model aliases.
 
-### Ask Claude Fable 5.2 for a plan
+### Ask Claude Fable for a plan
 
 ```bash
 scripts/porch review ask -a claude-fable \

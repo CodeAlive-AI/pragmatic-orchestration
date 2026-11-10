@@ -89,6 +89,10 @@ integrating it:
 - Give a shared contract (an interface, a schema, a migration) one owner, and
   land it before the work that depends on it. Several workers redesigning the
   same interface independently is the usual way parallel work is lost.
+- Integrate finished work in dependency order, and bring workspaces that are
+  still running onto a contract once it lands. Parts that each pass their own
+  checks have not been run together: have the required checks run on the
+  combined revision before calling the whole accepted.
 - Choose a finite number of workers for the machine and the quotas at hand, and
   ask from time to time whether everything that could run in parallel is running.
 - Additional reviewers must answer different questions. Repeating a whole-repository

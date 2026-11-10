@@ -114,7 +114,8 @@ rewritten expected value.
 - Read the test code in the diff, not only the result. Check it against the two
   questions above.
 - Evidence belongs to a revision and an environment. Reuse it while it still
-  applies; ask for a rerun after changes that invalidate it.
+  applies; ask for a rerun after changes that invalidate it, including a merge
+  with parallel work.
 - Keep passed, failed, skipped and blocked apart. A check that could not run is
   not a pass.
 - A flaky failure that passes on retry is not fixed. Have it investigated.

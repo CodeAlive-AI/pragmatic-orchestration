@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -551,10 +552,122 @@ def cmd_image(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# ---- animated GIF ------------------------------------------------------------
+
+def sheet_grid(frames: int) -> Tuple[int, int]:
+    """Columns × rows for a spritesheet: an exact factor pair when its ratio is
+    at most 3:1 (both models accept that), otherwise the smallest near-square
+    grid with trailing blank cells."""
+    for rows in range(int(math.sqrt(frames)), 0, -1):
+        if frames % rows == 0 and frames // rows <= 3 * rows:
+            return frames // rows, rows
+    cols = math.ceil(math.sqrt(frames))
+    return cols, math.ceil(frames / cols)
+
+
+def animation_prompt(backend: str, prompt: str, staged: Sequence[Path], frames: int,
+                     cols: int, rows: int) -> str:
+    blank = cols * rows - frames
+    lines = []
+    if staged:
+        refs = ", ".join(f"./{p.name}" for p in staged)
+        lines.append(f"Reference images: {refs}"
+                     + (" (attached to this message; pass them to the tool as reference images)."
+                        if backend == "codex-cli" else
+                        " (pass their absolute paths to the tool as input images).")
+                     + " Keep the subject's identity and style from them.")
+    lines += [
+        f"Use your {tool_name(backend)} exactly once to create ONE spritesheet image for a "
+        f"looping animation of {frames} frames.",
+        f"Layout: a grid of {cols} columns × {rows} rows of equal square cells, edge to edge, "
+        "with no borders, gutters, frame numbers, labels or captions. Frames run in reading "
+        "order: left to right, then top to bottom."
+        + (f" Leave the last {blank} cell{'s' if blank > 1 else ''} plain empty background."
+           if blank else ""),
+        f"Aspect ratio: {cols // math.gcd(cols, rows)}:{rows // math.gcd(cols, rows)}.",
+        "Every frame shows the same subject at the same size and position against the same "
+        "background, with the camera still unless asked otherwise; only the motion changes, "
+        "in small even steps. The last frame must lead smoothly back into the first so the "
+        "loop is seamless.",
+        f"Animation: {prompt}",
+        "Do not create, copy, convert, move or edit any file yourself and do not run shell "
+        "commands: the tool saves the image and Porch assembles the GIF.",
+        "Finish with one short line describing the spritesheet.",
+    ]
+    return "\n".join(lines)
+
+
+def assemble_gif(sheet: Path, out: Path, cols: int, rows: int, frames: int,
+                 frame_ms: int, width: int) -> None:
+    ffmpeg = tool("ffmpeg", "PORCH_BIN_FFMPEG")
+    seconds = frame_ms / 1000
+    scale = f",scale={width}:-2:flags=lanczos" if width else ""
+    graph = (f"format=rgb24,crop=iw-mod(iw\\,{cols}):ih-mod(ih\\,{rows}):0:0,untile={cols}x{rows},"
+             f"trim=end_frame={frames},setpts=N*{seconds}/TB{scale},split[a][b];"
+             "[a]palettegen=stats_mode=full[p];[b][p]paletteuse=dither=sierra2_4a")
+    proc = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                           "-i", str(sheet), "-vf", graph, "-fps_mode", "passthrough",
+                           "-loop", "0", "-final_delay", str(frame_ms // 10), str(out)],
+                          capture_output=True, text=True)
+    if proc.returncode != 0 or not out.is_file() or image_kind(out) != "gif":
+        raise MediaError(f"ffmpeg could not assemble the GIF: {proc.stderr.strip()[-500:]}")
+
+
+def cmd_animate(args: argparse.Namespace) -> int:
+    resolved = require_operation(args.agent, "image.animate")
+    limits = media_operation_limits(resolved.backend, "image.animate")
+    prompt = read_prompt(args.prompt, args.prompt_file, required=True)
+    if not 2 <= args.frames <= 16:
+        raise MediaError("--frames must be between 2 and 16", EXIT_USAGE)
+    if not 20 <= args.frame_ms <= 2000 or args.frame_ms % 10:
+        raise MediaError("--frame-ms must be a multiple of 10 between 20 and 2000 "
+                         "(GIF delays are centiseconds)", EXIT_USAGE)
+    if args.width and not 16 <= args.width <= 2048:
+        raise MediaError("--width must be between 16 and 2048", EXIT_USAGE)
+    tool("ffmpeg", "PORCH_BIN_FFMPEG")  # fail before spending a generation
+    cols, rows = sheet_grid(args.frames)
+    with tempfile.TemporaryDirectory(prefix="porch-media-") as tmp:
+        stage = Path(tmp)
+        staged = stage_images(args.input or [], stage, int(limits.get("max_inputs", 1)),
+                              "image.animate") if args.input else []
+        extra = {}
+        if resolved.backend == "codex-cli" and staged:
+            extra["PORCH_MEDIA_IMAGES"] = "\n".join(str(p) for p in staged)
+        info(f"image.animate agent={args.agent} frames={args.frames} grid={cols}x{rows} "
+             f"frame_ms={args.frame_ms}")
+        started = time.time()
+        run_dir = stage / "run"
+        text = run_backend(args.agent, animation_prompt(resolved.backend, prompt, staged,
+                                                        args.frames, cols, rows),
+                           stage, run_dir, extra_env=extra)
+        store = artifact_dir(resolved.backend, raw_events(run_dir, args.agent))
+        produced = collect_images(store, started)
+        if not produced:
+            raise MediaError(f"the agent produced no spritesheet (looked in {store})", EXIT_EMPTY)
+        sheet, kind = produced[-1]
+        gif = stage / "animation.gif"
+        assemble_gif(sheet, gif, cols, rows, args.frames, args.frame_ms, args.width)
+        out_dir = Path(args.out_dir).expanduser().resolve()
+        stem = re.sub(r"[^A-Za-z0-9._-]", "-", args.name) if args.name else slug(prompt, "animation")
+        gif_path = place(gif, "gif", out_dir, stem)
+        sheet_path = place(sheet, kind, out_dir, f"{stem}-sheet")
+    manifest = {"operation": "image.animate", "agent": args.agent, "backend": resolved.backend,
+                "model": resolved.model, "frames": args.frames, "frame_ms": args.frame_ms,
+                "grid": f"{cols}x{rows}",
+                "images": [{"path": str(gif_path), "format": "gif",
+                            "bytes": gif_path.stat().st_size, "source": "assembled by porch"},
+                           {"path": str(sheet_path), "format": kind,
+                            "bytes": sheet_path.stat().st_size, "source": str(sheet)}],
+                "agent_note": text.strip()}
+    print(json.dumps(manifest, ensure_ascii=False, indent=2))
+    info(f"saved {gif_path}")
+    return EXIT_OK
+
+
 # ---- capabilities -------------------------------------------------------------
 
 def cmd_capabilities(args: argparse.Namespace) -> int:
-    ops = ("transcribe", "image.describe", "image.generate", "image.edit")
+    ops = ("transcribe", "image.describe", "image.generate", "image.edit", "image.animate")
     table = {op: capable_profiles(op) for op in ops}
     if args.json:
         print(json.dumps(table, indent=2))
@@ -604,6 +717,20 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--out-dir", default=".", help="where to save images (default: .)")
             p.add_argument("--name", help="file name stem (default: derived from the prompt)")
         p.set_defaults(func=cmd_image)
+
+    a = isub.add_parser("animate", parents=[common],
+                        help="create a looping animated GIF (spritesheet assembled by porch)")
+    a.add_argument("prompt", nargs="?")
+    a.add_argument("--prompt-file")
+    a.add_argument("--input", action="append", metavar="IMAGE",
+                   help="reference image for the subject or style (repeatable)")
+    a.add_argument("--frames", type=int, default=8, help="frame count, 2-16 (default 8)")
+    a.add_argument("--frame-ms", type=int, default=150,
+                   help="milliseconds per frame, multiple of 10 (default 150)")
+    a.add_argument("--width", type=int, default=0, help="scale frames to this width in pixels")
+    a.add_argument("--out-dir", default=".", help="where to save the GIF and spritesheet")
+    a.add_argument("--name", help="file name stem (default: derived from the prompt)")
+    a.set_defaults(func=cmd_animate)
 
     c = sub.add_parser("capabilities", help="list profiles per media operation")
     c.add_argument("--json", action="store_true")

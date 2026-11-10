@@ -12,7 +12,7 @@ For example:
 - ask Claude Fable to produce an independent plan;
 - delegate an implementation to Codex, Claude, Grok, OpenCode, Devin, or Antigravity (`agy`);
 - review the same change with several unrelated model families and compare what they find;
-- transcribe a recording with Antigravity, or generate and edit images with Codex or Antigravity (`porch media`).
+- transcribe a recording with Antigravity, or generate, edit and animate (GIF) images with Codex or Antigravity (`porch media`).
 
 Each worker runs through its real coding-agent harness, with access to the tools and repository context appropriate for the selected mode. This is not role-play inside one model.
 

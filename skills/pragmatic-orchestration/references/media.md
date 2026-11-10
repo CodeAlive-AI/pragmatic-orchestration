@@ -13,7 +13,12 @@ inputs, and collects the results itself instead of trusting the agent's claims.
 "$PORCH" media image generate -a codex --aspect 16:9 --out-dir art "A lighthouse at sunset, flat illustration"
 "$PORCH" media image edit -a codex --input photo.png --name night "Turn it into a night scene"
 "$PORCH" media image edit -a agy-gemini-4-argon --input a.png --input b.jpg "Combine both into one panorama"
+"$PORCH" media image animate -a codex --frames 8 --frame-ms 120 --name ball "A red ball bouncing on a wooden floor"
 ```
+
+Write image prompts with the official guidance for the model behind the
+profile: [prompting-gpt-image.md](prompting-gpt-image.md) for Codex and
+[prompting-nano-banana.md](prompting-nano-banana.md) for Antigravity.
 
 ## Support matrix
 
@@ -25,6 +30,7 @@ Verified live on 2026-11-10 (agy 1.5.4, codex-cli 0.167.0, Claude Code 2.1.322).
 | `image describe` | Antigravity, Codex, Claude Code | Images are copied into the staging directory; Codex also gets them as `--image` attachments. |
 | `image generate` | Antigravity, Codex | Codex `image_gen` (`gpt-image-2`, PNG); agy `generate_image` through its image-generator subagent (Gemini image model, JPEG). |
 | `image edit` | Antigravity (≤3 inputs), Codex (≤5 inputs) | One input edits it; several inputs are combined. |
+| `image animate` | Antigravity, Codex (needs ffmpeg) | Looping GIF from a generated spritesheet. |
 
 Grok Build (Imagine) and OpenCode (`image_generate` with a configured image
 provider) also ship image generation, but neither is wired into `porch media`
@@ -76,15 +82,34 @@ boundary can be lost or duplicated. agy's own size limits are undocumented;
   `agent_note`.
 - `describe` prints the answer on stdout.
 
+## Animated GIFs
+
+`image animate` asks the model for one spritesheet — a grid of equal square
+cells with no borders or labels, frames in reading order, a still camera and a
+seamless loop — and Porch assembles the GIF with ffmpeg (`untile`, palette
+generation, infinite loop). Options: `--frames` 2–16 (default 8), `--frame-ms`
+20–2000 in steps of 10 (default 150; GIF delays are centiseconds), `--width`
+to scale frames, `--input` for a reference subject or style, `--out-dir`,
+`--name`. The grid is an exact factor pair of `--frames` when its ratio is at
+most 3:1 (8 → 4×2, 9 → 3×3, 6 → 3×2), otherwise a near-square grid whose last
+cells stay empty (7 → 3×3). The GIF and the spritesheet are both saved and
+listed in the manifest, so a sheet can be re-assembled or edited.
+
+Codex's own animated output (the Images API `gif` format, 2–16 frames) sits
+behind the under-development `image_generation_animation` feature in Codex's
+source and is absent from codex-cli 0.167.0; the spritesheet route works with
+both harnesses today. Expect small frame-to-frame drift: describe a starting
+pose the motion returns to, keep the camera still, and keep motion simple.
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | Done |
 | 2 | Fewer images than `--count` (the produced ones are saved and listed) |
-| 4 | Unknown or incapable profile (the error names capable ones), or ffmpeg missing |
+| 4 | Unknown or incapable profile (the error names capable ones), or ffmpeg missing for transcribe/animate |
 | 5 | Usage error: missing input, too many inputs, not an image, bad `--aspect`/`--count` |
-| 66 | Nothing transcribed or no image produced |
+| 66 | Nothing transcribed, or no image or spritesheet produced |
 | other | The backend run failed; its diagnostics are on stderr |
 
 `--progress full|compact|none` (default `compact`, or `PORCH_PROGRESS`) controls

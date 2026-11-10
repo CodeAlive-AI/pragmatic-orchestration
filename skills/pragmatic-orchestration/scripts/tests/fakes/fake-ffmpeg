@@ -29,6 +29,11 @@ src = argv[argv.index("-i") + 1]
 if not os.path.isfile(src):
     print(f"{src}: No such file or directory", file=sys.stderr)
     sys.exit(1)
+if "-segment_time" not in argv:
+    # GIF assembly from a spritesheet: write a minimal looping GIF.
+    with open(argv[-1], "wb") as f:
+        f.write(b"GIF89a\x01\x00\x01\x00\x00\x00\x00!\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00;")
+    sys.exit(0)
 total = float(os.environ.get("PORCH_FAKE_MEDIA_SECONDS", "5"))
 seg = float(argv[argv.index("-segment_time") + 1])
 pattern = argv[-1]

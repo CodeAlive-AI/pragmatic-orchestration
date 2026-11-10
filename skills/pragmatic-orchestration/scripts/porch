@@ -51,6 +51,7 @@ Usage:
   porch media image describe -a <agent-id> --input IMAGE [--input IMAGE ...] ["question"]
   porch media image generate -a <agent-id> [--count N] [--aspect 16:9] [--out-dir DIR] "prompt"
   porch media image edit -a <agent-id> --input IMAGE [...] [--count N] [--out-dir DIR] "instruction"
+  porch media image animate -a <agent-id> [--frames N] [--frame-ms MS] [--out-dir DIR] "motion"
   porch media capabilities [--json]
   porch quota [all|codex|grok]
   porch fleet probe|status|plan|launch|control|reconcile [options]
@@ -105,12 +106,13 @@ delegate
 media
   Read-only media work through one exact profile; `media capabilities` lists
   which profiles support each operation (transcribe: Antigravity; image
-  describe: Antigravity, Codex, Claude Code; image generate/edit: Antigravity,
-  Codex). transcribe needs ffmpeg: it converts audio or video to MP3/WAV,
-  splits long recordings (--segment-minutes, default 15) and prints the
-  transcript (text, srt, vtt or json) on stdout or to --out. Image generate and
-  edit collect the images the harness's own tool saved for that session, copy
-  them to --out-dir and print a JSON manifest on stdout.
+  describe: Antigravity, Codex, Claude Code; image generate/edit/animate:
+  Antigravity, Codex). transcribe and animate need ffmpeg. transcribe converts
+  audio or video to MP3/WAV, splits long recordings (--segment-minutes,
+  default 15) and prints the transcript (text, srt, vtt or json) on stdout or
+  to --out. Image generate and edit collect the images the harness's own tool
+  saved for that session, copy them to --out-dir and print a JSON manifest on
+  stdout; animate turns one generated spritesheet into a looping GIF.
     Exit: 0 done, 2 fewer images than --count, 4 unsupported profile or
     missing ffmpeg, 5 usage, 66 nothing transcribed or generated.
 

@@ -102,8 +102,8 @@ def media_answer(text: str, argv: List[str], conv: str) -> Any:
                 s["speaker"] = speaker
         return json.dumps({"language": "en", "segments": segs})
     match = re.search(r"call it exactly (\d+) time", text)
-    if "generate_image tool" in text and match:
-        count = int(match.group(1))
+    if "generate_image tool" in text:
+        count = int(match.group(1)) if match else 1
         if media == "none":
             count = 0
         elif media == "short":

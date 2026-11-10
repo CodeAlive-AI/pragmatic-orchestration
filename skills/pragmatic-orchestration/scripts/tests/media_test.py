@@ -67,6 +67,7 @@ class MediaTest(unittest.TestCase):
         self.assertEqual(table["transcribe"], ["agy"])
         self.assertIn("claude-code", table["image.describe"])
         self.assertIn("codex", table["image.generate"])
+        self.assertEqual(sorted(table["image.animate"])[:2], ["agy", "codex"])
         self.assertNotIn("claude-code", table["image.generate"])
         self.assertNotIn("devin", table["image.describe"])
 
@@ -216,6 +217,62 @@ class MediaTest(unittest.TestCase):
         self.assertEqual(badaspect.returncode, 5)
         nocount = self.porch("image", "generate", "-a", "agy", "--count", "9", "x")
         self.assertEqual(nocount.returncode, 5)
+
+    def test_sheet_grid(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("porch_media", TESTS.parent / "lib" / "media.py")
+        media = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(media)
+        self.assertEqual({n: media.sheet_grid(n) for n in (2, 3, 5, 6, 7, 8, 9, 12, 16)},
+                         {2: (2, 1), 3: (3, 1), 5: (3, 2), 6: (3, 2), 7: (3, 3), 8: (4, 2),
+                          9: (3, 3), 12: (4, 3), 16: (4, 4)})
+
+    def test_codex_animate_assembles_gif_from_spritesheet(self):
+        r = self.porch("image", "animate", "-a", "codex", "--frames", "8", "--frame-ms", "150",
+                       "--width", "256", "--name", "ball", "--out-dir", "anim",
+                       "a bouncing ball")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        manifest = json.loads(r.stdout)
+        self.assertEqual((manifest["frames"], manifest["frame_ms"], manifest["grid"]),
+                         (8, 150, "4x2"))
+        gif, sheet = (pathlib.Path(i["path"]) for i in manifest["images"])
+        self.assertEqual((gif.name, sheet.name), ("ball-1.gif", "ball-sheet-1.png"))
+        self.assertTrue(gif.read_bytes().startswith(b"GIF89a"))
+        prompt = [x for x in self.rows() if x.get("bin") == "codex"][0]["stdin"]
+        self.assertIn("4 columns × 2 rows", prompt)
+        self.assertIn("Aspect ratio: 2:1.", prompt)
+        self.assertIn("Animation: a bouncing ball", prompt)
+        ffmpeg = [x for x in self.rows() if x.get("bin") == "ffmpeg" and "-final_delay" in x["argv"]][0]
+        argv = ffmpeg["argv"]
+        graph = argv[argv.index("-vf") + 1]
+        for part in ("format=rgb24", "untile=4x2", "trim=end_frame=8", "setpts=N*0.15/TB",
+                     "scale=256:-2", "paletteuse"):
+            self.assertIn(part, graph)
+        self.assertEqual(argv[argv.index("-final_delay") + 1], "15")
+        self.assertEqual(argv[argv.index("-loop") + 1], "0")
+
+    def test_agy_animate_with_reference_and_validation(self):
+        img = self.image()
+        r = self.porch("image", "animate", "-a", "agy", "--frames", "7", "--input", img,
+                       "a waving flag")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        prompt = [x for x in self.rows() if x.get("event") == "stdin_prompt"][0]["text"]
+        self.assertIn("Leave the last 2 cells plain empty background.", prompt)
+        self.assertIn("./image-1.png", prompt)
+        for args, code in ((["--frames", "1"], 5), (["--frames", "17"], 5),
+                           (["--frame-ms", "155"], 5), (["--width", "4"], 5)):
+            bad = self.porch("image", "animate", "-a", "agy", *args, "x")
+            self.assertEqual(bad.returncode, code, (args, bad.stderr))
+        claude = self.porch("image", "animate", "-a", "claude-code", "x")
+        self.assertEqual(claude.returncode, 4)
+        none = self.porch("image", "animate", "-a", "codex", "x", PORCH_FAKE_CODEX_MEDIA="none")
+        self.assertEqual(none.returncode, 66)
+        launches = len([x for x in self.rows() if x.get("bin") == "codex"])
+        noff = self.porch("image", "animate", "-a", "codex", "x",
+                          PORCH_BIN_FFMPEG=str(self.tmp / "missing"))
+        self.assertEqual(noff.returncode, 4)
+        self.assertEqual(len([x for x in self.rows() if x.get("bin") == "codex"]), launches,
+                         "a missing ffmpeg must fail before spending a generation")
 
     def test_describe_backends(self):
         img = self.image()

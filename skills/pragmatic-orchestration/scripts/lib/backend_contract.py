@@ -258,6 +258,7 @@ _BACKEND_CAPS: Dict[str, BackendCapabilities] = {
 # (2026-11-10: agy 1.5.4, codex-cli 0.167.0, Claude Code 2.1.322). Limits:
 # max_inputs = reference images per call, max_count = images per request.
 # Codex image_gen accepts up to 5 references; agy's generate_image up to 3.
+# image.animate renders a spritesheet that porch assembles into a GIF.
 # Codex cannot hear audio, Claude Code has no image generator, and agy hears
 # WAV/MP3 only (porch media converts every input to one of those).
 _MEDIA_OPERATIONS: Dict[str, Dict[str, Dict[str, int]]] = {
@@ -266,11 +267,13 @@ _MEDIA_OPERATIONS: Dict[str, Dict[str, Dict[str, int]]] = {
         "image.describe": {"max_inputs": 10},
         "image.generate": {"max_count": 4},
         "image.edit": {"max_inputs": 3, "max_count": 4},
+        "image.animate": {"max_inputs": 3},
     },
     "codex-cli": {
         "image.describe": {"max_inputs": 10},
         "image.generate": {"max_count": 4},
         "image.edit": {"max_inputs": 5, "max_count": 4},
+        "image.animate": {"max_inputs": 5},
     },
     "claude-code": {
         "image.describe": {"max_inputs": 10},

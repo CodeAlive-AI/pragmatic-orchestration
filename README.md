@@ -15,7 +15,7 @@ The repo ships two skills in the Agent Skills layout: `pragmatic-orchestration` 
 - **sessions** — search and navigate local coding-agent session histories. Its
   format research draws on [Agent Sessions](https://github.com/jazzyalex/agent-sessions);
   see the [supported formats and evidence](skills/pragmatic-orchestration/references/session-compatibility.md).
-- **media** — transcribe audio/video (Antigravity) and generate, edit, combine or describe images (Codex, Antigravity; description also Claude Code), read-only, with results collected into your output directory.
+- **media** — transcribe audio/video (Antigravity) and generate, edit, combine, animate (GIF) or describe images (Codex, Antigravity; description also Claude Code), read-only, with results collected into your output directory.
 - **quota** — read remaining Codex / Grok subscription quota.
 
 Supported worker harnesses: Codex CLI, Claude Code, OpenCode, Grok Build, Devin CLI, Antigravity CLI (`agy`), and Gemini CLI (review only).

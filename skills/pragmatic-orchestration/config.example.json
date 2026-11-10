@@ -103,6 +103,14 @@
       "role": "lateral",
       "label": "Antigravity Gemini 4 Argon High"
     },
+    "agy-gemini-4-carbon": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-carbon",
+      "effort": "high",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Carbon High (limited access)"
+    },
     "agy-gemini-3.8-flash": {
       "enabled": false,
       "backend": "antigravity-cli",

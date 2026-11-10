@@ -122,6 +122,18 @@ a suffixed id also works as `model` with an empty `effort`. Gemini 4 Argon needs
 a paid Google AI plan; Gemini 3.8 Flash is on every plan. An unknown model or
 thinking level fails the launch instead of falling back to the account default.
 
+The opt-in `agy-gemini-4-carbon` profile targets Gemini 4 Carbon, announced
+on 2026-10-28 ([Google](https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-carbon/))
+and so far available only to selected cyber defenders through Google's
+Fairwind Program. Google has published no API id; `gemini-4-carbon` is the id
+in the model list of Antigravity's own ACP server builds and matches the Argon
+scheme, so the profile uses it with `high` effort. Until an account has
+access, agy rejects it — "not recognized as a known model" (reported as
+"--effort is not supported" while effort is set) or ACP `Unknown model ID` —
+and the run fails instead of falling back. Once access arrives, check
+`agy models`: if Carbon is listed only with suffixed ids, set `model` to that
+exact id and `effort` to an empty string (or use `AGY_MODEL`/`AGY_EFFORT`).
+
 - Review and `--one-shot` delegate use headless stream-json in both directions
   (`agy --input-format stream-json --output-format stream-json`): the prompt is
   one stdin message, never argv, and only a terminal `result` with status

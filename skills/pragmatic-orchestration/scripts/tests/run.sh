@@ -142,6 +142,8 @@ assert_contains "Devin Gemini 4 Argon is selectable but disabled by default" "$o
   'id="devin-gemini-4-argon" label="Devin Gemini 4 Argon High" backend="devin-cli" model="gemini-4-argon-high" role="lateral" enabled="false"'
 assert_contains "Antigravity Gemini 4 Argon is selectable but disabled by default" "$out" \
   'id="agy-gemini-4-argon" label="Antigravity Gemini 4 Argon High" backend="antigravity-cli" model="gemini-4-argon" role="lateral" enabled="false"'
+assert_contains "Antigravity Gemini 4 Carbon is opt-in for accounts with access" "$out" \
+  'id="agy-gemini-4-carbon" label="Antigravity Gemini 4 Carbon High (limited access)" backend="antigravity-cli" model="gemini-4-carbon" role="lateral" enabled="false"'
 assert_contains "Antigravity Gemini 3.8 Flash is selectable but disabled by default" "$out" \
   'id="agy-gemini-3.8-flash" label="Antigravity Gemini 3.8 Flash High" backend="antigravity-cli" model="gemini-3.8-flash" role="lateral" enabled="false"'
 assert_contains "Codex Luna is enabled by default" "$out" \
@@ -565,7 +567,7 @@ assert_eq "devin delegate uses bypass mode" "$devin_del_check" "ok"
 
 # Antigravity CLI one-shot: headless stream-json both ways, prompt on stdin.
 # Review adds session-only deny rules that agy enforces over user allow rules.
-for spec in 'agy-gemini-4-argon gemini-4-argon' 'agy-gemini-3.8-flash gemini-3.8-flash'; do
+for spec in 'agy-gemini-4-argon gemini-4-argon' 'agy-gemini-4-carbon gemini-4-carbon' 'agy-gemini-3.8-flash gemini-3.8-flash'; do
   read -r profile model <<< "$spec"
   for mode in review delegate; do
     env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/$profile-$mode.json" \

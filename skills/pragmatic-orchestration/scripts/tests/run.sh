@@ -141,7 +141,7 @@ assert_contains "Devin Gemini 4 Argon is selectable but disabled by default" "$o
 assert_contains "Codex Luna is enabled by default" "$out" \
   'id="codex-gpt-6-luna" label="Codex GPT-6 Luna" backend="codex-cli" model="gpt-6-luna" role="analyst" enabled="true"'
 assert_contains "Claude Fable remains selectable but disabled by default" "$out" \
-  'id="claude-fable" label="Claude Fable 5.1" backend="claude-code" model="claude-fable-5-1" role="analyst" enabled="false"'
+  'id="claude-fable" label="Claude Fable 5.2" backend="claude-code" model="claude-fable-5-2" role="analyst" enabled="false"'
 assert_contains "Gemini 4 Argon Contributor is selectable but disabled by default" "$out" \
   'id="opencode-go-gemini-4-argon-contributor" label="OC-Go Gemini 4 Argon Contributor" backend="opencode" model="opencode-go/gemini-4-argon-contributor" role="lateral" enabled="false"'
 assert_contains "Muse Spark 1.3 Contributor is selectable but disabled by default" "$out" \
@@ -210,11 +210,13 @@ for mode in review delegate; do
   assert_contains "Devin Gemini 4 Argon $mode uses high model id" "$argv" "--model gemini-4-argon-high"
 done
 
-env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/fable51-review.json" \
-  "$LIB_DIR/backend_run.sh" --mode review --agent-id claude-fable --raw "hello" >/dev/null
-argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/fable51-review.json"'"))["argv"]))')
-assert_contains "Claude production profile launches Fable 5.1" "$argv" "--model claude-fable-5-1"
-assert_contains "Claude Fable 5.1 production profile uses high effort" "$argv" "--effort high"
+for mode in review delegate; do
+  env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/fable52-$mode.json" \
+    "$LIB_DIR/backend_run.sh" --mode "$mode" --agent-id claude-fable --raw "hello" >/dev/null
+  argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/fable52-$mode.json")
+  assert_contains "Claude $mode launches Fable 5.2" "$argv" "--model claude-fable-5-2"
+  assert_contains "Claude Fable 5.2 $mode uses high effort" "$argv" "--effort high"
+done
 
 env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/muse-spark-review.json" \
   "$LIB_DIR/backend_run.sh" --mode review --agent-id opencode-go-muse-spark-1.3-contributor --raw "hello" >/dev/null

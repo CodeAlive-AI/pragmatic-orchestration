@@ -120,7 +120,7 @@ scripts/porch review ask --progress compact -a codex-gpt-6-astra \
 Claude Code defaults to `claude-opus` (Opus 5.5, `medium` effort).
 Fable remains available by explicitly selecting `-a claude-fable`.
 
-### Ask Claude Fable 5.1 for a plan
+### Ask Claude Fable 5.2 for a plan
 
 ```bash
 scripts/porch review ask -a claude-fable \

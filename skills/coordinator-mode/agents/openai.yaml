@@ -1,0 +1,6 @@
+interface:
+  display_name: "Coordinator Mode"
+  short_description: "Plan, design verification, delegate to cheaper executors, and keep a journal that survives compaction"
+  default_prompt: "Use $coordinator-mode for this session: plan and design, delegate implementation to executors, accept results on evidence, and keep the journal current."
+policy:
+  allow_implicit_invocation: false

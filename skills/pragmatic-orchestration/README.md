@@ -139,6 +139,8 @@ scripts/porch delegate -a codex --name add-cache \
 
 `delegate` runs exactly one explicitly selected agent in the current directory and is steerable by default. It has no sandbox or approval prompts, so use it only when you intend to give that agent full control of the repository. Use `--one-shot` for the legacy direct execution path.
 
+Every new task is prefixed with a short executor contract (`prompts/delegate-executor.txt`): the assignment sets the worker's scope and authority, project-wide ownership granted by `AGENTS.md` belongs to the caller, out-of-scope findings go into the report, and checks are not weakened. The contract is a prompt, not a sandbox. Steering messages and `--continue-run` follow-ups are sent as written.
+
 When delegating to a less capable model, the calling agent must provide a precise
 task contract, anticipate task-specific pitfalls, and request a deviation journal
 at `docs/tmp/{yyyy.MM.dd}_{task-name}_deviations.md` with a concrete date and task

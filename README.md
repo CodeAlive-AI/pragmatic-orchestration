@@ -8,7 +8,7 @@
 
 In field use, frontier models such as Astra and Fable cover roughly 2–10× more work with practically no loss of quality when they orchestrate and cheaper executors implement. The best fit is autonomous work lasting hours or days, producing tens to hundreds of thousands of lines of code.
 
-The repo ships two skills in the Agent Skills layout: `pragmatic-orchestration` and `remote-agents`. `porch` provides five modes:
+The repo ships three skills in the Agent Skills layout: `pragmatic-orchestration`, `coordinator-mode` and `remote-agents`. `porch` provides five modes:
 
 - **review** — independent opinions or multi-depth code review from several model families at once (read-only).
 - **delegate** — hand a task to one exact agent: steerable by default, detachable, with `wait` / `watch` / `events` / `list` to supervise long-running work (full-access runtime).
@@ -42,11 +42,24 @@ These combinations come from field use.
 
 For planning, use Astra medium+ or Fable, guided by the `code-that-fits-in-your-head` skill (`~/.claude/skills/code-that-fits-in-your-head/SKILL.md`). Having the orchestrator and planner consult each other works well.
 
+## Coordinator Mode
+
+`coordinator-mode` turns a session into a long-lived coordinator: a frontier model that plans, derives invariants, designs verification, hands implementation to cheaper executors and accepts their results on evidence. It is built to stay in that role for days or weeks.
+
+- **Two roles.** The coordinator owns the engineering quality of the codebase; an executor owns one assignment. `porch delegate` tells every worker so, which keeps "you own this codebase" passages in `AGENTS.md` from widening a worker's scope.
+- **Judgment, not prohibitions.** Delegation is the default because of cost and focus. Nothing is forbidden: the coordinator steps in itself when that is plainly better for the project.
+- **A journal.** Goal, decisions, verification plan, workers and the next action live in one Markdown file outside the project, or inside the plan file when you ask for that.
+- **Compaction-proof.** After every context compaction the coordinator rereads the skill and the journal. An optional hook puts the reminder back automatically.
+- **Verification by design.** The coordinator decides which scenarios are checked, at which level (unit, integration, contract, end-to-end) and what counts as evidence. Executors write and run the tests.
+
+Turn it on explicitly: `/coordinator-mode` in Claude Code, `$coordinator-mode` in Codex. See [skills/coordinator-mode/SKILL.md](skills/coordinator-mode/SKILL.md).
+
 ## Delegation discipline
 
 [references/delegate.md](skills/pragmatic-orchestration/references/delegate.md) collects the practices that address common subagent delegation failures:
 
 - Write a precise task contract: purpose, exact working root, scope, compatibility constraints, anticipated pitfalls, acceptance criteria, and required checks.
+- Every delegated worker is an executor. `porch delegate` prefixes each new task with a short contract: the assignment sets the scope, out-of-scope findings go into the report, and checks are not weakened.
 - Check every worker within its first minute. Inspect actual actions and findings, then adapt supervision to risk and progress; 5–15 minutes is the suggested follow-up interval.
 - Require a deviation journal when delegating to a less capable model. Record unexpected findings, evidence, actions, and unresolved risks. Read-only workers return it in their final answer.
 - Do not retry blindly. Inspect events and partial work, send only new guidance, and confirm a writer has stopped before assigning overlapping work to a replacement.
@@ -54,7 +67,7 @@ For planning, use Astra medium+ or Fable, guided by the `code-that-fits-in-your-
 
 ## Orchestration tips
 
-- Have the orchestrator keep its plan and progress in a Markdown file so context compaction cannot erase them.
+- For long work, turn on `coordinator-mode`: the orchestrator keeps its plan and progress in a journal, so context compaction cannot erase them.
 - In Codex, use a cron reminder every 15–30 minutes. `goal` consumes quota quickly.
 - Periodically ask whether enough work is running in parallel. Put that question in the cron description or install a hook to prompt it.
 - With Claude Code as orchestrator, cap context at about 300k tokens with `/autocompact 300000` to limit context rot. Keep updating the progress file.
@@ -66,6 +79,7 @@ For planning, use Astra medium+ or Fable, guided by the `code-that-fits-in-your-
 
 ```bash
 npx skills add CodeAlive-AI/pragmatic-orchestration@pragmatic-orchestration
+npx skills add CodeAlive-AI/pragmatic-orchestration@coordinator-mode
 claude plugin marketplace add CodeAlive-AI/pragmatic-orchestration && claude plugin install pragmatic-orchestration@pragmatic-orchestration
 ```
 

@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'skills/pragmatic-orchestration/**'
+      - 'skills/coordinator-mode/**'
       - '.github/workflows/porch-smoke.yml'
   push:
     branches: [main]
     paths:
       - 'skills/pragmatic-orchestration/**'
+      - 'skills/coordinator-mode/**'
       - '.github/workflows/porch-smoke.yml'
   workflow_dispatch:
 
@@ -71,6 +73,25 @@ jobs:
       - name: Full offline regression suite
         if: runner.os != 'Windows'
         run: bash scripts/tests/run.sh
+
+  coordinator-mode:
+    name: coordinator-mode (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # The helper is plain standard-library Python; Windows is not verified yet.
+        os: [ubuntu-latest, macos-latest]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Coordinator helper tests
+        run: python skills/coordinator-mode/scripts/tests/test_coordinator_mode.py -v
 
   ui:
     name: optional UI

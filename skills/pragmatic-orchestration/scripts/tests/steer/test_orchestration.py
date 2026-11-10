@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -25,6 +26,10 @@ from steer.session import SessionLease
 from steer.supervisor import Supervisor
 from steer.util import atomic_write_json, atomic_write_text
 from steer.waiter import wait_for_any, wait_for_terminal
+
+
+CONTRACT_PATH = PORCH.parents[1] / "prompts" / "delegate-executor.txt"
+CONTRACT = CONTRACT_PATH.read_text(encoding="utf-8")
 
 
 class OrchestrationTests(unittest.TestCase):
@@ -61,6 +66,55 @@ class OrchestrationTests(unittest.TestCase):
     def rpc_calls(self):
         p = self.root / "rpc.jsonl"
         return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+    def turn_texts(self):
+        return [c["params"]["input"][0]["text"] for c in self.rpc_calls() if c["method"] == "turn/start"]
+
+    def test_steerable_task_is_prefixed_with_executor_contract(self):
+        self.assertTrue(CONTRACT.startswith("You are the executor of one delegated assignment."))
+        p = self.cli("-a", "codex", "STEERABLE_TASK")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.turn_texts(), [CONTRACT + "STEERABLE_TASK"])
+
+    def test_detached_task_is_prefixed_and_keeps_task_bytes(self):
+        task = "  LINE_ONE\n\nLINE_TWO\n\n"
+        src = self.root / "task.txt"
+        src.write_text(task, encoding="utf-8")
+        p = self.cli("-a", "codex", "--detach", "--prompt-file", str(src))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        rid = p.stdout.strip()
+        w = self.cli("wait", rid)
+        self.assertEqual(w.returncode, 0, w.stderr)
+        self.assertEqual(self.turn_texts(), [CONTRACT + task])
+
+    def test_one_shot_prompt_is_prefixed_with_executor_contract(self):
+        log = self.root / "oneshot-argv.jsonl"
+        env = dict(self.env, PORCH_BIN_GROK=str(PORCH.parent / "tests" / "fakes" / "fake-grok"),
+                   PORCH_FAKE_ARGV_LOG=str(log), PORCH_FAKE_CAPTURE_PROMPT="1")
+        p = self.cli("-a", "grok", "--one-shot", "ONE_SHOT_TASK", env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        metas = [json.loads(x) for x in log.read_text().splitlines()]
+        bodies = [m["prompt_body"] for m in metas if m.get("bin") == "grok-prompt-meta"]
+        self.assertEqual(len(bodies), 1)
+        self.assertTrue(bodies[0].startswith(CONTRACT.splitlines()[0]))
+        self.assertTrue(bodies[0].endswith("ONE_SHOT_TASK"))
+        self.assertEqual(bodies[0], CONTRACT_PATH.read_text().rstrip("\n") + "\n\nONE_SHOT_TASK")
+
+    def test_missing_contract_is_config_error_and_never_starts_backend(self):
+        copy = self.root / "tree"
+        shutil.copytree(PORCH.parents[1], copy, ignore=shutil.ignore_patterns("tests", ".git", "__pycache__"))
+        (copy / "prompts" / "delegate-executor.txt").unlink()
+        argv_log = self.root / "missing-argv.jsonl"
+        for extra in ([], ["--one-shot"], ["--detach"]):
+            with self.subTest(extra=extra):
+                env = dict(self.env, PORCH_FAKE_ARGV_LOG=str(argv_log),
+                           PORCH_BIN_GROK=str(PORCH.parent / "tests" / "fakes" / "fake-grok"))
+                p = subprocess.run([str(copy / "scripts" / "porch"), "delegate", "-a", "grok", *extra, "TASK"],
+                                   cwd=self.root, env=env, text=True, input="", capture_output=True, timeout=30)
+                self.assertEqual(p.returncode, 4, p.stderr)
+                self.assertIn("delegate-executor.txt", p.stderr)
+        self.assertFalse(argv_log.exists())
+        self.assertFalse(self.rpc_calls())
 
     def test_named_run_ids_carry_agent_and_slug(self):
         rid = self.reg.create_run(agent_id="grok", backend="grok-build", model="test",
@@ -774,7 +828,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(len(resumes), 1)
         self.assertEqual(resumes[0]["params"]["threadId"], old_meta["session_handle"]["thread_id"])
         texts = [c["params"]["input"][0]["text"] for c in calls if c["method"] == "turn/start"]
-        self.assertEqual(texts, ["INITIAL_ONLY", "FOLLOWUP_ONLY"])
+        self.assertEqual(texts, [CONTRACT + "INITIAL_ONLY", "FOLLOWUP_ONLY"])
         third = self.cli("-a", "codex", "--continue-run", successor, "THIRD")
         self.assertEqual(third.returncode, 0, third.stderr)
 
@@ -892,7 +946,7 @@ class OrchestrationTests(unittest.TestCase):
         calls = self.rpc_calls()
         self.assertEqual(len([c for c in calls if c["method"] == "thread/start"]), 1)
         self.assertEqual([c["params"]["input"][0]["text"] for c in calls
-                          if c["method"] == "turn/start"], ["INITIAL_ONLY", "NEW_RECOVERY"])
+                          if c["method"] == "turn/start"], [CONTRACT + "INITIAL_ONLY", "NEW_RECOVERY"])
 
     def test_recovery_keeps_session_coordination_and_identity_checks(self):
         rid = self.start_durable()

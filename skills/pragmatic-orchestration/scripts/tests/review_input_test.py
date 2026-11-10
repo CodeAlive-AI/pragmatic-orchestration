@@ -234,7 +234,8 @@ class PromptBoundaryTests(InputTestCase):
         self.prompt_file.write_text(body, encoding="utf-8")
         self.delegate("--prompt-file", self.prompt_file)
         row = json.loads(self.log.read_text().splitlines()[0])
-        self.assertEqual(row["stdin"], body)
+        contract = (TESTS.parents[1] / "prompts" / "delegate-executor.txt").read_text(encoding="utf-8")
+        self.assertEqual(row["stdin"], contract + body)
 
     def test_delegate_whitespace_file_is_rejected(self):
         self.prompt_file.write_text(" \n\t")

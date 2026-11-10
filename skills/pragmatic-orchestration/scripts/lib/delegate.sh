@@ -132,6 +132,7 @@ Usage:
 
 Full-YOLO delegation to exactly one agent in the current working directory.
 No sandbox, no approval prompts. Gemini is not supported (review-only).
+Every new task is prefixed with the executor contract from prompts/delegate-executor.txt.
 
 Delegate starts a long-lived steerable supervisor by default, with a filesystem
 mailbox for steer / status / cancel. --one-shot selects the legacy direct run.
@@ -229,6 +230,31 @@ fi
 if [[ ! -s "$_del_prompt_tmp" ]] || ! LC_ALL=C grep -q '[^[:space:]]' "$_del_prompt_tmp"; then
     echo "Error: no task prompt provided" >&2
     exit $EXIT_USAGE
+fi
+
+# Every NEW task starts with the executor contract. A --continue-run follow-up
+# goes to a session that already received it with its first task, and
+# `delegate steer` never reaches this code. The caller's bytes follow the
+# contract unchanged; there is no fallback to the raw task.
+if [[ -z "$CONTINUE_RUN" ]]; then
+    _del_contract="$LIB_DIR/../../prompts/delegate-executor.txt"
+    if [[ ! -r "$_del_contract" || ! -s "$_del_contract" ]]; then
+        echo "Error: delegate executor contract missing, unreadable or empty: $_del_contract" >&2
+        exit $EXIT_CONFIG_ERROR
+    fi
+    _del_composed_tmp="$(mktemp "${TMPDIR:-/tmp}/porch-delegate-composed.XXXXXX")"
+    chmod 600 "$_del_composed_tmp"
+    if ! { cat < "$_del_contract" && cat < "$_del_prompt_tmp"; } > "$_del_composed_tmp"; then
+        rm -f "$_del_composed_tmp"
+        echo "Error: failed to compose delegate prompt with $_del_contract" >&2
+        exit $EXIT_CONFIG_ERROR
+    fi
+    # mv keeps the original path, so the EXIT traps keep cleaning it up.
+    if ! mv -f "$_del_composed_tmp" "$_del_prompt_tmp"; then
+        rm -f "$_del_composed_tmp"
+        echo "Error: failed to install composed delegate prompt" >&2
+        exit $EXIT_CONFIG_ERROR
+    fi
 fi
 
 config_validate || exit $EXIT_CONFIG_ERROR

@@ -876,7 +876,8 @@ def test_oneshot_regression(tmp: Path) -> None:
         "oneshot /dev/stdin body delivered",
         any(
             item.get("bin") == "grok-prompt-meta"
-            and item.get("prompt_startswith") == "ONESHOT_FROM_DEV_STDIN"
+            and item.get("prompt_startswith") == "You are the executor of one dele"
+            and item.get("prompt_endswith", "").endswith("---\n\nONESHOT_FROM_DEV_STDIN")
             for item in prompt_meta
         ),
         str(prompt_meta),

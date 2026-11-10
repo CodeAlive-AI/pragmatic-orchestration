@@ -97,7 +97,15 @@ mechanical read-only boundary is required for untrusted repositories.
 framework_policy → mode_contract → role → output_schema → repository_facts → user_input → framework_recap
 ```
 
-Raw delegate tasks remain raw except for optional trusted metadata. In review mode,
+A new delegate task is the executor contract from `prompts/delegate-executor.txt`
+followed by the caller's task, byte for byte; `scripts/lib/delegate.sh` composes
+it once for the steerable, detached and one-shot paths. The contract tells the
+worker that the assignment sets its scope and authority, that project-wide
+ownership or a coordinator role granted by repository instructions belongs to
+the parent, and what the final report must contain. A missing or empty contract
+file is a configuration error; there is no fallback to the raw task.
+`delegate steer` guidance and `--continue-run` follow-ups are sent as written.
+Delegate carries no review policy and no output template. In review mode,
 `--prompt-file` is only an input transport: the read-only, work-alone, and
 blast-radius policies are still layered around its contents. The shell
 `build_prompt` path remains a fallback.

@@ -1,6 +1,6 @@
 # Runtime contracts
 
-Use this reference when diagnosing or changing observability, normalized events, backend capability resolution, access policy, workflow fan-out, prompt composition, artifacts, or run identity.
+Use this reference when diagnosing or changing observability, normalized events, backend capability resolution, access policy, prompt composition, artifacts, or run identity.
 
 ## Contents
 
@@ -19,7 +19,7 @@ Use this reference when diagnosing or changing observability, normalized events,
 | stdout | Clean final answer only |
 | artifacts | Per-run `raw/*.jsonl`, `normalized/*.jsonl`, `final/*.txt`, and `final.txt` under `PORCH_OUTPUT_DIR` or `PORCH_RUN_DIR` |
 
-Artifact keys are per invocation: profile id for ask/delegate, `agent.role` for basic/specialist review, `<stage>.<index>.<agent>.<role>` for super/ultra discovery, and `judge.primary.<agent>` for the judge. Neither review mode substitutes a fallback judge. Fan-out never relies only on inherited `PORCH_ARTIFACT_KEY`.
+Artifact keys are per invocation: the profile ID for review and delegate. Review clears any inherited artifact key.
 
 One-shot architecture remains `backend_cmd | normalize_stream.py --raw-out --progress --extract-text`. Raw lines are persisted and normalized immediately. `PIPESTATUS` preserves backend exit and Grok end/error validation independently.
 
@@ -46,7 +46,7 @@ Live stderr keeps the human vocabulary `thought`, `text`, `end`, and `error`. Fi
 The opt-in tape records bounded, sequence-numbered JSONL across RAW → PARSED → NORMALIZED → RENDERED → FINAL without leaking event bodies onto normal stderr.
 
 ```bash
-PORCH_DEBUG_EVENTS=1 "$PORCH" review ask "Q"
+PORCH_DEBUG_EVENTS=1 "$PORCH" review ask -a grok "Q"
 PORCH_DEBUG_EVENTS_PATH=/tmp/tape.jsonl
 PORCH_DEBUG_EVENTS_MAX=10000
 PORCH_DEBUG_EVENTS_MAX_BYTES=33554432
@@ -88,17 +88,6 @@ they can perform a complete review; for those backends non-mutation is enforced
 by the trusted prompt plus dedicated edit/delegation-tool denials where the CLI
 supports them, not by an OS-level filesystem boundary. Use Codex or Grok when a
 mechanical read-only boundary is required for untrusted repositories.
-
-## Declarative workflow plans
-
-`scripts/lib/workflow_plans.py` describes ask, basic/specialist, super, and ultra stages as data. `workflow_runner.sh` executes reusable fan-out with optional backpressure.
-
-| Setting | Meaning |
-|---|---|
-| `PORCH_MAX_PARALLEL=0` | Unlimited jobs; default and historical behavior |
-| `PORCH_MAX_PARALLEL=N` | At most N ask/discovery/specialist jobs concurrently |
-
-Stage order, partial/all-failed exit semantics, artifact keys, live progress, and independent outputs remain deterministic.
 
 ## Layered prompts
 
@@ -159,7 +148,7 @@ Run ids are human-readable word pairs with a four-hex uniqueness suffix, for exa
 
 ## Resource limits
 
-Porch is unlimited by default: no wrapper timeout, step/token/response budget, or fan-out cap. Prompts use stdin or private temporary files; delegate reads file/stdin sources exactly once; raw/normalized/final outputs stream to disk without truncation. Only the opt-in debug tape is bounded, with explicit overflow reporting.
+Porch is unlimited by default: no wrapper timeout or step/token/response budget. Prompts use stdin or private temporary files; delegate reads file/stdin sources exactly once; raw/normalized/final outputs stream to disk without truncation. Only the opt-in debug tape is bounded, with explicit overflow reporting.
 
 Provider/harness limits still apply. Porch itself never imposes an execution
 deadline; observe long-running work and cancel it explicitly when needed.

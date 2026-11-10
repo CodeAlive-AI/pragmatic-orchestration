@@ -17,7 +17,7 @@ models and enabled profiles may differ from the defaults described below.
 
 | Field | Purpose |
 |---|---|
-| `enabled` | Default participation in `review ask` and the basic review pool |
+| `enabled` | Legacy profile flag; review and delegate select an exact profile explicitly |
 | `backend` | `codex-cli`, `claude-code`, `opencode`, `grok-build`, `gemini-cli`, or `devin-cli` |
 | `model` | Backend model id |
 | `role` | Analyst, lateral, or specialist role |
@@ -112,8 +112,8 @@ Copy this profile into existing user-local configs to select the new id.
 Prefer `--prompt-file`, stdin, or a single-quoted heredoc for prompts containing backticks, `$`, `!`, or quotes. Double-quoted positional prompts are shell-expanded and may accidentally execute substitutions or leave a backend waiting on stdin.
 
 ```bash
-"$PORCH" review ask --prompt-file prompt.md
-"$PORCH" review ask "$(cat <<'EOF'
+"$PORCH" review ask -a grok --prompt-file prompt.md
+"$PORCH" review ask -a grok "$(cat <<'EOF'
 Explain `foo` and $PATH handling.
 EOF
 )"
@@ -136,12 +136,10 @@ must not reinterpret such a path as an instruction to read stdin.
 | Variable | Purpose |
 |---|---|
 | `PORCH_CONFIG` | Alternate profile configuration |
-| `PORCH_AGENTS`, `PORCH_EXCLUDE` | Default inclusion/exclusion selection |
 | `PORCH_PROGRESS` | Review progress: `full`, `compact`, or `none` |
 | `PORCH_OUTPUT_DIR`, `PORCH_RUN_DIR` | Artifact locations |
 | `PORCH_SAVE_OUTPUTS` | Disable ordinary archival with `0`; steerable service artifacts remain |
 | `PORCH_STEER_DIR` | Steerable registry; reuse the same value for every control command |
-| `PORCH_MAX_PARALLEL` | Fan-out concurrency; `0` means unlimited/default |
 | `PORCH_DEBUG_EVENTS*` | Opt-in bounded event tape and its path/record/byte limits |
 | `GEMINI_API_KEY` | Gemini CLI authentication when required |
 

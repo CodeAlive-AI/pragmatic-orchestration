@@ -13,7 +13,7 @@ delegate, steering, backend launchers, and both prompt builders. They cover
 empty/whitespace explicit sources, conflicting sources, empty file-option
 values, stdin-only questions, explicit `--context-stdin` context, and EOF on
 unused stdin for file-based backends. Literal `-` filenames are checked in
-prompt transports and all code-review depths (super/ultra use dry runs).
+prompt transports and single-profile code review.
 Large file prompts guard against slow shell whitespace validation.
 Run them alone with `python3 scripts/tests/review_input_test.py -v` from the skill
 directory. Current-model checks cover the explicit `codex-gpt-6.1-sol` profile

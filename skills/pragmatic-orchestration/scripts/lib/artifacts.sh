@@ -9,22 +9,14 @@
 #     final/<key>.txt          # final text answer per invocation
 #     final.txt                # primary final answer (single-agent or combined)
 #
-# Keys identify the *invocation*, not only the agent id:
-#   - ask / delegate: plain agent id (e.g. "grok") — one shot per agent
-#   - code review (basic/specialists): "agent.role" (e.g. "codex.security")
-#   - multi-stage discovery (super/ultra): explicit fan-out keys of the form
-#     "<stage>.<index>.<agent>.<role>" passed via --artifact-key
-#   - review judge: "judge.primary.<agent>"; fallback keys may appear in older runs
-# Fan-out layers always pass an explicit key. discovery-pass / judge-runner
-# never rely on an ambient inherited PORCH_ARTIFACT_KEY alone — if called
-# without --artifact-key they choose an invocation-unique default.
+# Keys identify the invocation. Review and delegate use the selected profile ID.
 # backend_run uses PORCH_ARTIFACT_KEY when set, else agent id.
 #
 # Env:
 #   PORCH_OUTPUT_DIR  — parent for auto run dirs (default: ${TMPDIR}/pragmatic-orchestration-outputs)
 #   PORCH_RUN_DIR     — if set, use this directory (created if missing)
 #   PORCH_SAVE_OUTPUTS — set 0 to disable (no-op helpers)
-#   PORCH_ARTIFACT_KEY — per-invocation key set by fan-out callers (see backend_run.sh)
+#   PORCH_ARTIFACT_KEY — per-invocation key set by callers (see backend_run.sh)
 
 artifacts_init_run() {
     local mode="${1:-unknown}"
@@ -81,7 +73,7 @@ with open(path, "w") as f:
 
 artifacts_paths_for() {
     # Sets: ART_RAW ART_NORM ART_FINAL for invocation key $1
-    # Key is agent id, agent.role, or a fan-out key (stage.index.agent.role / judge.*).
+    # Key is the profile ID or another explicit caller-supplied invocation key.
     local key="$1"
     local safe
     safe="$(printf '%s' "$key" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_')"

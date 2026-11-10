@@ -4,7 +4,7 @@
 #
 # Modes:
 #   porch review ask  [...]
-#   porch review code --depth basic|specialists|super|ultra [...]
+#   porch review code -a <exact-agent-id> [...]
 #   porch delegate -a <exact-agent-id> [...]
 #   porch delegate wait|watch|events|list [...]
 #   porch quota [all|codex|grok]
@@ -27,11 +27,11 @@ source "$LIB_DIR/progress.sh"
 
 usage() {
     cat <<'EOF'
-porch — multi-agent review and single-agent YOLO delegation
+porch — independent review and single-agent YOLO delegation
 
 Usage:
   porch review ask [options] ["question"]
-  porch review code --depth basic|specialists|super|ultra [options] <file|--diff>
+  porch review code -a <agent-id> [options] <file|--diff>
   porch delegate -a <exact-agent-id> ["task"]
   porch delegate -a <exact-agent-id> --one-shot ["task"]
   porch delegate -a <exact-agent-id> --detach ["task"]
@@ -61,23 +61,15 @@ Usage:
   porch -h | --help
 
 review ask
-  Fan-out independent opinions across enabled (or selected) agents. Read-only.
-  Every agent's answer is returned separately — this skill never synthesizes a
-  verdict; the calling agent is the judge.
-  Options: --xml, --list-agents, --prompt-file, --context-stdin, -a/--agents, -x/--exclude,
+  Ask exactly one explicitly selected profile for an independent review.
+  Options: --xml, --list-agents, --prompt-file, --context-stdin, -a/--agent,
            --progress full|compact|none
 
 review code
-  Structured code review. Always read-only.
-  --depth basic         2 specialists: security + correctness (default)
-  --depth specialists   5 specialists
-  --depth super         multi-stage superreview + judge
-  --depth ultra         multi-stage ultrareview + judge
-  Other options: --xml, --diff, --related FILE (repeatable), -a/--agents,
-                 -x/--exclude, --dry-run (super/ultra),
-                 --judge, --no-fallback (ultra compatibility), --progress full|compact|none
+  One independent code review. Options: -a ID, --xml, --diff,
+  --related FILE (repeatable), --progress full|compact|none.
 
-Live progress (all review depths)
+Live progress (review)
   full (default)  per-agent thinking / answer previews on stderr, keyed by the
                   invocation (agent, agent.role, stage.index.agent.role) so
                   parallel passes of the same agent stay distinguishable
@@ -167,49 +159,7 @@ case "$1" in
                 exec bash "$LIB_DIR/review_ask.sh" "$@"
                 ;;
             code)
-                # Parse --depth early to route super/ultra pipelines
-                DEPTH="${PORCH_REVIEW_MODE:-basic}"
-                FORWARD=()
-                while [[ $# -gt 0 ]]; do
-                    case "$1" in
-                        --depth)
-                            DEPTH="${2:-}"
-                            shift 2
-                            ;;
-                        --depth=*)
-                            DEPTH="${1#--depth=}"
-                            shift
-                            ;;
-                        --mode)
-                            # accept legacy --mode as alias of --depth
-                            DEPTH="${2:-}"
-                            shift 2
-                            ;;
-                        --mode=*)
-                            DEPTH="${1#--mode=}"
-                            shift
-                            ;;
-                        *)
-                            FORWARD+=("$1")
-                            shift
-                            ;;
-                    esac
-                done
-                case "$DEPTH" in
-                    basic|specialists)
-                        exec bash "$LIB_DIR/review_code.sh" --depth "$DEPTH" "${FORWARD[@]+"${FORWARD[@]}"}"
-                        ;;
-                    super)
-                        exec bash "$LIB_DIR/review_super.sh" "${FORWARD[@]+"${FORWARD[@]}"}"
-                        ;;
-                    ultra)
-                        exec bash "$LIB_DIR/review_ultra.sh" "${FORWARD[@]+"${FORWARD[@]}"}"
-                        ;;
-                    *)
-                        echo "Error: --depth must be basic|specialists|super|ultra (got: $DEPTH)" >&2
-                        exit $EXIT_USAGE
-                        ;;
-                esac
+                exec bash "$LIB_DIR/review_code.sh" "$@"
                 ;;
             *)
                 echo "Error: unknown review subcommand: $sub (expected ask|code)" >&2

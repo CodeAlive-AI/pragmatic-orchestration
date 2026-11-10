@@ -120,6 +120,38 @@ class ReviewInputTests(InputTestCase):
         self.assertNotIn("UNREQUESTED_CONTEXT", prompt)
 
 
+class SingleReviewTests(InputTestCase):
+    def test_rejects_missing_multiple_and_wildcard_profiles_before_launch(self):
+        for args in ([], ["-a", "codex,grok"], ["-a", "codex", "-a", "grok"], ["-a", "*"]):
+            with self.subTest(args=args):
+                self.command([PORCH, "review", "ask", *args, "question"], expected=5)
+        self.assertFalse(self.log.exists())
+
+    def test_code_review_sends_one_request_with_input_and_seed(self):
+        code = self.root / "source.py"
+        related = self.root / "test_source.py"
+        code.write_text("SOURCE_SENTINEL")
+        related.write_text("test")
+        self.command([PORCH, "review", "code", "-a", "codex", "--related", related, code])
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("SOURCE_SENTINEL", rows[0]["stdin"])
+        self.assertIn(str(related), rows[0]["stdin"])
+        self.assertIn("READ-ONLY REVIEW", rows[0]["stdin"])
+        self.assertIn("WORK ALONE", rows[0]["stdin"])
+
+    def test_diff_sends_one_request(self):
+        self.command([PORCH, "review", "code", "-a", "codex", "--diff"], input="+DIFF_SENTINEL")
+        rows = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("+DIFF_SENTINEL", rows[0]["stdin"])
+
+    def test_removed_depth_and_empty_diff_fail_before_launch(self):
+        self.command([PORCH, "review", "code", "-a", "codex", "--depth", "super"], expected=5)
+        self.command([PORCH, "review", "code", "-a", "codex", "--diff"], input="", expected=5)
+        self.assertFalse(self.log.exists())
+
+
 class PromptBoundaryTests(InputTestCase):
     def backend(self, *args, **kwargs):
         return self.command(
@@ -175,13 +207,9 @@ class PromptBoundaryTests(InputTestCase):
 
     def test_code_review_file_modes_do_not_treat_dash_filename_as_stdin(self):
         (self.root / "-").write_text("print('literal input')\n")
-        for depth in ("basic", "specialists", "super", "ultra"):
-            argv = [PORCH, "review", "code", "--depth", depth]
-            if depth in ("super", "ultra"):
-                self.env["PORCH_CONFIG"] = str(TESTS.parents[1] / "config.example.json")
-            argv += ["--dry-run"] if depth in ("super", "ultra") else ["-a", "codex"]
-            with self.subTest(depth=depth):
-                self.command([*argv, "--", "-"])
+        self.command([PORCH, "review", "code", "-a", "codex", "--", "-"])
+        row = json.loads(self.log.read_text().splitlines()[-1])
+        self.assertIn("print('literal input')", row["stdin"])
 
     def test_large_file_prompts_do_not_stall_during_validation(self):
         body = "BEGIN_LARGE_PROMPT\n" + " " * 131072 + "\nEND_LARGE_PROMPT"

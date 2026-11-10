@@ -37,27 +37,21 @@ assert_matches() {
   fi
 }
 
-out=$("$PORCH" review ask --progress bogus "q" 2>&1) && rc=0 || rc=$?
+out=$("$PORCH" review ask -a codex --progress bogus "q" 2>&1) && rc=0 || rc=$?
 assert_eq "ask rejects unknown --progress" "$rc" "5"
 assert_contains "ask --progress error names the values" "$out" "full, compact, or none"
 
-out=$("$PORCH" review code --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
+out=$("$PORCH" review code -a codex --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
 assert_eq "code rejects unknown --progress" "$rc" "5"
-
-out=$("$PORCH" review code --depth super --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
-assert_eq "super rejects unknown --progress" "$rc" "5"
-
-out=$("$PORCH" review code --depth ultra --progress bogus "$PSRC" 2>&1) && rc=0 || rc=$?
-assert_eq "ultra rejects unknown --progress" "$rc" "5"
 
 out=$("$PORCH" review ask --help 2>&1) || true
 assert_contains "ask help documents --progress" "$out" "--progress full|compact|none"
 
 out=$("$PORCH" review code --help 2>&1) || true
-assert_contains "code help documents --progress" "$out" "--progress <full|compact|none>"
+assert_contains "code help documents --progress" "$out" "--progress STYLE"
 
 out=$("$PORCH" --help 2>&1) || true
-assert_contains "top-level help documents progress styles" "$out" "Live progress (all review depths)"
+assert_contains "top-level help documents progress styles" "$out" "Live progress (review)"
 assert_contains "top-level help names PORCH_PROGRESS" "$out" "PORCH_PROGRESS"
 
 echo "=== review progress: styles ==="
@@ -88,19 +82,16 @@ PORCH_PROGRESS=none "$PORCH" review ask -a codex "explain" >/dev/null 2>"$PT/env
 assert_eq "PORCH_PROGRESS=none is honored" "$(wc -c < "$PT/env.err" | tr -d ' ')" "0"
 
 # Silence must not swallow the report itself, nor real failures.
-"$PORCH" review code --depth basic --progress none -a codex "$PSRC" >"$PT/code-none.out" 2>"$PT/code-none.err" || true
+"$PORCH" review code --progress none -a codex "$PSRC" >"$PT/code-none.out" 2>"$PT/code-none.err" || true
 assert_eq "code none is silent on stderr" "$(wc -c < "$PT/code-none.err" | tr -d ' ')" "0"
 assert_file "code none still reports on stdout" "$PT/code-none.out"
 
 echo "=== review progress: per-invocation identity ==="
 
-# Code review runs one agent per role. Progress must name the role, otherwise
-# two concurrent passes of the same agent are indistinguishable on stderr.
-"$PORCH" review code --depth basic -a codex "$PSRC" >/dev/null 2>"$PT/code.err" || true
+# Code review uses the same single-agent progress identity.
+"$PORCH" review code -a codex "$PSRC" >/dev/null 2>"$PT/code.err" || true
 code_err="$(cat "$PT/code.err")"
-assert_contains "code progress keys the security pass" "$code_err" "agent=codex.security"
-assert_contains "code progress keys the correctness pass" "$code_err" "agent=codex.correctness"
-assert_contains "code progress reports per-pass completion" "$code_err" "done agent=codex.security"
+assert_contains "code progress keys the selected profile" "$code_err" "agent=codex"
 
 # ask has no per-role fan-out: the plain agent id stays the key.
 assert_not_contains "ask progress keeps the plain agent id" "$full_err" "agent=codex."

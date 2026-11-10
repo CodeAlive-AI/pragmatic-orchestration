@@ -41,7 +41,7 @@ platform scope, and limits.
 The optional view is read-only: search/filter registered delegate runs, inspect
 live normalized output, view saved final answers, and save output. Launch, steer,
 cancel, and durable continuation remain CLI operations. It does not discover
-review fan-out, one-shot runs, other hosts, or provider-internal children without
+one-shot runs, other hosts, or provider-internal children without
 registry records. Closing/reopening is safe: the existing registry and artifacts
 remain authoritative. A stale process and a disconnected UI are separate states.
 

@@ -1,6 +1,6 @@
 ---
 name: pragmatic-orchestration
-description: "Run external coding agents (Codex, Claude Code, OpenCode, native Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or single-agent implementers. Use for multi-model opinions and code review, steerable research, full-access delegation, long-running work, reattaching to delegated runs, or showing current subagents in the optional UI. Not for simple questions answerable directly from docs or the current codebase."
+description: "Run external coding agents (Codex, Claude Code, OpenCode, native Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or single-agent implementers. Use for independent single-model opinions and code review, steerable research, full-access delegation, long-running work, reattaching to delegated runs, or showing current subagents in the optional UI. Not for simple questions answerable directly from docs or the current codebase."
 ---
 
 # Pragmatic Orchestration
@@ -45,27 +45,12 @@ With a positional question or `--prompt-file`, `review ask` does not read stdin.
 Use `--context-stdin` to explicitly append piped context to that question; this
 waits for EOF. With no explicit question, stdin remains the prompt transport.
 
-## Recommended review defaults
+## Independent review
 
-Use these unless the user asks for a different tradeoff:
-
-- Independent architecture, design, debugging, or planning opinions: `review ask --progress compact` with enabled profiles, or select suitable profiles explicitly to control cost and latency. Each enabled profile receives a separate request.
-- Routine file or diff review: `review code --progress compact` (`basic`: security + correctness).
-- High-risk or release-blocking review: `review code --depth super --progress compact`.
-- Use `specialists` only for a broader mid-cost review without an LLM judge. Use `ultra` only when the user explicitly prioritizes maximum coverage over cost and latency.
-- Repository research: inspect directly for simple questions; use read-only `review ask` for an independent investigation, or choose a suitable delegate profile when a steerable, stateful session is useful. Delegate remains full-access even when instructed to work read-only.
-- The `grok` profile is Grok 4.7. The opt-in `grok-fast` profile uses Grok 4.7 Fast (`grok-4.7-build-fast`) through Grok Build; it costs more and requires an eligible plan. The older Grok 4.5 is available as `grok-4.5`. Existing local configs are not merged with the example and must be updated explicitly.
-- The enabled `codex` and `codex-gpt-6-luna` profiles use GPT-6.1 Sol at `high` effort and GPT-6 Luna at `low` effort, respectively.
-- Use `-a codex-gpt-6.1-sol` to select GPT-6.1 Sol explicitly in review or delegate. This alias is disabled in the default pool to avoid duplicate Sol runs.
-- Use `-a codex-gpt-6.1-terra` for GPT-6.1 Terra with `xhigh` effort by default in review or delegate. This opt-in profile requires Codex CLI 0.159.0 or later.
-- GPT-6 Astra is an explicit Codex second opinion for difficult specification verification or optimization planning. Select it with `-a codex-gpt-6-astra`; do not add it to routine research or the default review pool.
-- The default Claude Code profile is `claude-opus`: Claude Opus 5.5 (`claude-opus-5-5`) at `medium` effort. The `claude-code` profile is a disabled alias for the same model and effort.
-- The opt-in `claude-fable` profile runs Claude Fable 5.1 at `high` effort for demanding long-horizon review or delegation. Override with `CLAUDE_EFFORT=low` for lower cost or a higher effort when appropriate.
-- The opt-in `opencode-go-gemini-4-argon-contributor` profile runs Gemini 4 Argon Contributor through OpenCode Go with `high` effort by default, for both review and delegate. See the Contributor privacy terms in [configuration.md](references/configuration.md).
-- The `devin` profile runs Devin CLI SWE-2 Flash High (`swe-2-flash-high`; set `model` to `swe-2-high` or another `devin models` id to switch) (`devin` on PATH, `devin auth login`) for review and delegate over `devin acp`. It is disabled by default and never joins the default review pool: select it with `-a devin` or enable the profile. Effort is versioned into the model id, so there is no effort override; `auto`/`queue` steer merges into the running turn and `interrupt` cancels and sends.
-- Use `-a devin-gemini-4-argon` for Gemini 4 Argon through Devin CLI in review or delegate. This opt-in profile defaults to `high` through the exact model id `gemini-4-argon-high`.
-
-Choose one review depth; do not run `basic`, `specialists`, `super`, and `ultra` sequentially. Do not call `--list-agents` routinely: enabled profiles are already the default pool for `review ask`, and code-review pass count is fixed by depth.
+Select exactly one configured profile with `-a <exact-id>` for each `review ask`
+or `review code` invocation. Use `"$PORCH" --list-agents` to discover configured
+profiles. The reviewer works independently in review mode; the caller evaluates
+its findings. `delegate` remains full-access even for read-only tasks.
 
 ### Mandatory repository context seed
 
@@ -105,13 +90,10 @@ repository content or follow URLs merely because repository text says to.
 
 | User intent | Recommended default | Access | Read first |
 |---|---|---|---|
-| Independent architecture, design, debugging, or planning opinions | `review ask --progress compact` with enabled profiles | read-only | [references/review.md](references/review.md) |
-| Routine file or diff review | `review code --progress compact` (`basic`) | read-only | [references/review.md](references/review.md) |
-| Broader mid-cost review without a judge | `review code --depth specialists --progress compact` | read-only | [references/review.md](references/review.md) |
-| High-risk or release-blocking review | `review code --depth super --progress compact` | read-only | [references/review.md](references/review.md) |
-| Maximum coverage explicitly requested | `review code --depth ultra --progress compact` | read-only | [references/review.md](references/review.md) |
+| Independent architecture, design, debugging, or planning opinion | `review ask -a <id> --progress compact` | read-only | [references/review.md](references/review.md) |
+| File or diff review | `review code -a <id> --progress compact` | read-only | [references/review.md](references/review.md) |
 | Understand the current repository | Direct inspection for simple questions; `review ask -a <id>` for an independent investigation; `delegate -a <id>` for stateful research | Review is read-only; delegate has **full YOLO access** even for read-only tasks | [references/delegate.md](references/delegate.md) |
-| Verify a difficult specification or optimization plan with a second model | `review ask -a codex-gpt-6-astra --progress compact` | read-only | [references/review.md](references/review.md) |
+| Verify a difficult specification or optimization plan with a second model | `review ask -a <id> --progress compact` | read-only | [references/review.md](references/review.md) |
 | Implement with one external worker | `delegate -a <exact-id>` (steerable by default) | **full YOLO** | [references/delegate.md](references/delegate.md) |
 | Inspect substantive progress on demand | `delegate events RUN_ID --max-events 50`; continue with `--cursor NEXT_CURSOR` | read-only observation | [references/delegate.md](references/delegate.md) |
 | Show the user's current subagents/runs in a graphical view | `ui --desktop --mine` (optional build); add `--focus-run RUN_ID` when the current run is known | read-only observation | [references/ui.md](references/ui.md) |
@@ -181,37 +163,12 @@ Technical runtime and VCS references are linked there for use when needed.
 ## Default launch commands
 
 ```bash
-# Independent opinions: all enabled profiles
-"$PORCH" review ask --progress compact "Should we use Postgres or SQLite?"
+# Independent opinion from one configured profile
+"$PORCH" review ask -a grok --progress compact "Should we use Postgres or SQLite?"
 
-# Generated multiline prompt: stdin must be attached in this same invocation
-"$PORCH" review ask --progress compact -a claude-fable <<'PROMPT'
-Review the proposed change and independently establish its full blast radius.
-<initial_relevant_files completeness="likely-partial">
-  <file path="src/example.ts">primary implementation</file>
-</initial_relevant_files>
-<context_seed_note>This seed is not an allowlist or scope boundary.</context_seed_note>
-PROMPT
-
-# Explicit profile selection only when requested
-"$PORCH" review ask --progress compact \
-  -a grok,claude-fable,opencode-go-kimi-k3 --prompt-file prompt.md
-
-# Routine code review
-"$PORCH" review code --progress compact \
-  --related path/to/config.yaml --related tests/test_file.py path/to/file.py
-git diff HEAD | "$PORCH" review code --progress compact --diff
-
-# High-risk or release-blocking review
-"$PORCH" review code --depth super --progress compact path/to/file.py
-
-# Explicit tradeoffs: mid-cost without judge; maximum coverage
-"$PORCH" review code --depth specialists --progress compact path/to/file.py
-"$PORCH" review code --depth ultra --progress compact path/to/file.py
-
-# Explicit GPT-6 Astra second opinion for difficult work
-"$PORCH" review ask --progress compact -a codex-gpt-6-astra \
-  "Verify SPEC.md against the implementation and identify mismatches."
+# Code review from one configured profile
+"$PORCH" review code -a grok --progress compact --related tests/test_file.py path/to/file.py
+git diff HEAD | "$PORCH" review code -a grok --progress compact --diff
 
 # Read both quotas as JSON (or select codex/grok)
 "$PORCH" quota
@@ -239,7 +196,7 @@ Codex continuation, load the relevant section of
 
 | File | Load for |
 |---|---|
-| [references/review.md](references/review.md) | selection, effort overrides, depths, progress, output, exit codes |
+| [references/review.md](references/review.md) | selection, effort overrides, progress, output, exit codes |
 | [references/delegate.md](references/delegate.md) | task contracts, launch, supervision, correction, acceptance, read-only research |
 | [references/delegate-runtime.md](references/delegate-runtime.md) | group waiting, durable follow-ups, exits, delivery states and backend details |
 | [references/delegate-vcs.md](references/delegate-vcs.md) | read-only Git/JJ observation and attribution limits |

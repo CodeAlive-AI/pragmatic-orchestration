@@ -52,7 +52,6 @@ def main() -> int:
         FRAMEWORK_RECAP_REVIEW,
         LAYER_ORDER,
     )
-    from workflow_plans import get_plan, assign_agents_to_roles, max_parallel
     from debug_tape import DebugTape
     from backend_contract import backend_capabilities, resolve_binary, list_backend_capabilities
     from normalize_stream import normalize_grok, normalize_opencode
@@ -212,70 +211,6 @@ def main() -> int:
         normalize_grok({"type": "tool_call_update", "status": "completed"})
         == ("tool_completed", "completed"),
     )
-    print("=== Workflow plans and concurrency ===")
-    os.environ.pop("PORCH_MAX_PARALLEL", None)
-    ok("default unlimited concurrency", max_parallel() == 0)
-    os.environ["PORCH_MAX_PARALLEL"] = "2"
-    # re-import value via function reads env live
-    ok("override concurrency", max_parallel() == 2)
-    os.environ["PORCH_MAX_PARALLEL"] = "0"
-    super_p = get_plan("super")
-    ok("super has 9 discovery passes", len(super_p.all_passes()) == 9, str(len(super_p.all_passes())))
-    ok("super stage order", [s.id for s in super_p.stages][:3] == [
-        "discovery-small",
-        "discovery-frontier",
-        "dedup",
-    ])
-    basic = assign_agents_to_roles(get_plan("basic"), ["codex", "grok"])
-    roles = [p.role for p in basic.all_passes()]
-    ok("basic roles", roles == ["security", "correctness"])
-    keys = [p.artifact_key() for p in basic.all_passes()]
-    ok("basic keys agent.role form", all("." in k for k in keys), str(keys))
-    ultra = get_plan("ultra")
-    ultra_judge = next(s for s in ultra.stages if s.id == "judge")
-    ok("ultra defaults to claude-code judge", ultra_judge.judge_agent == "claude-code")
-    ok("ultra has no fallback judge", ultra_judge.judge_fallback == "")
-    try:
-        get_plan("ultra", judge_fallback="codex")
-    except ValueError:
-        ok("ultra rejects fallback judge", True)
-    else:
-        ok("ultra rejects fallback judge", False)
-    ok("ultra has probe stage", any(s.id == "probe" for s in ultra.stages))
-    ultra_spec = next(s for s in ultra.stages if s.id == "specialists")
-    ok(
-        "ultra specialists are 3×5 matrix (15)",
-        len(ultra_spec.passes) == 15,
-        str(len(ultra_spec.passes)),
-    )
-    ok(
-        "ultra total discovery passes 20 (4+15+1)",
-        len(ultra.all_passes()) == 20,
-        str(len(ultra.all_passes())),
-    )
-    ultra_keys = [p.artifact_key() for p in ultra.all_passes()]
-    ok("ultra keys unique", len(ultra_keys) == len(set(ultra_keys)), str(ultra_keys[:5]))
-    ok(
-        "ultra stage order broad→specialists→probe",
-        [s.id for s in ultra.stages][:3] == ["broad", "specialists", "probe"],
-    )
-    ask = get_plan("ask", agents=["codex", "grok"])
-    ok("ask pass count", len(ask.all_passes()) == 2)
-    # Dry-run shell plan agrees with runtime keys
-    proc = subprocess.run(
-        [sys.executable, str(LIB / "workflow_plans.py"), "ultra", "--shell"],
-        capture_output=True,
-        text=True,
-        cwd=str(LIB),
-    )
-    ok("ultra shell plan exit 0", proc.returncode == 0, proc.stderr[-200:])
-    shell_lines = [l for l in proc.stdout.splitlines() if l and not l.startswith("#")]
-    ok("ultra shell launched keys 20", len(shell_lines) == 20, str(len(shell_lines)))
-    ok(
-        "ultra shell has 15 specialists",
-        sum(1 for l in shell_lines if l.startswith("specialists|")) == 15,
-    )
-
     print("=== Prompt pipeline ===")
     rev = build_prompt(mode="review", user_input="Should we use X?", role_text="ROLE: analyst\n")
     assert_layer_order(rev)
@@ -327,28 +262,6 @@ def main() -> int:
     )
     ok("code review skips assessment", "## Assessment" not in code.text)
     ok("code review keeps framework", "INDEPENDENT ADVISORY MODE" in code.text)
-    prompt_dir = LIB.parent.parent / "prompts"
-    for template_name in (
-        "specialist.txt",
-        "probe-generic.txt",
-        "broad-analyst.txt",
-        "broad-lateral.txt",
-    ):
-        template = (prompt_dir / template_name).read_text(encoding="utf-8")
-        ok(
-            f"{template_name} receives relevant-file seed",
-            "{{INITIAL_RELEVANT_FILES}}" in template,
-        )
-        ok(
-            f"{template_name} expands blast radius",
-            "likely-incomplete navigation seed" in template
-            and "configuration" in template
-            and "build/CI/deployment/infra" in template,
-        )
-        ok(
-            f"{template_name} has no closed-file scope",
-            "entire scope" not in template and "Do not read external files" not in template,
-        )
     # User input remains untrusted; a compact trusted recap follows it.
     prov = rev.provenance()
     ok("user_input untrusted", "user_input" in prov["trusted_boundary"]["untrusted"])

@@ -88,14 +88,14 @@ List the configured workers:
 scripts/porch --list-agents
 ```
 
-### Ask several model families
+### Ask one independent reviewer
 
 ```bash
-scripts/porch review ask -a grok,claude-fable,opencode-go-kimi-k3 \
-  "Propose a migration plan from REST to event-driven processing."
+scripts/porch review ask -a grok "Propose a migration plan from REST to event-driven processing."
 ```
 
-The agents work independently. Their answers are returned under separate headings so your primary agent — or you — can compare them without an artificial consensus.
+Choose one configured profile by its exact ID. The reviewer returns its own
+assessment for the caller to verify.
 
 ### Run a stateful repository investigation
 
@@ -145,20 +145,16 @@ not automatic model ranking by the CLI. See the
 [delegate protocol](references/delegate.md#delegating-to-a-less-capable-model),
 including the reporting rule for strictly read-only investigations.
 
-### Review code with independent specialists
+### Review code with one profile
 
 ```bash
-# Security + correctness
-scripts/porch review code path/to/file.py
-
-# Security, correctness, performance, architecture, and consistency
-scripts/porch review code --depth specialists path/to/file.py
-
-# Review a diff
-git diff HEAD | scripts/porch review code --diff
+scripts/porch review code -a grok path/to/file.py
+git diff HEAD | scripts/porch review code -a grok --diff
 ```
 
-For deeper, multi-stage reviews with a final judge, use `--depth super` or `--depth ultra`.
+For a repository review, add known related files with `--related FILE`. These
+paths are a starting point, not a scope boundary. Check findings and citations
+against the source. Legacy multi-review depths and judges have been removed.
 
 ## Long-running delegation
 
@@ -368,13 +364,13 @@ Available overrides: `CODEX_MODEL` / `CODEX_EFFORT`, `CLAUDE_MODEL` / `CLAUDE_EF
 - A delegate asked to research read-only still runs with full access. The caller must scope the working directory, state the no-edit constraint, and verify the tree afterwards.
 - Live progress goes to stderr; the final answer goes to stdout. Normalized events use a closed PorchEvent schema; unknown types are not persisted.
 - Complete run artifacts are saved under `PORCH_OUTPUT_DIR` unless `PORCH_SAVE_OUTPUTS=0`.
-- There is no Porch execution timeout, token budget, or fan-out concurrency limit. Set `PORCH_MAX_PARALLEL=N` to bound review fan-out. Opt-in `PORCH_DEBUG_EVENTS=1` writes a bounded RAW→FINAL event tape.
+- There is no Porch execution timeout or token budget. Opt-in `PORCH_DEBUG_EVENTS=1` writes a bounded RAW→FINAL event tape.
 
 ## Command map
 
 ```bash
-scripts/porch review ask [...]
-scripts/porch review code --depth basic|specialists|super|ultra [...]
+scripts/porch review ask -a <exact-agent-id> [...]
+scripts/porch review code -a <exact-agent-id> [...]
 scripts/porch delegate -a <exact-agent-id> [...]
 scripts/porch delegate -a <exact-agent-id> --steerable|--one-shot|--detach [...]
 scripts/porch delegate steer|status|cancel|wait|wait-any|watch|events|list [...]

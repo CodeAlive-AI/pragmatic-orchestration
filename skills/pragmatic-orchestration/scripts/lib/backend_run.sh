@@ -393,6 +393,15 @@ build_cmd_codex() {
         if [[ -n "${PORCH_CODEX_NO_MCP:-}" ]]; then
             CMD+=(--ignore-user-config)
         fi
+        # Media mode attaches staged images to the initial prompt. The
+        # --image=PATH form matters: a bare -i/--image is variadic and would
+        # swallow the following stdin marker.
+        if [[ "$MODE" == "media" && -n "${PORCH_MEDIA_IMAGES:-}" ]]; then
+            local image
+            while IFS= read -r image; do
+                [[ -n "$image" ]] && CMD+=("--image=$image")
+            done <<< "$PORCH_MEDIA_IMAGES"
+        fi
         # Structured events for observability; final text via -o
         CMD+=(--json)
     else
@@ -422,11 +431,17 @@ build_cmd_claude() {
         # on-disk session history. Unlike --bare, safe-mode does not force an
         # API-key-only authentication path.
         CMD+=(--safe-mode --no-session-persistence --no-chrome)
-        CMD+=(--disallowedTools "Edit,Write,NotebookEdit,Agent,Task")
-        if [[ "${MODE_CAP_WEB:-true}" == "true" || "${MODE_CAP_WEB:-1}" == "1" ]]; then
-            CMD+=(--allowedTools "Bash,WebSearch,WebFetch")
+        if [[ "${MODE_CAP_SHELL:-true}" != "true" ]]; then
+            # Media mode: the Read tool sees staged files; no shell at all.
+            CMD+=(--disallowedTools "Edit,Write,NotebookEdit,Agent,Task,Bash")
+            CMD+=(--allowedTools "Read")
         else
-            CMD+=(--allowedTools "Bash")
+            CMD+=(--disallowedTools "Edit,Write,NotebookEdit,Agent,Task")
+            if [[ "${MODE_CAP_WEB:-true}" == "true" || "${MODE_CAP_WEB:-1}" == "1" ]]; then
+                CMD+=(--allowedTools "Bash,WebSearch,WebFetch")
+            else
+                CMD+=(--allowedTools "Bash")
+            fi
         fi
     else
         CMD+=(--dangerously-skip-permissions)
@@ -579,7 +594,15 @@ build_cmd_agy() {
         if [[ "${MODE_CAP_WEB:-true}" != "true" ]]; then
             deny+=',"read_url(*)"'
         fi
+        if [[ "${MODE_CAP_SHELL:-true}" != "true" ]]; then
+            # Media mode: without a shell the agent cannot "infer" a
+            # transcript from file metadata or convert generated images.
+            deny+=',"command(*)"'
+        fi
         CMD+=(--settings "{\"permissions\":{\"deny\":[$deny]}}")
+    fi
+    if [[ "$MODE" == "media" && -n "${PORCH_OUTPUT_SCHEMA:-}" ]]; then
+        CMD+=(--json-schema "$PORCH_OUTPUT_SCHEMA")
     fi
     if [[ -n "$MODEL" ]]; then
         CMD+=(--model "$MODEL")

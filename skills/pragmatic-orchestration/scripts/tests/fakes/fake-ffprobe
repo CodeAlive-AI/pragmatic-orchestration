@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Fake ffprobe: prints the duration recorded in a fake-ffmpeg chunk."""
+import sys
+
+path = sys.argv[-1]
+try:
+    first = open(path, encoding="utf-8").readline()
+except OSError as e:
+    print(e, file=sys.stderr)
+    sys.exit(1)
+print(first.split("=", 1)[1].strip() if first.startswith("FAKEDUR=") else "N/A")

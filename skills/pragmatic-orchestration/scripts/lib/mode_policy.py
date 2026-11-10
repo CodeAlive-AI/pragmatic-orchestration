@@ -109,6 +109,23 @@ _MODE_MATRIX: Dict[str, ModeCapabilities] = {
         interrupt=False,
         access_class="yolo",
     ),
+    # Media work (transcription, image description/generation/editing) runs
+    # read-only in a private staging directory: no shell, no web, no memory.
+    # Subagents stay allowed because agy delegates generate_image to its
+    # built-in image-generator subagent. Generated images are collected by
+    # Porch from the harness's own session artifact store, so the agent never
+    # needs write access.
+    "media": ModeCapabilities(
+        mode="media",
+        filesystem="read",
+        shell=False,
+        web=False,
+        memory=False,
+        subagents=True,
+        steer=False,
+        interrupt=False,
+        access_class="readonly",
+    ),
     "delegate-steerable": ModeCapabilities(
         mode="delegate-steerable",
         filesystem="write",
@@ -233,6 +250,7 @@ def _main() -> int:
         assert_no_yolo_leak("review")
         assert access_policy_for("review") == "readonly"
         assert access_policy_for("delegate") == "yolo"
+        assert access_policy_for("media") == "readonly"
         print("ok")
         return 0
     if args.list:

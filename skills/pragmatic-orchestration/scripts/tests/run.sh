@@ -112,6 +112,7 @@ set -e
 assert_eq "removed explore command exits with usage error" "$rc" "5"
 assert_contains "removed explore command names supported modes" \
   "$removed_explore_err" "expected review|delegate|quota"
+assert_contains "unknown command lists media mode" "$removed_explore_err" "|media)"
 
 out=$("$PORCH" --list-agents 2>/dev/null)
 assert_contains "list-agents has grok" "$out" 'id="grok"'
@@ -1517,6 +1518,13 @@ else
 fi
 
 if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/cancellation_test.py"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
+echo "=== Media mode: transcription and images (fake agy/codex/claude/ffmpeg) ==="
+if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/media_test.py" -v; then
   PASS=$((PASS + 1))
 else
   FAIL=$((FAIL + 1))

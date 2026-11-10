@@ -7,6 +7,7 @@
 #   porch review code -a <exact-agent-id> [...]
 #   porch delegate -a <exact-agent-id> [...]
 #   porch delegate wait|watch|events|list [...]
+#   porch media transcribe|image|capabilities [...]
 #   porch quota [all|codex|grok]
 #   porch sessions roots|list|grep|show [...]
 #
@@ -46,6 +47,11 @@ Usage:
   porch delegate watch RUN_ID [--heartbeat SEC] [--json]
   porch delegate events RUN_ID [--cursor N] [--max-events N]
   porch delegate list [--active|--all] [--reap] [--json]
+  porch media transcribe -a <agent-id> [--format text|srt|vtt|json] [--out FILE] FILE
+  porch media image describe -a <agent-id> --input IMAGE [--input IMAGE ...] ["question"]
+  porch media image generate -a <agent-id> [--count N] [--aspect 16:9] [--out-dir DIR] "prompt"
+  porch media image edit -a <agent-id> --input IMAGE [...] [--count N] [--out-dir DIR] "instruction"
+  porch media capabilities [--json]
   porch quota [all|codex|grok]
   porch fleet probe|status|plan|launch|control|reconcile [options]
   porch ui [--desktop] [--port PORT] [--registry-root PATH]
@@ -95,6 +101,18 @@ delegate
   events returns one bounded JSON page of normalized progress and exits. Reuse
   next_cursor as --cursor on the next observation.
   list finds runs again after the run id was lost.
+
+media
+  Read-only media work through one exact profile; `media capabilities` lists
+  which profiles support each operation (transcribe: Antigravity; image
+  describe: Antigravity, Codex, Claude Code; image generate/edit: Antigravity,
+  Codex). transcribe needs ffmpeg: it converts audio or video to MP3/WAV,
+  splits long recordings (--segment-minutes, default 15) and prints the
+  transcript (text, srt, vtt or json) on stdout or to --out. Image generate and
+  edit collect the images the harness's own tool saved for that session, copy
+  them to --out-dir and print a JSON manifest on stdout.
+    Exit: 0 done, 2 fewer images than --count, 4 unsupported profile or
+    missing ffmpeg, 5 usage, 66 nothing transcribed or generated.
 
 quota
   Return machine-readable remaining subscription quota for Codex, Grok, or
@@ -183,6 +201,11 @@ case "$1" in
         PY=$(command -v python3 || command -v python) || exit "$EXIT_USAGE"
         exec "$PY" "$LIB_DIR/fleet_cli.py" "$@"
         ;;
+    media)
+        shift
+        PY=$(command -v python3 || command -v python) || exit "$EXIT_USAGE"
+        exec "$PY" "$LIB_DIR/media.py" "$@"
+        ;;
     quota|sessions|history)
         cmd=$1; shift
         # python3 on POSIX; Git Bash on Windows usually exposes only `python`
@@ -197,7 +220,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Error: unknown command: $1 (expected review|delegate|quota|sessions|ui)" >&2
+        echo "Error: unknown command: $1 (expected review|delegate|quota|sessions|ui|media)" >&2
         usage >&2
         exit $EXIT_USAGE
         ;;

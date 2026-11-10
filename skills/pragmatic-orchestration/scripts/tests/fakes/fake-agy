@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -75,6 +76,54 @@ def env_markers() -> Dict[str, bool]:
 
 
 # ---- headless stream-json -------------------------------------------------
+
+JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+
+
+def media_answer(text: str, argv: List[str], conv: str) -> Any:
+    """Emulate porch media prompts; return None for ordinary prompts."""
+    media = os.environ.get("PORCH_FAKE_AGY_MEDIA", "ok")
+    match = re.search(r"Transcribe the audio file \./(\S+?)[ (]", text)
+    if match:
+        name = match.group(1)
+        if not os.path.isfile(name):
+            return json.dumps({"segments": [], "error": f"cannot read {name}"})
+        if media == "deaf":
+            return json.dumps({"segments": [], "error": "binary file type is not supported"})
+        if media == "silent":
+            return json.dumps({"segments": []})
+        if not flag_value(argv, "--json-schema"):
+            return "not json"
+        speaker = "Speaker 1" if 'Label speakers' in text else None
+        segs = [{"start": 0.5, "end": 2.0, "text": f"FAKE_SPEECH {name} one"},
+                {"start": 2.5, "end": 4.0, "text": f"FAKE_SPEECH {name} two"}]
+        if speaker:
+            for s in segs:
+                s["speaker"] = speaker
+        return json.dumps({"language": "en", "segments": segs})
+    match = re.search(r"call it exactly (\d+) time", text)
+    if "generate_image tool" in text and match:
+        count = int(match.group(1))
+        if media == "none":
+            count = 0
+        elif media == "short":
+            count = max(count - 1, 0)
+        brain = os.environ.get("PORCH_AGY_BRAIN_DIR") or os.path.expanduser(
+            "~/.gemini/antigravity-cli/brain")
+        store = os.path.join(brain, conv)
+        os.makedirs(os.path.join(store, ".system_generated"), exist_ok=True)
+        with open(os.path.join(store, ".system_generated", "note.jpg"), "wb") as f:
+            f.write(JPEG)  # nested files are not session outputs
+        refs = re.findall(r"\./(image-\d+\.\w+)", text)
+        for n in range(count):
+            with open(os.path.join(store, f"fake_{n}_{int(time.time() * 1000)}.jpg"), "wb") as f:
+                f.write(JPEG)
+        return f"FAKE_AGY_IMAGES count={count} refs={len([r for r in refs if os.path.isfile(r)])}"
+    if "Look at these image files" in text:
+        refs = re.findall(r"\./(image-\d+\.\w+)", text)
+        return f"FAKE_AGY_DESCRIPTION {' '.join(r for r in refs if os.path.isfile(r))}"
+    return None
+
 
 def headless(argv: List[str]) -> int:
     if flag_value(argv, "--input-format") != "stream-json" or flag_value(argv, "--output-format") != "stream-json":
@@ -138,12 +187,15 @@ def headless(argv: List[str]) -> int:
         if MODE == "noresult":
             continue
         step += 1
-        answer = "" if MODE == "empty" else "FAKE_AGY_OK"
+        answer = media_answer(text, argv, conv)
+        if answer is None:
+            answer = "" if MODE == "empty" else "FAKE_AGY_OK"
         if answer:
+            half = max(1, len(answer) // 2)
             step_update(step_index=step, state="ACTIVE", step_type="agent_response",
-                        text_delta="FAKE_AGY_")
+                        text_delta=answer[:half])
             step_update(step_index=step, state="DONE", step_type="agent_response",
-                        text_delta="OK")
+                        text_delta=answer[half:])
         result: Dict[str, Any] = {"conversation_id": conv, "status": "SUCCESS",
                                   "response": answer, "duration_seconds": 0.1,
                                   "num_turns": turns,

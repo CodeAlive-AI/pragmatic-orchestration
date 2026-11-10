@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Fake ffmpeg for porch media tests.
+
+`-encoders` lists libmp3lame unless PORCH_FAKE_FFMPEG_NO_MP3=1. A segment run
+(`-f segment -segment_time S … OUT_PATTERN`) splits PORCH_FAKE_MEDIA_SECONDS
+(default 5) into chunk files whose body records their own duration for
+fake-ffprobe. PORCH_FAKE_FFMPEG_FAIL=1 fails like an undecodable input.
+"""
+import json
+import math
+import os
+import sys
+
+argv = sys.argv[1:]
+log = os.environ.get("PORCH_FAKE_ARGV_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"bin": "ffmpeg", "argv": argv}) + "\n")
+if "-encoders" in argv:
+    print(" A..... aac          AAC (Advanced Audio Coding)")
+    if os.environ.get("PORCH_FAKE_FFMPEG_NO_MP3") != "1":
+        print(" A..... libmp3lame   libmp3lame MP3 (MPEG audio layer 3)")
+    print(" A..... pcm_s16le    PCM signed 16-bit little-endian")
+    sys.exit(0)
+if os.environ.get("PORCH_FAKE_FFMPEG_FAIL") == "1":
+    print("Invalid data found when processing input", file=sys.stderr)
+    sys.exit(1)
+src = argv[argv.index("-i") + 1]
+if not os.path.isfile(src):
+    print(f"{src}: No such file or directory", file=sys.stderr)
+    sys.exit(1)
+total = float(os.environ.get("PORCH_FAKE_MEDIA_SECONDS", "5"))
+seg = float(argv[argv.index("-segment_time") + 1])
+pattern = argv[-1]
+for n in range(max(1, math.ceil(total / seg))):
+    length = min(seg, total - n * seg)
+    with open(pattern % n, "w", encoding="utf-8") as f:
+        f.write(f"FAKEDUR={length}\n")

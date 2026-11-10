@@ -20,6 +20,7 @@ if /i "%CMD%"=="quota"   goto python_lib
 if /i "%CMD%"=="ui" goto python_ui
 if /i "%CMD%"=="review"   goto bash_passthrough
 if /i "%CMD%"=="delegate" goto bash_passthrough
+if /i "%CMD%"=="media" goto bash_passthrough
 if /i "%CMD%"=="-h" goto usage
 if /i "%CMD%"=="--help" goto usage
 if /i "%CMD%"=="--list-agents" goto bash_passthrough

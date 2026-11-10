@@ -280,6 +280,11 @@ def main() -> int:
     ok("review readonly", access_policy_for("review") == "readonly")
     ok("delegate yolo", access_policy_for("delegate") == "yolo")
     ok("review-ask aliases review", access_policy_for("review-ask") == "readonly")
+    mcaps = get_mode_capabilities("media")
+    ok("media readonly without shell or web",
+       mcaps.access_class == "readonly" and mcaps.filesystem == "read"
+       and not mcaps.shell and not mcaps.web and not mcaps.steer)
+    ok("media keeps subagents for agy image generator", mcaps.subagents is True)
     rcaps = get_mode_capabilities("review")
     ok("review has diagnostic shell", rcaps.shell is True and rcaps.filesystem == "read")
     ok("review web on", rcaps.web is True)

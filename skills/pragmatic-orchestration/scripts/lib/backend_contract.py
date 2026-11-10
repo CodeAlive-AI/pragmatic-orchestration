@@ -18,7 +18,7 @@ import os
 import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from events import (
     AUTHORITATIVE_RESULT_TYPES,
@@ -252,6 +252,38 @@ _BACKEND_CAPS: Dict[str, BackendCapabilities] = {
         ),
     ),
 }
+
+
+# Media operations each backend performs headlessly, verified live
+# (2026-11-10: agy 1.5.4, codex-cli 0.167.0, Claude Code 2.1.322). Limits:
+# max_inputs = reference images per call, max_count = images per request.
+# Codex image_gen accepts up to 5 references; agy's generate_image up to 3.
+# Codex cannot hear audio, Claude Code has no image generator, and agy hears
+# WAV/MP3 only (porch media converts every input to one of those).
+_MEDIA_OPERATIONS: Dict[str, Dict[str, Dict[str, int]]] = {
+    "antigravity-cli": {
+        "transcribe": {},
+        "image.describe": {"max_inputs": 10},
+        "image.generate": {"max_count": 4},
+        "image.edit": {"max_inputs": 3, "max_count": 4},
+    },
+    "codex-cli": {
+        "image.describe": {"max_inputs": 10},
+        "image.generate": {"max_count": 4},
+        "image.edit": {"max_inputs": 5, "max_count": 4},
+    },
+    "claude-code": {
+        "image.describe": {"max_inputs": 10},
+    },
+}
+
+
+def media_operations(backend: str) -> Tuple[str, ...]:
+    return tuple(_MEDIA_OPERATIONS.get(backend, {}))
+
+
+def media_operation_limits(backend: str, operation: str) -> Dict[str, int]:
+    return dict(_MEDIA_OPERATIONS.get(backend, {}).get(operation, {}))
 
 
 @dataclass

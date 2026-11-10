@@ -8,13 +8,14 @@
 
 In field use, frontier models such as Astra and Fable cover roughly 2–10× more work with practically no loss of quality when they orchestrate and cheaper executors implement. The best fit is autonomous work lasting hours or days, producing tens to hundreds of thousands of lines of code.
 
-The repo ships two skills in the Agent Skills layout: `pragmatic-orchestration` and `remote-agents`. `porch` provides four modes:
+The repo ships two skills in the Agent Skills layout: `pragmatic-orchestration` and `remote-agents`. `porch` provides five modes:
 
 - **review** — independent opinions or multi-depth code review from several model families at once (read-only).
 - **delegate** — hand a task to one exact agent: steerable by default, detachable, with `wait` / `watch` / `events` / `list` to supervise long-running work (full-access runtime).
 - **sessions** — search and navigate local coding-agent session histories. Its
   format research draws on [Agent Sessions](https://github.com/jazzyalex/agent-sessions);
   see the [supported formats and evidence](skills/pragmatic-orchestration/references/session-compatibility.md).
+- **media** — transcribe audio/video (Antigravity) and generate, edit, combine or describe images (Codex, Antigravity; description also Claude Code), read-only, with results collected into your output directory.
 - **quota** — read remaining Codex / Grok subscription quota.
 
 Supported worker harnesses: Codex CLI, Claude Code, OpenCode, Grok Build, Devin CLI, Antigravity CLI (`agy`), and Gemini CLI (review only).

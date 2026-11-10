@@ -1,40 +1,70 @@
-#!/bin/bash
-# Fake codex CLI for porch tests.
-# Records argv to PORCH_FAKE_ARGV_LOG (JSON line) and emits canned output.
-set -euo pipefail
-LOG="${PORCH_FAKE_ARGV_LOG:-/dev/null}"
-python3 -c '
-import json, os, sys
-print(json.dumps({
-    "bin": "codex",
-    "argv": sys.argv[1:],
-    "stdin": sys.stdin.read(),
-    "cwd": os.getcwd(),
-    "has_FULL_PROMPT": "FULL_PROMPT" in os.environ,
-    "has_JUDGE_INPUT_BODY": "JUDGE_INPUT_BODY" in os.environ,
-    "has_JR_INPUT_BODY": "JR_INPUT_BODY" in os.environ,
-    "has_JR_FINDINGS_BODY": "JR_FINDINGS_BODY" in os.environ,
-}))
-' -- "$@" >> "$LOG"
+#!/usr/bin/env python3
+"""Fake codex CLI for porch tests.
 
-# Parse -o last message path if present
-out_file=""
-args=("$@")
-for i in "${!args[@]}"; do
-  if [[ "${args[$i]}" == "-o" || "${args[$i]}" == "--output-last-message" ]]; then
-    out_file="${args[$((i+1))]:-}"
-  fi
-done
+Records argv to PORCH_FAKE_ARGV_LOG (JSON line) and emits canned output.
+Media prompts (porch media) are emulated: a generation prompt writes PNG files
+into $CODEX_HOME/generated_images/<thread_id>/ the way the built-in image_gen
+tool does, and a describe prompt answers with FAKE_CODEX_DESCRIPTION.
+"""
+import json
+import os
+import re
+import sys
+import uuid
 
-# Emit a simple JSONL event stream on stdout when --json is present
-if printf '%s\n' "$@" | grep -qx -- '--json'; then
-  echo '{"type":"agent_message","text":"FAKE_CODEX_OK"}'
-  echo '{"type":"turn.completed"}'
-fi
+PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
+       b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0\x00\x00\x03\x01"
+       b"\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00IEND\xaeB`\x82")
 
-if [[ -n "$out_file" ]]; then
-  printf 'FAKE_CODEX_OK\n' > "$out_file"
-else
-  printf 'FAKE_CODEX_OK\n'
-fi
-exit 0
+argv = sys.argv[1:]
+stdin = sys.stdin.read()
+log = os.environ.get("PORCH_FAKE_ARGV_LOG")
+if log:
+    with open(log, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "bin": "codex",
+            "argv": argv,
+            "stdin": stdin,
+            "cwd": os.getcwd(),
+            "has_FULL_PROMPT": "FULL_PROMPT" in os.environ,
+            "has_JUDGE_INPUT_BODY": "JUDGE_INPUT_BODY" in os.environ,
+            "has_JR_INPUT_BODY": "JR_INPUT_BODY" in os.environ,
+            "has_JR_FINDINGS_BODY": "JR_FINDINGS_BODY" in os.environ,
+        }) + "\n")
+
+out_file = ""
+for i, arg in enumerate(argv):
+    if arg in ("-o", "--output-last-message") and i + 1 < len(argv):
+        out_file = argv[i + 1]
+
+answer = "FAKE_CODEX_OK"
+thread = str(uuid.uuid4())
+media = os.environ.get("PORCH_FAKE_CODEX_MEDIA", "ok")
+if "image generation tool (image_gen)" in stdin:
+    match = re.search(r"call it exactly (\d+) time", stdin)
+    count = int(match.group(1)) if match else 1
+    if media == "none":
+        count = 0
+    elif media == "short":
+        count = max(count - 1, 0)
+    store = os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"),
+                         "generated_images", thread)
+    os.makedirs(store, exist_ok=True)
+    for n in range(count):
+        with open(os.path.join(store, f"exec-{uuid.uuid4()}.png"), "wb") as f:
+            f.write(PNG)
+    attached = [a.split("=", 1)[1] for a in argv if a.startswith("--image=")]
+    answer = f"FAKE_CODEX_IMAGES count={count} attached={len(attached)}"
+elif "Look at these image files" in stdin:
+    answer = "FAKE_CODEX_DESCRIPTION"
+
+if "--json" in argv:
+    print(json.dumps({"type": "thread.started", "thread_id": thread}))
+    print(json.dumps({"type": "agent_message", "text": answer}))
+    print(json.dumps({"type": "turn.completed"}))
+
+if out_file:
+    with open(out_file, "w", encoding="utf-8") as f:
+        f.write(answer + "\n")
+else:
+    print(answer)

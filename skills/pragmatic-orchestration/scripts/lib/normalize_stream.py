@@ -366,6 +366,10 @@ def normalize_codex(obj: Dict[str, Any]) -> tuple[str, Any]:
         return "error", body.get("message") or obj.get("message") or json.dumps(obj)
     if typ in ("turn.completed", "turn_completed", "task_complete", "done", "thread.completed"):
         return "end", typ
+    if typ in ("thread.started", "turn.started"):
+        # Lifecycle only; thread.started carries the session id that media
+        # mode uses to find images Codex generated in this run.
+        return "progress", typ
     if typ in ("tool",) or (isinstance(typ, str) and typ.startswith("item.") and "tool" in typ.lower()):
         return "tool_started", typ
     # Unknown codex stream types: reject for normalized persistence.

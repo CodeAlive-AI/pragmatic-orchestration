@@ -7,13 +7,13 @@
   },
   "metadata": {
     "description": "Pragmatic multi-agent orchestration: independent review and steerable delegation across Codex, Claude Code, OpenCode, Grok Build, Gemini, Devin CLI, and Antigravity CLI \u2014 for any agent that supports the Agent Skills standard.",
-    "version": "4.6.0"
+    "version": "5.0.0"
   },
   "plugins": [
     {
       "name": "pragmatic-orchestration",
       "description": "Multi-agent orchestration for coding agents: run external agent CLIs (Codex, Claude Code, OpenCode, Grok Build, Gemini, Devin CLI, Antigravity CLI) as independent reviewers, stateful repository researchers, steerable single-agent implementers, or media workers (audio/video transcription, image generation and editing) via the `porch` CLI. Also ships coordinator-mode (a long-lived coordinating role that delegates implementation and keeps a journal across compaction) and remote-agents: dedicated remote Linux/Windows agent hosts (SSH-over-SSM, headless desktop, work bridge).",
-      "version": "4.6.0",
+      "version": "5.0.0",
       "author": {
         "name": "CodeAlive-AI",
         "email": "contact@codealive.ai"
@@ -63,5 +63,5 @@
       ]
     }
   ],
-  "version": "4.6.0"
+  "version": "5.0.0"
 }

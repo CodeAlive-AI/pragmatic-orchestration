@@ -1,3 +1,4 @@
+from .agy import AgyAdapter
 from .base import AdapterEvent, BackendAdapter, DeliveryClass, SteerResult
 from .claude import ClaudeAdapter
 from .codex import CodexAdapter
@@ -6,6 +7,7 @@ from .grok import GrokAdapter
 from .opencode import OpenCodeAdapter
 
 ADAPTERS = {
+    "antigravity-cli": AgyAdapter,
     "claude-code": ClaudeAdapter,
     "codex-cli": CodexAdapter,
     "devin-cli": DevinAdapter,
@@ -28,6 +30,7 @@ __all__ = [
     "SteerResult",
     "make_adapter",
     "ADAPTERS",
+    "AgyAdapter",
     "ClaudeAdapter",
     "CodexAdapter",
     "DevinAdapter",

@@ -6,6 +6,7 @@
 - At least one supported harness: Codex CLI, OpenCode 2.2.6 or newer in the 2.x series, Claude Code, or native Grok Build
 - Gemini CLI is optional and review-only
 - Devin CLI is optional and opt-in: `devin` v3000.x on PATH, authenticated via `devin auth login`
+- Antigravity CLI is optional and opt-in: `agy` 1.5.4 or newer (ACP and stream-json input) on PATH, signed in through an interactive `agy` login or `agy acp --login`
 
 Authentication stays with each harness.
 
@@ -18,7 +19,7 @@ models and enabled profiles may differ from the defaults described below.
 | Field | Purpose |
 |---|---|
 | `enabled` | Legacy profile flag; review and delegate select an exact profile explicitly |
-| `backend` | `codex-cli`, `claude-code`, `opencode`, `grok-build`, `gemini-cli`, or `devin-cli` |
+| `backend` | `codex-cli`, `claude-code`, `opencode`, `grok-build`, `gemini-cli`, `devin-cli`, or `antigravity-cli` |
 | `model` | Backend model id |
 | `role` | Analyst, lateral, or specialist role |
 | `effort` | Backend reasoning effort/variant |
@@ -40,6 +41,7 @@ Non-empty environment values override profile model/effort for one invocation:
 - `GROK_MODEL`, `GROK_EFFORT`
 - `GEMINI_MODEL`
 - `DEVIN_MODEL`; `PORCH_BIN_DEVIN` overrides the `devin` binary
+- `AGY_MODEL`, `AGY_EFFORT`; `PORCH_BIN_AGY` overrides the `agy` binary
 
 The enabled `codex` profile uses `gpt-6.1-sol` at `high` effort, and the enabled
 `codex-gpt-6-luna` profile uses `gpt-6-luna` at `low` effort.
@@ -109,6 +111,34 @@ Verified with `devin models list` on CLI 3000.11.92, which also lists
 `gemini-4-argon-low` and `gemini-4-argon-medium`. Use `DEVIN_MODEL` with an
 exact model id to override it; there is no separate Devin effort flag.
 Copy this profile into existing user-local configs to select the new id.
+
+The opt-in `agy-gemini-4-argon` and `agy-gemini-3.8-flash` profiles run Google's
+Antigravity CLI with the `gemini-4-argon` and `gemini-3.8-flash` model families
+at `high` effort. Antigravity keeps model and thinking level separate: one-shot
+runs pass `--model FAMILY --effort LEVEL`, and steerable runs set the `model`
+and `thought_level` session options over ACP. `agy models` lists the suffixed
+ids (`gemini-4-argon-low|medium|high`, `gemini-3.8-flash-low|medium|high`), and
+a suffixed id also works as `model` with an empty `effort`. Gemini 4 Argon needs
+a paid Google AI plan; Gemini 3.8 Flash is on every plan. An unknown model or
+thinking level fails the launch instead of falling back to the account default.
+
+- Review and `--one-shot` delegate use headless stream-json in both directions
+  (`agy --input-format stream-json --output-format stream-json`): the prompt is
+  one stdin message, never argv, and only a terminal `result` with status
+  `SUCCESS` counts as an answer. `agy` can exit 0 after an interrupted or failed
+  turn, so `INTERRUPTED`, `ERROR`, any `finished_reason`, or a missing result
+  fails the run.
+- Review adds session-only settings (`--settings`, never saved) with deny rules
+  for `write_file(*)`, `mcp(*)` and `execute_url(*)` (plus `read_url(*)` when a
+  mode forbids web). Antigravity evaluates Deny before Ask and Allow, so these
+  rules also beat allow rules in the user's own `settings.json`; a write attempt
+  ends as a failed tool step "permission check failed … Matches user-configured
+  deny rule". The shell stays available and is trusted to the report-only
+  prompt contract, as with the other backends. Plan mode is not used: it is a
+  planning workflow, not a permission boundary.
+- Every Antigravity run passes `--dangerously-skip-permissions`; headless mode
+  would otherwise soft-deny each tool call that needs approval and still exit 0.
+  Explicit deny rules, including the user's own, still apply.
 
 ## Shell-safe prompts
 

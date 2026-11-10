@@ -95,6 +95,22 @@
       "role": "lateral",
       "label": "Devin Gemini 4 Argon High"
     },
+    "agy-gemini-4-argon": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-argon",
+      "effort": "high",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Argon High"
+    },
+    "agy-gemini-3.8-flash": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-3.8-flash",
+      "effort": "high",
+      "role": "lateral",
+      "label": "Antigravity Gemini 3.8 Flash High"
+    },
     "opencode-xai-grok45": {
       "enabled": false,
       "backend": "opencode",

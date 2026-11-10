@@ -19,6 +19,7 @@ export PORCH_BIN_OPENCODE="$FAKES/fake-opencode"
 export PORCH_BIN_GROK="$FAKES/fake-grok"
 export PORCH_BIN_GEMINI="$FAKES/fake-gemini"
 export PORCH_BIN_DEVIN="$FAKES/fake-devin"
+export PORCH_BIN_AGY="$FAKES/fake-agy"
 export PORCH_SUPPRESS_SHELL_WARN=1
 # Parent shells (prior delegate runs, harnesses) must not leak mode wrappers
 # into the offline suite.
@@ -26,7 +27,7 @@ unset PORCH_RAW_PROMPT PORCH_SKIP_OUTPUT_TEMPLATE PORCH_MODE \
   PORCH_SINGLE_AGENT PORCH_ARTIFACT_KEY 2>/dev/null || true
 # Per-backend overrides from the caller (Claude Code exports CLAUDE_EFFORT, for
 # example) would replace the fixture's model and effort.
-unset CLAUDE_MODEL CLAUDE_EFFORT CODEX_MODEL CODEX_EFFORT DEVIN_MODEL \
+unset AGY_MODEL AGY_EFFORT CLAUDE_MODEL CLAUDE_EFFORT CODEX_MODEL CODEX_EFFORT DEVIN_MODEL \
   GEMINI_MODEL GROK_MODEL GROK_EFFORT OPENCODE_MODEL OPENCODE_EFFORT 2>/dev/null || true
 
 PASS=0
@@ -138,6 +139,10 @@ assert_contains "Codex GPT-6.1 Terra is selectable but disabled by default" "$ou
   'id="codex-gpt-6.1-terra" label="Codex GPT-6.1 Terra" backend="codex-cli" model="gpt-6.1-terra" role="analyst" enabled="false"'
 assert_contains "Devin Gemini 4 Argon is selectable but disabled by default" "$out" \
   'id="devin-gemini-4-argon" label="Devin Gemini 4 Argon High" backend="devin-cli" model="gemini-4-argon-high" role="lateral" enabled="false"'
+assert_contains "Antigravity Gemini 4 Argon is selectable but disabled by default" "$out" \
+  'id="agy-gemini-4-argon" label="Antigravity Gemini 4 Argon High" backend="antigravity-cli" model="gemini-4-argon" role="lateral" enabled="false"'
+assert_contains "Antigravity Gemini 3.8 Flash is selectable but disabled by default" "$out" \
+  'id="agy-gemini-3.8-flash" label="Antigravity Gemini 3.8 Flash High" backend="antigravity-cli" model="gemini-3.8-flash" role="lateral" enabled="false"'
 assert_contains "Codex Luna is enabled by default" "$out" \
   'id="codex-gpt-6-luna" label="Codex GPT-6 Luna" backend="codex-cli" model="gpt-6-luna" role="analyst" enabled="true"'
 assert_contains "Claude Fable remains selectable but disabled by default" "$out" \
@@ -557,6 +562,94 @@ PY
 )
 assert_eq "devin delegate uses bypass mode" "$devin_del_check" "ok"
 
+# Antigravity CLI one-shot: headless stream-json both ways, prompt on stdin.
+# Review adds session-only deny rules that agy enforces over user allow rules.
+for spec in 'agy-gemini-4-argon gemini-4-argon' 'agy-gemini-3.8-flash gemini-3.8-flash'; do
+  read -r profile model <<< "$spec"
+  for mode in review delegate; do
+    env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/$profile-$mode.json" \
+      "$LIB_DIR/backend_run.sh" --mode "$mode" --agent-id "$profile" --raw "hello" >/dev/null
+    argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/$profile-$mode.json")
+    assert_contains "$profile $mode selects model family" "$argv" "--model $model"
+    assert_contains "$profile $mode selects high effort" "$argv" "--effort high"
+    assert_contains "$profile $mode reads stream-json input" "$argv" "--input-format stream-json"
+    assert_contains "$profile $mode writes stream-json output" "$argv" "--output-format stream-json"
+    assert_contains "$profile $mode never prompts for permission" "$argv" "--dangerously-skip-permissions"
+    assert_contains "$profile $mode sends slash text literally" "$argv" "--disable-slash-commands"
+    assert_not_contains "$profile $mode has no print-mode prompt flag" "$argv" " -p "
+    assert_not_contains "$profile $mode avoids plan workflow" "$argv" "--mode plan"
+    if [[ "$mode" == review ]]; then
+      assert_contains "$profile review denies file writes, MCP and browser" "$argv" \
+        '--settings {"permissions":{"deny":["write_file(*)","mcp(*)","execute_url(*)"]}}'
+    else
+      assert_not_contains "$profile delegate keeps full access" "$argv" "--settings"
+    fi
+  done
+done
+AGY_MODEL=gemini-3.8-flash AGY_EFFORT=low PORCH_DUMP_ARGV="$TMP/agy-overrides.json" \
+  "$LIB_DIR/backend_run.sh" --mode review --agent-id agy --raw "hello" >/dev/null
+argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/agy-overrides.json"'"))["argv"]))')
+assert_contains "agy shell runner honors AGY_MODEL and AGY_EFFORT" "$argv" "--model gemini-3.8-flash --effort low"
+
+export PORCH_RUN_DIR="$TMP/run-agy-ok"
+export PORCH_SAVE_OUTPUTS=1
+export PORCH_FAKE_AGY_MODE=write
+export PORCH_FAKE_ARGV_LOG="$TMP/agy-runtime-argv.jsonl"
+: > "$PORCH_FAKE_ARGV_LOG"
+mkdir -p "$PORCH_RUN_DIR" "$TMP/agy-cwd"
+set +e
+agy_out=$(cd "$TMP/agy-cwd" && "$LIB_DIR/backend_run.sh" --mode review --agent-id agy --raw "agy q" 2>"$TMP/agy-ok.err")
+agy_rc=$?
+set -e
+assert_eq "agy review exit 0" "$agy_rc" "0"
+assert_eq "agy review stdout is the result response" "$agy_out" "FAKE_AGY_OK"
+assert_file "agy final artifact" "$PORCH_RUN_DIR/final/agy.txt"
+assert_file "agy raw artifact" "$PORCH_RUN_DIR/raw/agy.jsonl"
+assert_contains "agy normalized backend label" "$(cat "$PORCH_RUN_DIR/normalized/agy.jsonl")" '"backend": "antigravity-cli"'
+assert_contains "agy normalized authoritative result" "$(cat "$PORCH_RUN_DIR/normalized/agy.jsonl")" '"type": "result"'
+assert_eq "agy review write tool was denied" "$([[ -e "$TMP/agy-cwd/fake-agy-write.txt" ]] && echo written || echo denied)" "denied"
+agy_check=$(python3 - "$PORCH_FAKE_ARGV_LOG" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+main = [r for r in rows if "argv" in r][-1]
+assert main["transport"] == "headless", main
+assert "write_file(*)" in main["deny"], main
+assert not any("agy q" in a for a in main["argv"]), main
+assert main["has_FULL_PROMPT"] is False, main
+prompts = [r for r in rows if r.get("event") == "stdin_prompt"]
+assert len(prompts) == 1 and prompts[0]["text"].endswith("agy q"), prompts
+print("ok")
+PY
+)
+assert_eq "agy review prompt travels on stdin" "$agy_check" "ok"
+
+export PORCH_RUN_DIR="$TMP/run-agy-del"
+mkdir -p "$PORCH_RUN_DIR"
+export PORCH_FAKE_AGY_MODE=write
+set +e
+agy_del_out=$(cd "$TMP/agy-cwd" && "$PORCH" delegate -a agy --one-shot "implement x" 2>"$TMP/agy-del.err")
+agy_del_rc=$?
+set -e
+assert_eq "agy delegate --one-shot exit 0" "$agy_del_rc" "0"
+assert_eq "agy delegate --one-shot stdout" "$agy_del_out" "FAKE_AGY_OK"
+assert_eq "agy delegate may write" "$([[ -e "$TMP/agy-cwd/fake-agy-write.txt" ]] && echo written || echo denied)" "written"
+
+for spec in 'fail 1' 'interrupted 1' 'noresult 1' 'crash 1' 'empty 66'; do
+  read -r agy_mode want <<< "$spec"
+  export PORCH_RUN_DIR="$TMP/run-agy-$agy_mode"
+  mkdir -p "$PORCH_RUN_DIR"
+  export PORCH_FAKE_AGY_MODE="$agy_mode"
+  set +e
+  agy_bad_out=$("$LIB_DIR/backend_run.sh" --mode review --agent-id agy --raw "q" 2>"$TMP/agy-$agy_mode.err")
+  agy_bad_rc=$?
+  set -e
+  assert_eq "agy $agy_mode exit $want" "$agy_bad_rc" "$want"
+  assert_eq "agy $agy_mode prints no answer" "$agy_bad_out" ""
+done
+assert_contains "agy failed result is explained" "$(cat "$TMP/agy-fail.err")" "agy result ERROR: fake agy failure"
+assert_contains "agy interrupted result is explained" "$(cat "$TMP/agy-interrupted.err")" "agy result INTERRUPTED"
+unset PORCH_FAKE_AGY_MODE
+
 # Explicit empty-answer exit 66 + backend failure surfaces stderr
 export PORCH_RUN_DIR="$TMP/run-devin-empty"
 mkdir -p "$PORCH_RUN_DIR"
@@ -597,7 +690,7 @@ export PORCH_FAKE_ARGV_LOG="$TMP/large-prompt-argv.jsonl"
 : > "$PORCH_FAKE_ARGV_LOG"
 # Parent shells may carry a leftover FULL_PROMPT; backend_run must not re-export it.
 unset FULL_PROMPT 2>/dev/null || true
-for agent in codex claude-code opencode gemini-cli grok devin; do
+for agent in codex claude-code opencode gemini-cli grok devin agy; do
   export PORCH_RUN_DIR="$TMP/run-large-$agent"
   mkdir -p "$PORCH_RUN_DIR"
   env -u FULL_PROMPT "$LIB_DIR/backend_run.sh" --mode review --agent-id "$agent" --raw \
@@ -609,9 +702,9 @@ import sys
 
 rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
 # Primary CLI rows only (ignore grok-prompt-meta helpers and devin ACP event rows).
-primary = [r for r in rows if r.get("bin") in ("codex", "claude", "opencode", "gemini", "grok", "devin")
+primary = [r for r in rows if r.get("bin") in ("codex", "claude", "opencode", "gemini", "grok", "devin", "agy")
            and "argv" in r]
-assert len(primary) == 6, primary
+assert len(primary) == 7, primary
 for row in primary:
     argv = "\0".join(row["argv"])
     assert "BEGIN_LARGE_PROMPT" not in argv
@@ -632,6 +725,14 @@ for row in primary:
         assert "acp" in row["argv"]
         prompts = [r for r in rows if r.get("bin") == "devin" and r.get("event") == "prompt"]
         assert prompts, "devin session/prompt event missing"
+        data = prompts[-1].get("text") or ""
+        assert data.startswith("BEGIN_LARGE_PROMPT\n"), row["bin"]
+        assert data.endswith("\nEND_LARGE_PROMPT"), row["bin"]
+        assert len(data) > 131072, row["bin"]
+    elif row["bin"] == "agy":
+        # Headless path: one JSON-encoded stream-json message on stdin.
+        prompts = [r for r in rows if r.get("bin") == "agy" and r.get("event") == "stdin_prompt"]
+        assert prompts, "agy stdin prompt event missing"
         data = prompts[-1].get("text") or ""
         assert data.startswith("BEGIN_LARGE_PROMPT\n"), row["bin"]
         assert data.endswith("\nEND_LARGE_PROMPT"), row["bin"]

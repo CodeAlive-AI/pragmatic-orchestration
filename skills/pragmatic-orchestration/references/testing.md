@@ -6,7 +6,7 @@ The default suite uses fake backend CLIs, is offline, and spends no model tokens
 scripts/tests/run.sh
 ```
 
-It covers backend argv safety, exact profile selection, model/effort resolution, stdout/stderr separation, artifacts, Grok streaming success/failure, live progress, credential redaction, prompt purity, all review progress styles, invocation-specific keys, human-readable ids, steerable adapters/mailbox lifecycle, concurrent Grok queue/sendNow behavior, a Devin ACP fake covering one-shot and steerable paths (same-turn merge, cancel), cancel/idempotency/cleanup, and shared runtime contracts.
+It covers backend argv safety, exact profile selection, model/effort resolution, stdout/stderr separation, artifacts, Grok streaming success/failure, live progress, credential redaction, prompt purity, all review progress styles, invocation-specific keys, human-readable ids, steerable adapters/mailbox lifecycle, concurrent Grok queue/sendNow behavior, a Devin ACP fake covering one-shot and steerable paths (same-turn merge, cancel), an Antigravity fake covering headless stream-json (review deny rules, failed/interrupted results) and `agy acp` (same-turn injection, cancel-and-send, rejected model), cancel/idempotency/cleanup, and shared runtime contracts.
 
 Input regressions keep an inherited stdin pipe open while exercising review,
 delegate, steering, backend launchers, and both prompt builders. They cover
@@ -59,6 +59,7 @@ Opt-in real smoke tests spend tokens:
 
 ```bash
 PORCH_STEER_SMOKE=1 bash scripts/tests/steer/smoke_real.sh -a grok
+PORCH_STEER_SMOKE=1 bash scripts/tests/steer/smoke_real.sh -a agy-gemini-3.8-flash
 ```
 
 ## Cross-platform checks

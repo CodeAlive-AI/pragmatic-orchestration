@@ -1,6 +1,6 @@
 ---
 name: pragmatic-orchestration
-description: "Run external coding agents (Codex, Claude Code, OpenCode, native Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or single-agent implementers. Use for independent single-model opinions and code review, steerable research, full-access delegation, long-running work, reattaching to delegated runs, or showing current subagents in the optional UI. Not for simple questions answerable directly from docs or the current codebase."
+description: "Run external coding agents (Codex, Claude Code, OpenCode, native Grok Build, Gemini, Devin CLI, Antigravity CLI) as independent reviewers, stateful repository researchers, or single-agent implementers. Use for independent single-model opinions and code review, steerable research, full-access delegation, long-running work, reattaching to delegated runs, or showing current subagents in the optional UI. Not for simple questions answerable directly from docs or the current codebase."
 ---
 
 # Pragmatic Orchestration

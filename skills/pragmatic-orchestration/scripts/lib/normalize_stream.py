@@ -25,8 +25,9 @@ Supported backends:
   - plain: each line becomes answer_delta
 
 Exit codes:
-  0 — success (for grok: requires run_completed/end, no run_failed/error, unless --no-validate)
-  1 — grok validation failure (error event or missing end)
+  0 — success (for grok/antigravity-cli: requires run_completed/end or a
+      SUCCESS result, no run_failed/error, unless --no-validate)
+  1 — grok/antigravity-cli validation failure (error event or missing end)
   2 — usage
 """
 from __future__ import annotations
@@ -504,6 +505,53 @@ def normalize_devin(obj: Dict[str, Any]) -> tuple[str, Any]:
     return "event", "devin"
 
 
+_AGY_TOOL_FAILED_STATES = frozenset({"ERROR", "FAILED", "CANCELED", "CANCELLED"})
+
+
+def normalize_agy(obj: Dict[str, Any]) -> tuple[str, Any]:
+    """Map `agy --output-format stream-json` NDJSON to the stream vocabulary.
+
+    Envelope: {"event": T, T: {...}} with T in init | step_update | result.
+    `agent_response` step text_delta chunks are answer deltas; the terminal
+    result.response is the authoritative answer. A result whose status is not
+    SUCCESS, or which carries finished_reason (print_timeout, interrupted,
+    error), is a failure even though agy may exit 0. Denied tool calls surface
+    as tool steps in state ERROR and do not fail the run by themselves.
+    """
+    typ = obj.get("event") or ""
+    body = obj.get(typ) if isinstance(obj.get(typ), dict) else {}
+    if typ == "init":
+        return "progress", f"init model={body.get('model') or ''}".strip()
+    if typ == "step_update":
+        step_type = str(body.get("step_type") or "")
+        state = str(body.get("state") or "").upper()
+        thought = body.get("thinking_delta") or body.get("thought_delta")
+        if isinstance(thought, str) and thought:
+            return "thought", thought
+        if step_type == "agent_response":
+            delta = body.get("text_delta")
+            if isinstance(delta, str) and delta:
+                return "text", delta
+            return "progress", f"agent_response:{state.lower()}"
+        if step_type == "tool":
+            name = str(body.get("tool_name") or (body.get("tool_info") or {}).get("name") or "tool")
+            if state == "ACTIVE":
+                return "tool_started", name
+            if state in _AGY_TOOL_FAILED_STATES:
+                return "tool_completed", f"{name}:failed"
+            return "tool_completed", f"{name}:{state.lower() or 'done'}"
+        return "progress", f"{step_type or 'step'}:{state.lower()}"
+    if typ == "result":
+        status = str(body.get("status") or "")
+        finished = str(body.get("finished_reason") or "")
+        if status == "SUCCESS" and not finished:
+            response = body.get("response")
+            return "result", response if isinstance(response, str) else ""
+        detail = body.get("error") or finished or "no detail"
+        return "error", f"agy result {status or 'missing status'}: {detail}"
+    return "event", typ or "agy"
+
+
 def normalize_gemini(obj: Dict[str, Any]) -> tuple[str, Any]:
     """Gemini CLI typically emits plain text; JSON objects map when present."""
     if "_plain" in obj:
@@ -545,7 +593,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Normalize backend streams to porch JSONL")
     ap.add_argument("--backend", required=True, choices=[
         "codex-cli", "claude-code", "opencode", "gemini-cli", "grok-build",
-        "devin-cli", "plain"
+        "devin-cli", "antigravity-cli", "plain"
     ])
     ap.add_argument("--agent-id", required=True)
     ap.add_argument("--model", default="")
@@ -678,6 +726,8 @@ def main() -> int:
                     # `devin acp` JSON-RPC NDJSON; backend label stays
                     # args.backend on emitted events.
                     stream_typ, data = normalize_devin(obj)
+                elif args.backend == "antigravity-cli":
+                    stream_typ, data = normalize_agy(obj)
                 elif args.backend == "gemini-cli":
                     stream_typ, data = normalize_gemini(obj)
                 else:
@@ -832,6 +882,15 @@ def main() -> int:
             return 1
         if not saw_end:
             print("grok stream missing end event", file=sys.stderr)
+            return 1
+    if args.backend == "antigravity-cli" and not args.no_validate:
+        # agy can exit 0 after an interrupted or failed turn; only a
+        # SUCCESS result proves completion.
+        if saw_error:
+            print(f"agy stream error: {error_msg}", file=sys.stderr)
+            return 1
+        if not saw_end:
+            print("agy stream missing result event", file=sys.stderr)
             return 1
 
     return 0

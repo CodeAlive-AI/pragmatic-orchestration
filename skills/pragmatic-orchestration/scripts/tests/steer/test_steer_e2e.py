@@ -64,6 +64,8 @@ def env_base(reg_root: Path, art: Path) -> dict:
     e["PORCH_BIN_GROK"] = str(FAKES / "fake-grok-steer")
     # Devin's single ACP fake serves both one-shot and steerable paths.
     e["PORCH_BIN_DEVIN"] = str(TESTS_DIR / "fakes" / "fake-devin")
+    # The agy fake serves both headless stream-json and `agy acp`.
+    e["PORCH_BIN_AGY"] = str(TESTS_DIR / "fakes" / "fake-agy")
     return e
 
 
@@ -358,7 +360,7 @@ def test_backend_e2e(agent: str, label: str, tmp: Path, extra_checks=None) -> No
     cwd = tmp / f"cwd-{agent}"
     cwd.mkdir()
     env = env_base(reg_root, art)
-    if agent == "devin":
+    if agent in ("devin", "agy"):
         # The merged-steer assertions need the turn to outlive steer delivery
         # (CLI spawn + mailbox drain + ACP round-trip). 0.35s is marginal on a
         # loaded runner; the steer then lands after end_turn and is honestly
@@ -407,6 +409,7 @@ def test_backend_e2e(agent: str, label: str, tmp: Path, extra_checks=None) -> No
             "opencode": "max",
             "grok": "high",
             "devin": "",
+            "agy": "high",
         }[agent]
         assert_true(
             f"{label} status exposes resolved effort",
@@ -1799,6 +1802,103 @@ def _devin_e2e_checks(env, run_id, reg_root, out, err, tmp) -> None:
     assert_true("devin same_turn delivery class", "same_turn" in classes, str(steers))
 
 
+def _agy_e2e_checks(env, run_id, reg_root, out, err, tmp) -> None:
+    assert_true("agy final has FAKE_AGY_OK", "FAKE_AGY_OK" in (out or ""), (out or "")[:300])
+    assert_true("agy injected steer text in final", "STEER:" in (out or ""), (out or "")[:300])
+    assert_true("agy thought never in final", "FAKE_THOUGHT_NOT_FINAL" not in (out or ""))
+    assert_true("agy prompt echo never in final", "task for agy" not in (out or ""), (out or "")[:300])
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
+    steers = st.get("steers") or []
+    statuses = {s.get("mailbox_status") or s.get("status") for s in steers}
+    assert_true("agy steer reached completed via steer_ack", "completed" in statuses, str(steers))
+    classes = {s.get("delivery_class") for s in steers if s.get("delivery_class")}
+    assert_true("agy same_turn delivery class", "same_turn" in classes, str(steers))
+    log = tmp / "argv-agy.jsonl"
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    launches = [e for e in entries if e.get("transport") == "acp"]
+    assert_true("agy steerable uses acp", len(launches) == 1, str(entries[:3]))
+    if launches:
+        argv = launches[0].get("argv") or []
+        assert_true("agy acp skips permission prompts", "--dangerously-skip-permissions" in argv, str(argv))
+        assert_true("agy task never in acp argv", not any("task for agy" in a for a in argv), str(argv))
+        assert_true("agy prompt body not in env", not launches[0].get("has_FULL_PROMPT"))
+    options = [(e.get("configId"), e.get("value")) for e in entries if e.get("event") == "set_config_option"]
+    assert_true("agy selects model and thought level",
+                options == [("model", "gemini-4-argon"), ("thought_level", "high")], str(options))
+    prompts = [e for e in entries if e.get("event") == "prompt"]
+    assert_true("agy task runs on configured model",
+                bool(prompts) and prompts[0].get("model") == "gemini-4-argon-high", str(prompts[:1]))
+
+
+def test_agy_interrupt_steer(tmp: Path) -> None:
+    """interrupt = session/cancel then prompt; first turn cancelled, second completes."""
+    print("=== e2e: agy interrupt cancel_and_send ===")
+    reg_root = tmp / "reg-agyint"
+    art = tmp / "art-agyint"
+    art.mkdir(parents=True)
+    reg_root.mkdir(parents=True)
+    cwd = tmp / "cwd-agyint"
+    cwd.mkdir()
+    env = env_base(reg_root, art)
+    env["PORCH_FAKE_STEER_SLOW"] = "1.5"
+    proc, run_id, _ = start_steerable("agy", "LONG TASK", env, cwd)
+    time.sleep(0.3)
+    r = run_cmd(
+        [str(PORCH), "delegate", "steer", run_id, "--mode", "interrupt", "STEER interrupt now"],
+        env,
+        timeout=15,
+    )
+    assert_true("agy interrupt steer accepted", r.returncode == 0, r.stderr)
+    code, out, err = wait_proc(proc, timeout=60)
+    assert_true("agy interrupt exit 0", code == 0, f"code={code} err={(err or '')[-400:]}")
+    assert_true("agy interrupt final has answer", "FAKE_AGY_OK" in (out or ""), (out or "")[:300])
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout)
+    classes = {s.get("delivery_class") for s in st.get("steers") or [] if s.get("delivery_class")}
+    assert_true("agy interrupt class cancel_and_send", "cancel_and_send" in classes, str(st.get("steers")))
+    raw = art / "raw" / "agy.jsonl"
+    assert_true("agy raw artifact exists", raw.is_file(), str(art))
+    if raw.is_file():
+        text = raw.read_text(encoding="utf-8")
+        assert_true("agy first prompt cancelled", '"stopReason": "cancelled"' in text)
+        assert_true("agy successor completed", '"stopReason": "end_turn"' in text)
+
+
+def test_agy_unknown_model_fails_launch(tmp: Path) -> None:
+    """A model agy rejects must fail the launch, never run the default model."""
+    print("=== unit: agy unknown model fails launch ===")
+    sys.path.insert(0, str(LIB_DIR))
+    from steer.adapters.agy import AgyAdapter  # type: ignore
+
+    art = tmp / "art-agy-bad-model"
+    (art / "raw").mkdir(parents=True)
+    log = tmp / "argv-agy-bad-model.jsonl"
+    old_log = os.environ.get("PORCH_FAKE_ARGV_LOG")
+    os.environ["PORCH_FAKE_ARGV_LOG"] = str(log)
+    adapter = AgyAdapter(
+        binary=str(TESTS_DIR / "fakes" / "fake-agy"),
+        model="no-such-model",
+        effort="high",
+        cwd=str(tmp),
+        artifacts_dir=str(art),
+        agent_id="agy",
+    )
+    error = ""
+    try:
+        adapter.start("must not run")
+    except RuntimeError as e:
+        error = str(e)
+    finally:
+        adapter.close()
+        if old_log is None:
+            os.environ.pop("PORCH_FAKE_ARGV_LOG", None)
+        else:
+            os.environ["PORCH_FAKE_ARGV_LOG"] = old_log
+    assert_true("agy unknown model raises", "agy rejected model='no-such-model'" in error, error)
+    entries = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert_true("agy unknown model sends no task",
+                not any(e.get("event") == "prompt" for e in entries), str(entries))
+
+
 def test_devin_interrupt_steer(tmp: Path) -> None:
     """interrupt = session/cancel then prompt; first turn cancelled, second completes."""
     print("=== e2e: devin interrupt cancel_and_send ===")
@@ -2980,6 +3080,9 @@ def main() -> int:
         test_devin_interrupt_steer(tmp)
         test_devin_steer_reject_when_done(tmp)
         test_devin_cancel_exit_130(tmp)
+        test_backend_e2e("agy", "agy", tmp, extra_checks=_agy_e2e_checks)
+        test_agy_interrupt_steer(tmp)
+        test_agy_unknown_model_fails_launch(tmp)
         test_opencode_auth_e2e_password_not_in_artifacts(tmp)
         test_registry_loss_does_not_lose_final(tmp)
         test_save_outputs_zero_no_cwd_artifacts(tmp)

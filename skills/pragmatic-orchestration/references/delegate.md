@@ -53,7 +53,8 @@ Return changed files, verification results, and remaining limitations or blocker
 ## Steerable and detached runs
 
 - Select exactly one `-a <agent-id>`; no default, globs, or multi-select.
-- Codex CLI, Claude Code, OpenCode, Grok Build, and Devin CLI support delegation.
+- Codex CLI, Claude Code, OpenCode, Grok Build, Devin CLI, and Antigravity CLI
+  (`agy`) support delegation.
   Gemini is review-only and is rejected by delegate.
 - Delegate uses a full-access runtime, even for a read-only task. It provides no
   sandbox or interactive approval flow; task scope does not expand user authority.

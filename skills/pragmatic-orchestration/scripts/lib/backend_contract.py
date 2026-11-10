@@ -36,6 +36,7 @@ BACKEND_IDS = (
     "grok-build",
     "gemini-cli",
     "devin-cli",
+    "antigravity-cli",
 )
 
 BACKEND_BINS = {
@@ -45,6 +46,7 @@ BACKEND_BINS = {
     "grok-build": "grok",
     "gemini-cli": "gemini",
     "devin-cli": "devin",
+    "antigravity-cli": "agy",
 }
 
 BIN_ENV = {
@@ -54,6 +56,7 @@ BIN_ENV = {
     "grok-build": "PORCH_BIN_GROK",
     "gemini-cli": "PORCH_BIN_GEMINI",
     "devin-cli": "PORCH_BIN_DEVIN",
+    "antigravity-cli": "PORCH_BIN_AGY",
 }
 
 MODEL_ENV = {
@@ -63,6 +66,7 @@ MODEL_ENV = {
     "grok-build": "GROK_MODEL",
     "gemini-cli": "GEMINI_MODEL",
     "devin-cli": "DEVIN_MODEL",
+    "antigravity-cli": "AGY_MODEL",
 }
 
 EFFORT_ENV = {
@@ -70,6 +74,7 @@ EFFORT_ENV = {
     "claude-code": "CLAUDE_EFFORT",
     "opencode": "OPENCODE_EFFORT",
     "grok-build": "GROK_EFFORT",
+    "antigravity-cli": "AGY_EFFORT",
 }
 
 
@@ -219,6 +224,31 @@ _BACKEND_CAPS: Dict[str, BackendCapabilities] = {
             "turn; interrupt is session/cancel then prompt. ACP_BACKEND is "
             "stripped from the child env. Final text = agent_message_chunk "
             "updates only."
+        ),
+    ),
+    "antigravity-cli": BackendCapabilities(
+        backend="antigravity-cli",
+        transport="stream-json",
+        oneshot_transport="stream-json",
+        steerable_transport="acp-stdio",
+        steerable=True,
+        steer_auto="same_turn",
+        steer_queue="same_turn",
+        steer_interrupt="cancel_and_send",
+        live_queue=False,
+        oneshot=True,
+        supports_delegate=True,
+        final_text_rule="agy_result_over_deltas",
+        notes=(
+            "One-shot: agy --input-format/--output-format stream-json with the "
+            "prompt on stdin; the terminal result.response is authoritative "
+            "and status must be SUCCESS. Review adds session-only settings "
+            "deny rules (write_file, mcp, execute_url; read_url without web), "
+            "which agy enforces over any user allow rule; the shell is trusted "
+            "to the report-only prompt contract. Steerable: agy acp with "
+            "--dangerously-skip-permissions; a concurrent session/prompt is "
+            "injected into the running turn; interrupt is session/cancel then "
+            "prompt. Model and thought_level are session config options."
         ),
     ),
 }
@@ -391,7 +421,7 @@ def final_text_from_normalized(
         # Completeness is validated separately (end present, no error).
         return assemble_final_text(events)
     if rule in ("opencode_text_parts", "plain_stdout",
-                "devin_agent_message_chunks"):
+                "devin_agent_message_chunks", "agy_result_over_deltas"):
         return assemble_final_text(events)
     return assemble_final_text(events)
 

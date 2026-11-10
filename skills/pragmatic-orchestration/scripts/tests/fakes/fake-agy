@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""Fake Antigravity CLI (`agy`) for the offline suite.
+
+Two transports, modeled on verified agy 1.5.4 wire facts:
+
+1. Headless stream-json (`agy --input-format stream-json --output-format
+   stream-json …`): reads one {"event":"user","message":{"content":…}} line
+   per turn from stdin, emits init, step_update and one result per turn, and
+   exits 0 on EOF. With a `--settings` deny rule for write_file(*), a
+   requested write is reported as a tool step in state ERROR.
+   Modes (PORCH_FAKE_AGY_MODE): ok | empty | fail | interrupted | noresult |
+   crash | write (the turn attempts a write_file tool call).
+
+2. `agy acp` (ACP JSON-RPC 2.0 NDJSON over stdio): initialize, session/new,
+   session/set_config_option (model / thought_level; unknown values fail with
+   -32602), session/prompt, session/cancel. A prompt sent while a turn runs
+   is injected into that turn (agent_message_chunk "STEER:<text>"), and every
+   in-flight request resolves at turn end in request order. Each prompt is
+   echoed as user_message_chunk, which is never answer text.
+   Turn duration: PORCH_FAKE_STEER_SLOW seconds (default 0.45).
+"""
+from __future__ import annotations
+
+import json
+import os
+import queue
+import sys
+import threading
+import time
+import uuid
+from typing import Any, Dict, List
+
+LOG = os.environ.get("PORCH_FAKE_ARGV_LOG")
+MODE = os.environ.get("PORCH_FAKE_AGY_MODE", "ok")
+SLOW = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.45"))
+MODELS = {"gemini-4-argon", "gemini-3.8-flash"}
+LEVELS = {"low", "medium", "high"}
+
+_send_lock = threading.Lock()
+
+
+def send(obj: Dict[str, Any]) -> None:
+    with _send_lock:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+
+
+def log_event(obj: Dict[str, Any]) -> None:
+    if not LOG:
+        return
+    with _send_lock:
+        try:
+            with open(LOG, "a", encoding="utf-8") as f:
+                f.write(json.dumps(obj) + "\n")
+        except OSError:
+            pass
+
+
+def flag_value(argv: List[str], name: str) -> str:
+    for i, arg in enumerate(argv):
+        if arg == name and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return ""
+
+
+def env_markers() -> Dict[str, bool]:
+    return {
+        "has_FULL_PROMPT": "FULL_PROMPT" in os.environ,
+        "has_JUDGE_INPUT_BODY": "JUDGE_INPUT_BODY" in os.environ,
+        "has_JR_INPUT_BODY": "JR_INPUT_BODY" in os.environ,
+        "has_JR_FINDINGS_BODY": "JR_FINDINGS_BODY" in os.environ,
+    }
+
+
+# ---- headless stream-json -------------------------------------------------
+
+def headless(argv: List[str]) -> int:
+    if flag_value(argv, "--input-format") != "stream-json" or flag_value(argv, "--output-format") != "stream-json":
+        print("fake-agy: headless mode needs stream-json in and out", file=sys.stderr)
+        return 2
+    settings = flag_value(argv, "--settings")
+    deny: List[str] = []
+    if settings:
+        deny = list(((json.loads(settings).get("permissions") or {}).get("deny")) or [])
+    model = flag_value(argv, "--model")
+    effort = flag_value(argv, "--effort")
+    log_event({"bin": "agy", "transport": "headless", "argv": argv, "cwd": os.getcwd(),
+               "deny": deny, "model": model, "effort": effort, **env_markers()})
+    conv = str(uuid.uuid4())
+    resolved = f"{model}-{effort}" if model and effort else model
+    send({"event": "init", "conversation_id": conv,
+          "init": {"model": resolved, "cwd": os.getcwd(),
+                   "tools": ["run_command", "write_to_file", "view_file"],
+                   "permission_mode": "always-proceed"}})
+    turns = 0
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        msg = json.loads(line)
+        content = (msg.get("message") or {}).get("content")
+        text = content if isinstance(content, str) else "".join(
+            b.get("text", "") for b in content or [] if isinstance(b, dict))
+        turns += 1
+        log_event({"bin": "agy", "event": "stdin_prompt", "text": text})
+        step = 0
+
+        def step_update(**fields: Any) -> None:
+            send({"event": "step_update",
+                  "step_update": {"conversation_id": conv, **fields}})
+
+        step_update(step_index=step, state="DONE", step_type="user_input")
+        if MODE == "crash":
+            sys.stdout.flush()
+            os._exit(1)
+        step += 1
+        step_update(step_index=step, state="ACTIVE", step_type="tool", tool_name="run_command",
+                    tool_info={"name": "run_command", "parameters": {"CommandLine": "echo fake"}})
+        step_update(step_index=step, state="DONE", step_type="tool", tool_name="run_command",
+                    tool_info={"name": "run_command", "parameters": {"CommandLine": "echo fake"},
+                               "output": "fake\n"})
+        if MODE == "write":
+            step += 1
+            path = os.path.join(os.getcwd(), "fake-agy-write.txt")
+            step_update(step_index=step, state="ACTIVE", step_type="tool", tool_name="write_file",
+                        tool_info={"name": "write_file", "parameters": {"Path": path}})
+            if "write_file(*)" in deny:
+                step_update(step_index=step, state="ERROR", step_type="tool", tool_name="write_file",
+                            tool_info={"name": "write_file", "parameters": {"Path": path},
+                                       "error": {"type": "TOOL_ERROR",
+                                                 "message": f"permission check failed for write_file \"{path}\""}})
+            else:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("x")
+                step_update(step_index=step, state="DONE", step_type="tool", tool_name="write_file",
+                            tool_info={"name": "write_file", "parameters": {"Path": path}})
+        if MODE == "noresult":
+            continue
+        step += 1
+        answer = "" if MODE == "empty" else "FAKE_AGY_OK"
+        if answer:
+            step_update(step_index=step, state="ACTIVE", step_type="agent_response",
+                        text_delta="FAKE_AGY_")
+            step_update(step_index=step, state="DONE", step_type="agent_response",
+                        text_delta="OK")
+        result: Dict[str, Any] = {"conversation_id": conv, "status": "SUCCESS",
+                                  "response": answer, "duration_seconds": 0.1,
+                                  "num_turns": turns,
+                                  "usage": {"input_tokens": 1, "output_tokens": 1,
+                                            "thinking_tokens": 0, "cache_read_tokens": 0,
+                                            "total_tokens": 2}}
+        if MODE == "fail":
+            result.update(status="ERROR", response="", error="fake agy failure",
+                          finished_reason="error")
+        elif MODE == "interrupted":
+            result.update(status="INTERRUPTED", finished_reason="interrupted")
+        send({"event": "result", "result": result})
+    return 0
+
+
+# ---- ACP ------------------------------------------------------------------
+
+class Session:
+    def __init__(self) -> None:
+        self.session_id = str(uuid.uuid4())
+        self.lock = threading.Lock()
+        self.turn_active = threading.Event()
+        self.cancel_flag = threading.Event()
+        self.active_rids: List[Any] = []
+        self.steer_texts: "queue.Queue[str]" = queue.Queue()
+        self.model = "gemini-4-argon"
+        self.level = "medium"
+
+    def update(self, update: Dict[str, Any]) -> None:
+        send({"jsonrpc": "2.0", "method": "session/update",
+              "params": {"sessionId": self.session_id, "update": update}})
+
+    def chunk(self, kind: str, text: str) -> None:
+        self.update({"sessionUpdate": kind, "content": {"type": "text", "text": text}})
+
+    def drain_steers(self) -> None:
+        while True:
+            try:
+                text = self.steer_texts.get_nowait()
+            except queue.Empty:
+                return
+            self.chunk("agent_message_chunk", f"STEER:{text}")
+
+    def add_prompt(self, rid: Any, text: str) -> None:
+        self.chunk("user_message_chunk", text)
+        with self.lock:
+            running = self.turn_active.is_set()
+            self.active_rids.append(rid)
+            if running:
+                self.steer_texts.put(text)
+            else:
+                self.turn_active.set()
+
+    def end_turn(self, stop_reason: str) -> None:
+        with self.lock:
+            rids = list(self.active_rids)
+            self.active_rids.clear()
+            self.turn_active.clear()
+            self.cancel_flag.clear()
+        for i, rid in enumerate(rids):
+            result: Dict[str, Any] = {"stopReason": stop_reason}
+            if i == len(rids) - 1:
+                result["usage"] = {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}
+            send({"jsonrpc": "2.0", "id": rid, "result": result})
+
+
+def run_turn(sess: Session) -> None:
+    if MODE == "crash":
+        os._exit(1)
+    sess.update({"sessionUpdate": "available_commands_update",
+                 "availableCommands": [{"name": "plan", "description": "fake"}]})
+    sess.chunk("agent_thought_chunk", "FAKE_THOUGHT_NOT_FINAL")
+    call_id = "call_" + uuid.uuid4().hex[:12]
+    sess.update({"sessionUpdate": "tool_call", "toolCallId": call_id, "name": "run_command",
+                 "kind": "execute", "title": "echo fake", "status": "in_progress"})
+    cancelled = False
+    steps = 5
+    for _ in range(steps):
+        if sess.cancel_flag.is_set():
+            cancelled = True
+            break
+        sess.drain_steers()
+        time.sleep(max(SLOW, 0.0) / steps)
+    sess.drain_steers()
+    sess.update({"sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                 "kind": "execute", "status": "completed"})
+    if cancelled:
+        sess.end_turn("cancelled")
+        return
+    if MODE == "fail":
+        sess.end_turn("refusal")
+        return
+    if MODE != "empty":
+        sess.chunk("agent_message_chunk", "FAKE_AGY_")
+        sess.chunk("agent_message_chunk", "OK")
+        sess.drain_steers()
+    sess.end_turn("end_turn")
+
+
+def turn_worker(sess: Session) -> None:
+    while True:
+        sess.turn_active.wait()
+        run_turn(sess)
+
+
+def acp(argv: List[str]) -> int:
+    log_event({"bin": "agy", "transport": "acp", "argv": argv, "cwd": os.getcwd(),
+               **env_markers()})
+    sess = Session()
+    threading.Thread(target=turn_worker, args=(sess,), daemon=True).start()
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        mid = msg.get("id")
+        method = msg.get("method")
+        params = msg.get("params") or {}
+        if method is None:
+            continue
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "protocolVersion": 1,
+                "agentCapabilities": {"loadSession": True, "load_session": True},
+                "agentInfo": {"name": "Antigravity ACP Server", "version": "0.0.0-fake"}}})
+        elif method == "session/new":
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "sessionId": sess.session_id,
+                "modes": {"currentModeId": "default", "availableModes": [
+                    {"id": "default"}, {"id": "accept-edits"}, {"id": "auto"}, {"id": "plan"}]}}})
+        elif method == "session/set_config_option":
+            config_id = params.get("configId")
+            value = str(params.get("value") or "")
+            log_event({"bin": "agy", "event": "set_config_option",
+                       "configId": config_id, "value": value})
+            family = value
+            for level in LEVELS:
+                if value.endswith("-" + level):
+                    family = value[: -len(level) - 1]
+            if config_id == "model" and family in MODELS:
+                sess.model = family
+            elif config_id == "thought_level" and value in LEVELS:
+                sess.level = value
+            else:
+                send({"jsonrpc": "2.0", "id": mid,
+                      "error": {"code": -32602, "message": f"Unknown model ID: {value}"
+                                if config_id == "model" else f"Unknown value: {value}"}})
+                continue
+            send({"jsonrpc": "2.0", "id": mid, "result": {"configOptions": []}})
+            sess.update({"sessionUpdate": "config_option_update", "configOptions": []})
+        elif method == "session/prompt":
+            text = "".join(str(b.get("text") or "") for b in params.get("prompt") or []
+                           if isinstance(b, dict))
+            log_event({"bin": "agy", "event": "prompt", "text": text,
+                       "model": f"{sess.model}-{sess.level}"})
+            sess.add_prompt(mid, text)
+        elif method == "session/cancel":
+            sess.cancel_flag.set()
+        elif mid is not None:
+            send({"jsonrpc": "2.0", "id": mid,
+                  "error": {"code": -32601, "message": f"Method not found: {method}"}})
+    return 0
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if argv and argv[0] == "acp":
+        return acp(argv)
+    return headless(argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

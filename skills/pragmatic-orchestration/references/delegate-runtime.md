@@ -247,6 +247,22 @@ Verified against devin 3000.10.27 over real ACP runs:
 - `interrupt` is `cancel_and_send`: `session/cancel` resolves in-flight prompts with stopReason `cancelled`; the session stays usable and the steer prompt takes over.
 - The ack ladder is the shared one — `request_sent` → `completed`/`cancelled`/`failed` by the request's own stopReason; it is never `applied`.
 
+### What Antigravity actually does with a steer
+
+Verified against agy 1.5.4 over real `agy acp` runs:
+
+- `auto`/`queue` are `same_turn`: a `session/prompt` sent while a turn runs is
+  injected into that turn — the agent sees the guidance without waiting for
+  `end_turn`, and every in-flight request resolves when the turn ends.
+- `interrupt` is `cancel_and_send`: `session/cancel` ends the running prompt
+  with stopReason `cancelled`; the next prompt keeps the conversation context.
+- Each prompt is echoed as a `user_message_chunk`; only `agent_message_chunk`
+  text forms the answer. The ack ladder is the shared ACP one and never claims
+  `applied`.
+- The steerable worker runs `agy acp --dangerously-skip-permissions`. Model and
+  thinking level are set per session; ACP sessions start on the account's
+  default model, so Porch re-applies them on every launch.
+
 ## Mailbox lifecycle
 
 | `mailbox_status` | Meaning |
@@ -297,6 +313,7 @@ Steerable runs always retain the private service registry and protocol artifacts
 | OpenCode 2 | `auto`: step injection; `queue`: next turn, via authenticated loopback HTTP/SSE | Interrupt, verify idle, then prompt |
 | Grok Build | `queue_next_turn` through concurrent ACP prompt FIFO | Cancel-and-send using `sendNow` and its own prompt id |
 | Devin CLI | `same_turn` through concurrent ACP `session/prompt` merge | Cancel-and-send through `session/cancel` (stopReason `cancelled`) |
+| Antigravity CLI | `same_turn` through concurrent ACP `session/prompt` injection | Cancel-and-send through `session/cancel` (stopReason `cancelled`) |
 
 OpenCode replacement requires both a successful interrupt and confirmation of idle
 through `/api/session/active`. An unsuccessful or unresolved stop fails the run and

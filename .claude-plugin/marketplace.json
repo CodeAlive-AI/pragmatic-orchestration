@@ -6,14 +6,14 @@
     "email": "contact@codealive.ai"
   },
   "metadata": {
-    "description": "Pragmatic multi-agent orchestration: independent review and steerable delegation across Codex, Claude Code, OpenCode, Grok Build, Gemini, and Devin CLI \u2014 for any agent that supports the Agent Skills standard.",
-    "version": "4.3.0"
+    "description": "Pragmatic multi-agent orchestration: independent review and steerable delegation across Codex, Claude Code, OpenCode, Grok Build, Gemini, Devin CLI, and Antigravity CLI \u2014 for any agent that supports the Agent Skills standard.",
+    "version": "4.4.0"
   },
   "plugins": [
     {
       "name": "pragmatic-orchestration",
-      "description": "Multi-agent orchestration for coding agents: run external agent CLIs (Codex, Claude Code, OpenCode, Grok Build, Gemini, Devin CLI) as independent reviewers, stateful repository researchers, or steerable single-agent implementers via the `porch` CLI Also ships remote-agents: dedicated remote Linux/Windows agent hosts (SSH-over-SSM, headless desktop, work bridge).",
-      "version": "4.3.0",
+      "description": "Multi-agent orchestration for coding agents: run external agent CLIs (Codex, Claude Code, OpenCode, Grok Build, Gemini, Devin CLI, Antigravity CLI) as independent reviewers, stateful repository researchers, or steerable single-agent implementers via the `porch` CLI Also ships remote-agents: dedicated remote Linux/Windows agent hosts (SSH-over-SSM, headless desktop, work bridge).",
+      "version": "4.4.0",
       "author": {
         "name": "CodeAlive-AI",
         "email": "contact@codealive.ai"
@@ -36,6 +36,7 @@
         "grok",
         "gemini-cli",
         "devin-cli",
+        "antigravity-cli",
         "remote-agents",
         "aws-ssm",
         "rdp",
@@ -53,6 +54,7 @@
         "grok",
         "gemini-cli",
         "devin-cli",
+        "antigravity-cli",
         "skills",
         "remote-agents",
         "aws-ssm",
@@ -61,5 +63,5 @@
       ]
     }
   ],
-  "version": "4.3.0"
+  "version": "4.4.0"
 }

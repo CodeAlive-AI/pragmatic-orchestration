@@ -5,6 +5,7 @@ from typing import Mapping
 BACKEND_LAUNCHERS = {
     "codex-cli": "codex", "claude-code": "claude", "opencode": "opencode",
     "grok-build": "grok", "devin-cli": "devin",
+    "antigravity-cli": "agy",
 }
 KNOWN_LAUNCHERS = frozenset({*BACKEND_LAUNCHERS.values(), "gemini", "cursor", "terminal", "unknown"})
 

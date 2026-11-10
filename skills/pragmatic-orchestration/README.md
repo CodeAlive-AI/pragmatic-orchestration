@@ -10,7 +10,7 @@ For example:
 
 - send a repository investigation to a suitable stateful worker that can be steered and continued;
 - ask Claude Fable to produce an independent plan;
-- delegate an implementation to Codex, Claude, Grok, OpenCode, or Devin;
+- delegate an implementation to Codex, Claude, Grok, OpenCode, Devin, or Antigravity (`agy`);
 - review the same change with several unrelated model families and compare what they find.
 
 Each worker runs through its real coding-agent harness, with access to the tools and repository context appropriate for the selected mode. This is not role-play inside one model.
@@ -74,6 +74,7 @@ You also need Python 3 and at least one supported coding-agent CLI:
 | [OpenCode 2.2.6+ (2.x)](https://opencode.ai) | `opencode` | review, delegate |
 | [Grok Build](https://grok.x.ai) | `grok` | review, delegate |
 | [Devin CLI](https://devin.ai) | `devin` | review, delegate |
+| [Antigravity CLI](https://antigravity.google/docs/cli/reference/) | `agy` | review, delegate |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini` | review only |
 
 Authentication stays with each CLI. If it already works in your terminal, Porch can use it.

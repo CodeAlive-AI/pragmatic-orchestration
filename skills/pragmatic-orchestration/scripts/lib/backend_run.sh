@@ -182,6 +182,10 @@ else
         devin-cli)
             MODEL="${DEVIN_MODEL:-$MODEL}"
             ;;
+        antigravity-cli)
+            MODEL="${AGY_MODEL:-$MODEL}"
+            EFFORT="${AGY_EFFORT:-$EFFORT}"
+            ;;
     esac
     BIN=""
 fi
@@ -287,6 +291,7 @@ bin_for() {
         gemini-cli)  echo "${PORCH_BIN_GEMINI:-gemini}" ;;
         grok-build)  echo "${PORCH_BIN_GROK:-grok}" ;;
         devin-cli)   echo "${PORCH_BIN_DEVIN:-devin}" ;;
+        antigravity-cli) echo "${PORCH_BIN_AGY:-agy}" ;;
         *)           echo "" ;;
     esac
 }
@@ -555,6 +560,35 @@ build_cmd_devin() {
     PROMPT_VIA_FILE=1
 }
 
+build_cmd_agy() {
+    # Headless stream-json in both directions: the prompt travels as one
+    # stdin message (never argv) and the terminal result event carries the
+    # authoritative answer. --dangerously-skip-permissions keeps tool calls
+    # from being soft-denied without a prompt; explicit deny rules still win
+    # over it and over any allow rule in the user's settings (Deny > Ask >
+    # Allow). Review passes session-only deny rules, so agy's own file-write
+    # tools fail with "permission check failed"; MCP tools and the browser
+    # subagent are denied, and web reading only when the mode forbids web.
+    # The shell stays available and is trusted to the report-only prompt
+    # contract, as for the other backends. Plan mode is a planning workflow,
+    # not a permission boundary, so it is not used.
+    CMD=("$BIN" --input-format stream-json --output-format stream-json
+         --dangerously-skip-permissions --disable-slash-commands)
+    if [[ "$ACCESS_POLICY" == "readonly" ]]; then
+        local deny='"write_file(*)","mcp(*)","execute_url(*)"'
+        if [[ "${MODE_CAP_WEB:-true}" != "true" ]]; then
+            deny+=',"read_url(*)"'
+        fi
+        CMD+=(--settings "{\"permissions\":{\"deny\":[$deny]}}")
+    fi
+    if [[ -n "$MODEL" ]]; then
+        CMD+=(--model "$MODEL")
+    fi
+    if [[ -n "$EFFORT" ]]; then
+        CMD+=(--effort "$EFFORT")
+    fi
+}
+
 case "$BACKEND" in
     codex-cli)   build_cmd_codex ;;
     claude-code) build_cmd_claude ;;
@@ -562,6 +596,7 @@ case "$BACKEND" in
     gemini-cli)  build_cmd_gemini ;;
     grok-build)  build_cmd_grok ;;
     devin-cli)   build_cmd_devin ;;
+    antigravity-cli) build_cmd_agy ;;
 esac
 
 # Argv dump mode for tests — exact safety properties without executing
@@ -672,7 +707,7 @@ run_streamed() {
             norm_argv+=(--debug-events)
         fi
     fi
-    if [[ "$backend" != "grok-build" ]]; then
+    if [[ "$backend" != "grok-build" && "$backend" != "antigravity-cli" ]]; then
         norm_argv+=(--no-validate)
     fi
 
@@ -704,7 +739,7 @@ run_streamed() {
     # callers see the true process outcome. Grok contract additionally requires
     # end present / no error: if backend exited 0 but normalizer failed, surface 1.
     if [[ "${NORM_RC:-0}" -ne 0 && "${BACKEND_RC:-0}" -eq 0 ]]; then
-        if [[ "$backend" == "grok-build" ]]; then
+        if [[ "$backend" == "grok-build" || "$backend" == "antigravity-cli" ]]; then
             BACKEND_RC=1
         fi
         # Other backends: normalizer failure alone does not rewrite a clean
@@ -858,6 +893,24 @@ if is_err:
                     --backend devin-cli --agent-id "$AGENT_ID" \
                     --input "$RAW_STREAM" --extract-text --text-out "$FINAL_TEXT" \
                     --no-validate >/dev/null 2>/dev/null || true
+            fi
+            ;;
+        antigravity-cli)
+            if command -v "$BIN" &>/dev/null || [[ -x "$BIN" ]]; then
+                # One stream-json user message on stdin; EOF ends the session
+                # after this turn. JSON encoding keeps any prompt text intact.
+                AGY_INPUT="$TMP_DIR/agy-input.jsonl"
+                python3 -c '
+import json, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+with open(sys.argv[2], "w", encoding="utf-8") as f:
+    f.write(json.dumps({"event": "user", "message": {"content": text}}) + "\n")
+' "$PROMPT_PATH" "$AGY_INPUT"
+                run_streamed "antigravity-cli" "$AGY_INPUT" "${CMD[@]}"
+                exit_code=$BACKEND_RC
+            else
+                echo "agy CLI missing" >"$BACKEND_ERR"
+                exit_code=4
             fi
             ;;
     esac

@@ -288,6 +288,30 @@ class MediaTest(unittest.TestCase):
         self.assertEqual(argv[argv.index("--allowedTools") + 1], "Read")
         self.assertIn("Bash", argv[argv.index("--disallowedTools") + 1])
 
+    def test_agy_video_describe_stages_frames_and_audio(self):
+        (self.cwd / "clip.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        res = self.porch("video", "describe", "-a", "agy", "--input", "clip.mp4")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout, "FAKE_AGY_VIDEO video=video.mp4 audio=audio.mp3\n")
+        quiet = self.porch("video", "describe", "-a", "agy", "--input", "clip.mp4",
+                           "--no-audio", "What color?")
+        self.assertEqual(quiet.stdout, "FAKE_AGY_VIDEO video=video.mp4 audio=none\n")
+        (self.cwd / "clip.mkv").write_bytes(b"\x1aE\xdf\xa3")
+        mkv = self.porch("video", "describe", "-a", "agy", "--input", "clip.mkv")
+        self.assertEqual(mkv.returncode, 0, mkv.stderr)
+        self.assertIn("video=video.mp4", mkv.stdout)
+        ffmpeg_runs = [r["argv"] for r in self.rows() if r.get("bin") == "ffmpeg"]
+        self.assertTrue(any("-an" in a for a in ffmpeg_runs))
+
+    def test_video_describe_rejects_bad_input_and_backend(self):
+        self.image()
+        bad = self.porch("video", "describe", "-a", "agy", "--input", "in.png")
+        self.assertEqual(bad.returncode, 5, bad.stderr)
+        (self.cwd / "clip.mp4").write_bytes(b"0")
+        codex = self.porch("video", "describe", "-a", "codex", "--input", "clip.mp4")
+        self.assertEqual(codex.returncode, 4)
+        self.assertIn("video describe -a", codex.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,6 +119,12 @@ def media_answer(text: str, argv: List[str], conv: str) -> Any:
             with open(os.path.join(store, f"fake_{n}_{int(time.time() * 1000)}.jpg"), "wb") as f:
                 f.write(JPEG)
         return f"FAKE_AGY_IMAGES count={count} refs={len([r for r in refs if os.path.isfile(r)])}"
+    match = re.search(r"Open the video file \./(video\.\w+)", text)
+    if match:
+        audio = re.search(r"Then open \./(audio\.\w+)", text)
+        heard = audio.group(1) if audio and os.path.isfile(audio.group(1)) else "none"
+        seen = match.group(1) if os.path.isfile(match.group(1)) else "missing"
+        return f"FAKE_AGY_VIDEO video={seen} audio={heard}"
     if "Look at these image files" in text:
         refs = re.findall(r"\./(image-\d+\.\w+)", text)
         return f"FAKE_AGY_DESCRIPTION {' '.join(r for r in refs if os.path.isfile(r))}"

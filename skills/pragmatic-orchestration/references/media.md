@@ -1,6 +1,6 @@
 # Media mode
 
-`porch media` transcribes audio and video and works with images through one
+`porch media` transcribes audio and video, describes video, and works with images through one
 exact profile. Every operation runs read-only in a private staging directory:
 no shell, no web, no writes to the caller's repository. Porch prepares the
 inputs, and collects the results itself instead of trusting the agent's claims.
@@ -9,6 +9,7 @@ inputs, and collects the results itself instead of trusting the agent's claims.
 "$PORCH" media capabilities                      # which profiles can do what
 "$PORCH" media transcribe -a agy-gemini-4-argon meeting.m4a > meeting.txt
 "$PORCH" media transcribe -a agy-gemini-3.8-flash --format srt --out talk.srt talk.mp4
+"$PORCH" media video describe -a agy-gemini-3.8-flash --input demo.mov "List the steps the presenter shows"
 "$PORCH" media image describe -a claude-sonnet --input chart.png "What trend does it show?"
 "$PORCH" media image generate -a codex --aspect 16:9 --out-dir art "A lighthouse at sunset, flat illustration"
 "$PORCH" media image edit -a codex --input photo.png --name night "Turn it into a night scene"
@@ -27,6 +28,7 @@ Verified live on 2026-11-10 (agy 1.5.4, codex-cli 0.167.0, Claude Code 2.1.322).
 | Operation | Backends | Notes |
 |---|---|---|
 | `transcribe` | Antigravity (`agy`) | The only harness whose model hears audio headlessly. Codex attaches an audio file but its model cannot listen; Claude Code, OpenCode and Devin have no audio input. |
+| `video describe` | Antigravity (verified 2026-11-12, agy 1.5.6) | agy sees frames through `view_file` but not sound, so Porch adds the audio track as a separate MP3 (`--no-audio` skips it). See [Video](#video). |
 | `image describe` | Antigravity, Codex, Claude Code | Images are copied into the staging directory; Codex also gets them as `--image` attachments. |
 | `image generate` | Antigravity, Codex | Codex `image_gen` (`gpt-image-2`, PNG); agy `generate_image` through its image-generator subagent (Gemini image model, JPEG). |
 | `image edit` | Antigravity (≤3 inputs), Codex (≤5 inputs) | One input edits it; several inputs are combined. |
@@ -101,14 +103,30 @@ source and is absent from codex-cli 0.167.0; the spritesheet route works with
 both harnesses today. Expect small frame-to-frame drift: describe a starting
 pose the motion returns to, keep the camera still, and keep motion simple.
 
+## Video
+
+`video describe` takes one `--input` video and an optional question or
+instruction, and prints the answer to stdout. How Porch prepares it:
+
+- **Pass-through.** MP4, MOV or WebM under 95 MB is staged unchanged.
+- **Re-encoding.** Anything else, or any larger file, is re-encoded with ffmpeg to a silent MP4 at 2 fps, at most 480 px high. This is needed because `view_file` refuses files over 100 MB. If the result is still too big, the command fails and asks you to trim the input.
+- **Audio.** The audio track is extracted to mono 16 kHz MP3. If the video has no audio track, only the frames are described.
+
+Timestamps are approximate, because the model sees sampled frames. Use
+`transcribe` when you need exact speech with timings.
+
+agy 1.5.6 has no video generator: no Veo tool or subagent
+(google-antigravity/antigravity-cli#734 is still open). For short motion, use
+`image animate`.
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | Done |
 | 2 | Fewer images than `--count` (the produced ones are saved and listed) |
-| 4 | Unknown or incapable profile (the error names capable ones), or ffmpeg missing for transcribe/animate |
-| 5 | Usage error: missing input, too many inputs, not an image, bad `--aspect`/`--count` |
+| 4 | Unknown or incapable profile (the error names capable ones), or ffmpeg missing for transcribe/animate/video |
+| 5 | Usage error: missing input, too many inputs, not an image or video, video too large, bad `--aspect`/`--count` |
 | 66 | Nothing transcribed, or no image or spritesheet produced |
 | other | The backend run failed; its diagnostics are on stderr |
 

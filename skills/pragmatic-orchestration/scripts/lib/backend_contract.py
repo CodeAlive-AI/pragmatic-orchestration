@@ -261,6 +261,7 @@ _BACKEND_CAPS: Dict[str, BackendCapabilities] = {
 # image.animate renders a spritesheet that porch assembles into a GIF.
 # Codex cannot hear audio, Claude Code has no image generator, and agy hears
 # WAV/MP3 only (porch media converts every input to one of those).
+# Verified 2026-11-12 (agy 1.5.6): video.describe; agy has no video generator.
 _MEDIA_OPERATIONS: Dict[str, Dict[str, Dict[str, int]]] = {
     "antigravity-cli": {
         "transcribe": {},
@@ -268,6 +269,9 @@ _MEDIA_OPERATIONS: Dict[str, Dict[str, Dict[str, int]]] = {
         "image.generate": {"max_count": 4},
         "image.edit": {"max_inputs": 3, "max_count": 4},
         "image.animate": {"max_inputs": 3},
+        # view_file shows video frames only (no sound, 100 MB cap), so porch
+        # stages the audio track as a separate MP3 beside the video.
+        "video.describe": {"max_inputs": 1},
     },
     "codex-cli": {
         "image.describe": {"max_inputs": 10},

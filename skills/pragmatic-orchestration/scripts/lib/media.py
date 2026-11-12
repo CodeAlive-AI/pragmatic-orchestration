@@ -18,6 +18,10 @@ its working directory. Inputs are prepared there by Porch:
   session id in the run's raw event stream, then copied to --out-dir. The
   agent never needs write access, and an image it merely claims to have saved
   does not count.
+- video describe (agy only): agy's view_file shows a video's frames but not
+  its sound, and refuses files over 100 MB. Porch passes MP4/MOV/WebM under
+  the cap through unchanged, re-encodes anything else to a small MP4 without
+  sound, and stages the audio track as a separate MP3 the model can hear.
 """
 from __future__ import annotations
 
@@ -664,10 +668,93 @@ def cmd_animate(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# ---- video -------------------------------------------------------------------
+
+AGY_VIDEO_PASSTHROUGH = {".mp4", ".mov", ".webm"}
+AGY_VIEW_LIMIT = 100 * 1024 * 1024
+
+
+def stage_video(src: Path, stage: Path, with_audio: bool) -> Tuple[Path, Optional[Path]]:
+    ffmpeg = tool("ffmpeg", "PORCH_BIN_FFMPEG")
+    small = src.stat().st_size < AGY_VIEW_LIMIT * 0.95
+    if src.suffix.lower() in AGY_VIDEO_PASSTHROUGH and small:
+        video = stage / f"video{src.suffix.lower()}"
+        shutil.copyfile(src, video)
+    else:
+        video = stage / "video.mp4"
+        proc = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                               "-i", str(src), "-an", "-vf", "scale=-2:'min(480,ih)'",
+                               "-r", "2", "-c:v", "libx264", "-preset", "veryfast",
+                               "-crf", "30", "-pix_fmt", "yuv420p", str(video)],
+                              capture_output=True, text=True)
+        if proc.returncode != 0 or not video.is_file():
+            raise MediaError(f"ffmpeg could not convert {src.name} to MP4: "
+                             f"{proc.stderr.strip()[-500:]}")
+        if video.stat().st_size >= AGY_VIEW_LIMIT:
+            raise MediaError(f"{src.name} is still over 100 MB after re-encoding; trim it "
+                             f"first (for example ffmpeg -ss START -t SECONDS)", EXIT_USAGE)
+    audio = None
+    if with_audio:
+        encoders = subprocess.run([ffmpeg, "-hide_banner", "-encoders"], capture_output=True,
+                                  text=True).stdout
+        ext, codec = ("mp3", ["-c:a", "libmp3lame", "-b:a", "48k"]) \
+            if "libmp3lame" in encoders else ("wav", ["-c:a", "pcm_s16le"])
+        candidate = stage / f"audio.{ext}"
+        proc = subprocess.run([ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+                               "-i", str(src), "-vn", "-ac", "1", "-ar", "16000", *codec,
+                               str(candidate)], capture_output=True, text=True)
+        if proc.returncode == 0 and candidate.is_file() and candidate.stat().st_size > 0:
+            audio = candidate
+        else:
+            info(f"{src.name}: no audio track found; describing frames only")
+    return video, audio
+
+
+def video_prompt(prompt: str, video: Path, audio: Optional[Path]) -> str:
+    lines = [f"Open the video file ./{video.name} with your file-viewing tool (view_file); "
+             "it shows you the video's frames."]
+    if audio:
+        lines.append(f"Then open ./{audio.name} the same way: it is the same video's audio "
+                     "track, which the video file itself does not let you hear. Treat both as "
+                     "one recording on a shared timeline.")
+    else:
+        lines.append("The video has no audio track (or audio was excluded); do not guess "
+                     "what is heard.")
+    lines += [
+        "Do not run shell commands and do not create or modify any file.",
+        "If a file cannot be opened, say so plainly instead of describing it from its name.",
+        prompt or ("Describe the video: what happens over time with approximate timestamps, "
+                   "people, objects, on-screen text, scene changes"
+                   + (", and what is said or heard." if audio else ".")),
+    ]
+    return "\n".join(lines)
+
+
+def cmd_video(args: argparse.Namespace) -> int:
+    operation = f"video.{args.video_command}"
+    require_operation(args.agent, operation)
+    prompt = read_prompt(args.prompt, args.prompt_file, required=False)
+    src = existing_file(args.input)
+    if src.suffix.lower() not in VIDEO_EXTS:
+        raise MediaError(f"not a recognised video file ({', '.join(sorted(VIDEO_EXTS))}): "
+                         f"{args.input}", EXIT_USAGE)
+    with tempfile.TemporaryDirectory(prefix="porch-media-") as tmp:
+        stage = Path(tmp)
+        video, audio = stage_video(src, stage, not args.no_audio)
+        info(f"{operation} agent={args.agent} video={video.name}"
+             + (f" audio={audio.name}" if audio else " audio=none"))
+        text = run_backend(args.agent, video_prompt(prompt, video, audio), stage, stage / "run")
+    if not text.strip():
+        raise MediaError("the agent returned no description", EXIT_EMPTY)
+    sys.stdout.write(text if text.endswith("\n") else text + "\n")
+    return EXIT_OK
+
+
 # ---- capabilities -------------------------------------------------------------
 
 def cmd_capabilities(args: argparse.Namespace) -> int:
-    ops = ("transcribe", "image.describe", "image.generate", "image.edit", "image.animate")
+    ops = ("transcribe", "image.describe", "image.generate", "image.edit", "image.animate",
+           "video.describe")
     table = {op: capable_profiles(op) for op in ops}
     if args.json:
         print(json.dumps(table, indent=2))
@@ -679,7 +766,7 @@ def cmd_capabilities(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="porch media",
-                                 description="Transcribe audio/video and work with images "
+                                 description="Transcribe audio/video, describe video and work with images "
                                              "through a capable agent profile.")
     sub = ap.add_subparsers(dest="command", required=True)
     common = argparse.ArgumentParser(add_help=False)
@@ -731,6 +818,17 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--out-dir", default=".", help="where to save the GIF and spritesheet")
     a.add_argument("--name", help="file name stem (default: derived from the prompt)")
     a.set_defaults(func=cmd_animate)
+
+    vid = sub.add_parser("video", help="understand video (frames and sound)")
+    vsub = vid.add_subparsers(dest="video_command", required=True)
+    v = vsub.add_parser("describe", parents=[common],
+                        help="describe or answer questions about a video file")
+    v.add_argument("prompt", nargs="?")
+    v.add_argument("--prompt-file")
+    v.add_argument("--input", required=True, metavar="VIDEO", help="the video file")
+    v.add_argument("--no-audio", action="store_true",
+                   help="do not stage the audio track (frames only)")
+    v.set_defaults(func=cmd_video)
 
     c = sub.add_parser("capabilities", help="list profiles per media operation")
     c.add_argument("--json", action="store_true")

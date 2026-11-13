@@ -1,0 +1,6 @@
+interface:
+  display_name: "Stale Data Cleanup"
+  short_description: "Find and remove stale data by evidence: verdicts for the owner, not a checklist"
+  default_prompt: "Use $stale-data-cleanup: my disk is full. Work out what is stale, remove what is provably safe, and bring me only the decisions that are mine."
+policy:
+  allow_implicit_invocation: true

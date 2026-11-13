@@ -8,7 +8,7 @@
 
 In field use, frontier models such as Astra and Fable cover roughly 2–10× more work with practically no loss of quality when they orchestrate and cheaper executors implement. The best fit is autonomous work lasting hours or days, producing tens to hundreds of thousands of lines of code.
 
-The repo ships three skills in the Agent Skills layout: `pragmatic-orchestration`, `coordinator-mode` and `remote-agents`. `porch` provides five modes:
+The repo ships four skills in the Agent Skills layout: `pragmatic-orchestration`, `coordinator-mode`, `stale-data-cleanup` and `remote-agents`. `porch` provides five modes:
 
 - **review** — independent opinions or multi-depth code review from several model families at once (read-only).
 - **delegate** — hand a task to one exact agent: steerable by default, detachable, with `wait` / `watch` / `events` / `list` to supervise long-running work (full-access runtime).
@@ -54,6 +54,18 @@ For planning, use Astra medium+ or Fable, guided by the `code-that-fits-in-your-
 
 Turn it on explicitly: `/coordinator-mode` in Claude Code, `$coordinator-mode` in Codex. See [skills/coordinator-mode/SKILL.md](skills/coordinator-mode/SKILL.md).
 
+## Stale Data Cleanup
+
+`stale-data-cleanup` is Coordinator Mode applied to a full disk. On a machine where many agents work, the space is rarely old junk: it is finished workspaces nobody closed, caches, and a remainder only the owner can judge. The skill tells the three apart by evidence and returns verdicts, not a checklist.
+
+- **Verdicts, not checkboxes.** Every candidate ends as removed, kept with a one-line reason, or asked. Questions are rare, batched, and put through the harness's interactive question tool with a recommendation.
+- **Evidence, not age.** Work may go when it is preserved elsewhere, its task is closed, it is idle and nobody is in it. Data may go when it is regenerable or a proven duplicate. The evidence comes from the filesystem, processes, git and jj, task records, project documents and agent session histories (`porch sessions`).
+- **A strong coordinator, cheap researchers.** One scan per volume is shared by parallel read-only researchers; narrower passes run until every sizeable candidate is clear. Executors then act on written verdict rules, one track per exclusive path prefix.
+- **A gate for removals.** Plain paths go only through `apply_removals.py`, which re-checks containment, version-control state, recency and live processes, and writes a manifest. A second scan must reconcile with the manifests.
+- **A playbook for conflicts and for finishing:** what to do when signals, rules, numbers or workers disagree; when to stop; the report; the cause of the growth and the fix.
+
+Start it with `/stale-data-cleanup` in Claude Code or `$stale-data-cleanup` in Codex, or just say the disk is full. See [skills/stale-data-cleanup/SKILL.md](skills/stale-data-cleanup/SKILL.md).
+
 ## Delegation discipline
 
 [references/delegate.md](skills/pragmatic-orchestration/references/delegate.md) collects the practices that address common subagent delegation failures:
@@ -80,6 +92,7 @@ Turn it on explicitly: `/coordinator-mode` in Claude Code, `$coordinator-mode` i
 ```bash
 npx skills add CodeAlive-AI/pragmatic-orchestration@pragmatic-orchestration
 npx skills add CodeAlive-AI/pragmatic-orchestration@coordinator-mode
+npx skills add CodeAlive-AI/pragmatic-orchestration@stale-data-cleanup
 claude plugin marketplace add CodeAlive-AI/pragmatic-orchestration && claude plugin install pragmatic-orchestration@pragmatic-orchestration
 ```
 

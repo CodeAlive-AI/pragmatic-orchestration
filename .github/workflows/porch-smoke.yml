@@ -5,12 +5,14 @@ on:
     paths:
       - 'skills/pragmatic-orchestration/**'
       - 'skills/coordinator-mode/**'
+      - 'skills/stale-data-cleanup/**'
       - '.github/workflows/porch-smoke.yml'
   push:
     branches: [main]
     paths:
       - 'skills/pragmatic-orchestration/**'
       - 'skills/coordinator-mode/**'
+      - 'skills/stale-data-cleanup/**'
       - '.github/workflows/porch-smoke.yml'
   workflow_dispatch:
 
@@ -92,6 +94,27 @@ jobs:
           python-version: '3.11'
       - name: Coordinator helper tests
         run: python skills/coordinator-mode/scripts/tests/test_coordinator_mode.py -v
+
+  stale-data-cleanup:
+    name: stale-data-cleanup (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both helpers are plain standard-library Python for macOS and Linux.
+        os: [ubuntu-latest, macos-latest]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Disk map tests
+        run: python skills/stale-data-cleanup/scripts/tests/test_disk_map.py -v
+      - name: Guarded removal tests
+        run: python skills/stale-data-cleanup/scripts/tests/test_apply_removals.py -v
 
   ui:
     name: optional UI

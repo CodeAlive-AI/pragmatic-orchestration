@@ -10,6 +10,7 @@
 #   porch media transcribe|image|capabilities [...]
 #   porch quota [all|codex|grok]
 #   porch sessions roots|list|grep|show [...]
+#   porch desktop list|search|read|projects|start|open|archive|unarchive [...]
 #
 # Observability contract:
 #   compact semantic live progress → stderr
@@ -64,6 +65,8 @@ Usage:
   porch sessions turns [-a ...] [--since T] [--until T] [--limit N]
   porch sessions flags [-a ...] [--kind PATTERN] [--since T] [--limit N]
   porch sessions stats [-a ...] [--by model|harness|cwd|day] [--since T]
+  porch desktop list|search|read [--app claude|codex|all] [--project S] [--state active|archived|any] [...]
+  porch desktop projects|start|open|archive|unarchive [...]   (Claude Desktop / Codex app; macOS)
   porch --list-agents
   porch -h | --help
 
@@ -208,6 +211,11 @@ case "$1" in
         PY=$(command -v python3 || command -v python) || exit "$EXIT_USAGE"
         exec "$PY" "$LIB_DIR/media.py" "$@"
         ;;
+    desktop)
+        shift
+        PY=$(command -v python3 || command -v python) || exit "$EXIT_USAGE"
+        exec "$PY" "$LIB_DIR/desktop.py" "$@"
+        ;;
     quota|sessions|history)
         cmd=$1; shift
         # python3 on POSIX; Git Bash on Windows usually exposes only `python`
@@ -222,7 +230,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Error: unknown command: $1 (expected review|delegate|quota|sessions|ui|media)" >&2
+        echo "Error: unknown command: $1 (expected review|delegate|quota|sessions|desktop|ui|media)" >&2
         usage >&2
         exit $EXIT_USAGE
         ;;

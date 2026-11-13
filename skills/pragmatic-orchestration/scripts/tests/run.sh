@@ -1547,6 +1547,20 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+echo "=== Desktop app sessions (offline) ==="
+set +e
+DESK_OUT=$(PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/desktop_test.py" 2>&1)
+DESK_RC=$?
+set -e
+printf '%s\n' "$DESK_OUT" | tail -3
+desk_count=$(printf '%s\n' "$DESK_OUT" | sed -n 's/^Ran \([0-9][0-9]*\) tests.*/\1/p' | tail -1)
+desk_count=${desk_count:-0}
+if [[ $DESK_RC -eq 0 && $desk_count -gt 0 ]]; then
+  PASS=$((PASS + desk_count))
+else
+  FAIL=$((FAIL + 1))
+fi
+
 # CLI surface for steerable modes
 help_out=$("$PORCH" delegate -h 2>&1) || true
 assert_contains "delegate help mentions steerable" "$help_out" "steerable"

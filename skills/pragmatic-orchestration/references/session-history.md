@@ -22,6 +22,10 @@ porch sessions show   <harness:session-id> --around SEQ [--context N]
 porch sessions show   --file PATH          # sniff a single file/db
 ```
 
+For the sessions of the Claude Desktop app and the Codex app — with their
+app-visible titles, archive state, and actions to start, open and archive them —
+use `porch desktop` ([desktop-apps.md](desktop-apps.md)).
+
 `history` is an alias of `sessions`. All output is JSONL on stdout: session
 headers (`_session`), fragments, and a final `_summary` record. Diagnostics go
 to stderr; exit codes are 0 ok / 2 partial / 3 hard failure. See the

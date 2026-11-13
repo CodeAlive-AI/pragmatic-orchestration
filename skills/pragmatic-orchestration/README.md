@@ -255,6 +255,29 @@ status are in the [compatibility matrix](references/session-compatibility.md).
 Compressed Codex rollouts require Python 3.14+. Cursor ACP currently exposes
 conversation text; omitted tool, shell, or reasoning nodes make coverage partial.
 
+### Claude Desktop and Codex app sessions
+
+`desktop` is the app-level view of two of those stores, on macOS. It lists,
+searches and reads the sessions of Claude Desktop's Code tab and of the Codex
+app, using the titles and archive state the apps show. It also acts in the
+running app through [agent-desktop](https://github.com/vercel-labs/agent-desktop)
+without moving the pointer or taking focus:
+
+- `start` a task for a project;
+- `open` a session;
+- `archive` a session, which is checked in the app's store afterwards;
+- `unarchive` a Codex thread through `codex app-server`.
+
+```bash
+porch desktop list --app all --project demo
+porch desktop search -i "flaky login" --since 2026-11-01
+porch desktop read claude:local_<id> --tail 10
+printf '%s' "$PROMPT" | porch desktop start --app codex --project demo --prompt-file -
+porch desktop archive codex:<thread-id>
+```
+
+See [references/desktop-apps.md](references/desktop-apps.md).
+
 We are grateful to [Agent Sessions](https://github.com/jazzyalex/agent-sessions)
 for its open-source format research, fixtures, and session-browser ideas that
 informed the Codex, OpenCode, Cursor ACP, and Hermes integrations.

@@ -13,6 +13,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows and constrained runtimes
+    resource = None
+
 LIB = Path(__file__).resolve().parents[1] / "lib"
 sys.path.insert(0, str(LIB))
 import sessions  # noqa: E402
@@ -40,6 +45,133 @@ class FixtureMixin:
         temp = tempfile.TemporaryDirectory(prefix="porch sessions ")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
+
+
+class JsonlStreamingTests(FixtureMixin, unittest.TestCase):
+    @staticmethod
+    def old_reader(path):
+        """Small fixture oracle for the former read/split behavior."""
+        stats = {}
+        size = path.stat().st_size
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            data = fh.read(size + 1)
+        if not data.endswith("\n") and data.strip():
+            stats["truncated_tail"] = 1
+        rows = []
+        for line_no, line in enumerate(data.split("\n"), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                stats["malformed"] = stats.get("malformed", 0) + 1
+                continue
+            if isinstance(record, dict):
+                rows.append((line_no, record))
+            else:
+                stats["malformed"] = stats.get("malformed", 0) + 1
+        return rows, stats
+
+    def test_equivalent_to_read_split_for_jsonl_edges(self):
+        path = self.root / "edges.jsonl"
+        path.write_bytes((
+            '{"text":"first   line","emoji":"😀"}\r\n'
+            "\r\nnot-json\n[]\r\n"
+            '{"text":"last кириллица 😀"}'
+        ).encode("utf-8"))
+        expected, expected_stats = self.old_reader(path)
+        stats = {}
+        actual = list(sessions.iter_jsonl(path, stats))
+        self.assertEqual(actual, expected)
+        self.assertEqual(stats, expected_stats)
+        self.assertEqual(stats, {"malformed": 2, "truncated_tail": 1})
+
+    def test_plain_reader_stops_at_size_observed_when_file_grows(self):
+        path = self.root / "growing.jsonl"
+        line = b'{"value":"' + b"x" * 40_000 + b'"}\n'
+        path.write_bytes(line * 4)
+        original_chunks = sessions._bounded_chunks
+
+        def append_after_first_chunk(fh, size, chunk_size=64 * 1024):
+            for index, chunk in enumerate(original_chunks(fh, size, chunk_size)):
+                yield chunk
+                if index == 0:
+                    with path.open("ab") as writer:
+                        writer.write(b'{"appended":true}\n')
+
+        with patch.object(sessions, "_bounded_chunks", append_after_first_chunk):
+            actual = list(sessions.iter_jsonl(path, {}))
+        self.assertEqual(len(actual), 4)
+        self.assertTrue(all("appended" not in row for _, row in actual))
+
+    def test_compressed_jsonl_stream_matches_read_split_when_available(self):
+        try:
+            from compression import zstd
+        except ImportError:
+            self.skipTest("stdlib Zstandard is unavailable")
+        path = self.root / "edges.jsonl.zst"
+        raw = ('{"text":"inside   string 😀"}\r\n\nnope\n{"tail":true}').encode("utf-8")
+        path.write_bytes(zstd.compress(raw))
+        expected = []
+        expected_stats = {}
+        with zstd.open(path, "rt", encoding="utf-8", errors="replace") as fh:
+            data = fh.read()
+        if not data.endswith("\n") and data.strip():
+            expected_stats["truncated_tail"] = 1
+        for line_no, line in enumerate(data.split("\n"), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                expected_stats["malformed"] = expected_stats.get("malformed", 0) + 1
+                continue
+            if isinstance(row, dict):
+                expected.append((line_no, row))
+            else:
+                expected_stats["malformed"] = expected_stats.get("malformed", 0) + 1
+        stats = {}
+        self.assertEqual(list(sessions.iter_jsonl(path, stats)), expected)
+        self.assertEqual(stats, expected_stats)
+
+    @unittest.skipUnless(resource is not None, "resource module is unavailable")
+    def test_show_peak_memory_stays_below_session_size_multiple(self):
+        cli = LIB / "sessions.py"
+        path = self.root / "memory.jsonl"
+        record = {
+            "type": "user", "uuid": "u", "parentUuid": None,
+            "sessionId": "memory-test",
+            "message": {"role": "user", "content": "кириллица 😀 " + "я😀" * 180},
+        }
+        line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+        count = (64 * 1024 * 1024) // len(line)
+        block = line * max(1, min(count, 256))
+        with path.open("wb") as fh:
+            remaining = count
+            while remaining:
+                take = min(remaining, 256)
+                fh.write(block[:len(line) * take])
+                remaining -= take
+
+        # A wrapper gives this assertion a clean RUSAGE_CHILDREN measurement,
+        # unaffected by subprocesses run earlier in the unittest process.
+        wrapper = (
+            "import os,resource,subprocess,sys,time; "
+            "cmd=[sys.executable,sys.argv[1],'show','--file',sys.argv[2],'--limit','40']; "
+            "p=subprocess.run(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE); "
+            "peak=resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss; "
+            "peak=peak/(1024*1024) if sys.platform=='darwin' else peak/1024; "
+            "print(f'{p.returncode} {peak:.1f}'); "
+            "sys.exit(0 if p.returncode==0 and peak<256 else 1)"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", wrapper, str(cli), str(path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(proc.returncode, 0, f"child peak or CLI failed: {proc.stdout} {proc.stderr}")
+        self.assertLess(float(proc.stdout.split()[1]), 256)
 
 
 class ClaudeCodeTests(FixtureMixin, unittest.TestCase):

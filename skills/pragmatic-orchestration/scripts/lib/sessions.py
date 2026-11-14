@@ -15,6 +15,7 @@ WAL parsing.
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import sys
 import urllib.parse
 import uuid
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -238,15 +240,52 @@ def ts_epoch(value: Any) -> float | None:
 # IO helpers
 # ---------------------------------------------------------------------------
 
-def _read_head(fh, max_lines: int) -> str:
-    """Read at most max_lines complete lines from an open text file."""
-    parts: list[str] = []
-    for _ in range(max_lines):
-        line = fh.readline()
-        if not line:
+def _jsonl_lines(chunks: Iterable[bytes], max_lines: int | None = None) -> Iterator[tuple[str, bool]]:
+    """Decode chunks into newline-delimited strings without splitting JSON's Unicode separators.
+
+    The boolean is true when a line ended in LF. At most one line is retained,
+    in addition to the current input chunk; a line itself is necessarily parsed
+    as one JSON value and may therefore be arbitrarily large.
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    pending: list[str] = []
+    lines = 0
+    if max_lines is not None and max_lines <= 0:
+        return
+    for raw in chunks:
+        text = decoder.decode(raw)
+        # Scan by index: re-slicing the remainder after every line copies the
+        # chunk once per line, which is quadratic on files of short lines.
+        start = 0
+        while True:
+            newline = text.find("\n", start)
+            if newline < 0:
+                if start < len(text):
+                    pending.append(text[start:])
+                break
+            pending.append(text[start:newline])
+            yield "".join(pending), True
+            pending.clear()
+            lines += 1
+            if max_lines is not None and lines >= max_lines:
+                return
+            start = newline + 1
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        pending.append(tail)
+    if pending and (max_lines is None or lines < max_lines):
+        yield "".join(pending), False
+
+
+def _bounded_chunks(fh, size: int, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+    """Read no more than size bytes from an already-open binary file."""
+    remaining = size
+    while remaining:
+        chunk = fh.read(min(chunk_size, remaining))
+        if not chunk:
             break
-        parts.append(line)
-    return "".join(parts)
+        remaining -= len(chunk)
+        yield chunk
 
 
 def iter_jsonl(path: Path, stats: dict[str, int], max_lines: int | None = None) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -257,44 +296,62 @@ def iter_jsonl(path: Path, stats: dict[str, int], max_lines: int | None = None) 
     trailing line is reported via stats['truncated_tail'], malformed interior
     lines via stats['malformed'].
     """
+    compressed = path.name.endswith(".jsonl.zst")
+    line_no = 0
     try:
-        if path.name.endswith(".jsonl.zst"):
+        if compressed:
             # Python 3.14 includes Zstandard; do not silently skip archives on
             # older runtimes or treat a corrupt stream as a complete scan.
             from compression import zstd
             try:
-                with zstd.open(path, "rt", encoding="utf-8", errors="replace") as fh:
-                    data = fh.read() if max_lines is None else _read_head(fh, max_lines)
+                # The old implementation fully decompressed before yielding
+                # any record. Validate first so a corrupt tail cannot turn a
+                # failed archive into apparently successful partial output.
+                with zstd.open(path, "rb") as check:
+                    while check.read(64 * 1024):
+                        pass
+                with zstd.open(path, "rb") as fh:
+                    chunks = iter(lambda: fh.read(64 * 1024), b"")
+                    for line, terminated in _jsonl_lines(chunks, max_lines):
+                        line_no += 1
+                        if not terminated and max_lines is None and line.strip():
+                            stats["truncated_tail"] = stats.get("truncated_tail", 0) + 1
+                        record = _parse_jsonl_line(line, stats)
+                        if record is not None:
+                            yield line_no, record
             except zstd.ZstdError as exc:
                 raise ValueError(str(exc)) from exc
         else:
-            size = path.stat().st_size
-            with path.open("r", encoding="utf-8", errors="replace") as fh:
-                data = fh.read(size + 1) if max_lines is None else _read_head(fh, max_lines)
+            with path.open("rb") as fh:
+                size = os.fstat(fh.fileno()).st_size
+                for line, terminated in _jsonl_lines(_bounded_chunks(fh, size), max_lines):
+                    line_no += 1
+                    if not terminated and max_lines is None and line.strip():
+                        stats["truncated_tail"] = stats.get("truncated_tail", 0) + 1
+                    record = _parse_jsonl_line(line, stats)
+                    if record is not None:
+                        yield line_no, record
     except (OSError, ImportError, EOFError, ValueError) as exc:
         stats["unreadable"] = stats.get("unreadable", 0) + 1
-        if path.name.endswith(".jsonl.zst"):
+        if compressed:
             stats["compressed_errors"] = stats.get("compressed_errors", 0) + 1
             detail = "Zstandard requires Python 3.14+" if isinstance(exc, ImportError) else str(exc)
             print(f"cannot read compressed session {path}: {detail}", file=sys.stderr)
-        return
-    if not data.endswith("\n") and data.strip() and max_lines is None:
-        stats["truncated_tail"] = stats.get("truncated_tail", 0) + 1
-    # split('\n'), not splitlines(): JSON strings may legally contain raw
-    # U+2028/U+2029/NEL which splitlines() would wrongly treat as line breaks.
-    for line_no, line in enumerate(data.split("\n"), 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            stats["malformed"] = stats.get("malformed", 0) + 1
-            continue
-        if isinstance(record, dict):
-            yield line_no, record
-        else:
-            stats["malformed"] = stats.get("malformed", 0) + 1
+
+
+def _parse_jsonl_line(line: str, stats: dict[str, int]) -> dict[str, Any] | None:
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError:
+        stats["malformed"] = stats.get("malformed", 0) + 1
+        return None
+    if isinstance(record, dict):
+        return record
+    stats["malformed"] = stats.get("malformed", 0) + 1
+    return None
 
 
 def read_json(path: Path) -> Any:
@@ -2881,7 +2938,7 @@ def _store_for_file(path: Path) -> tuple[Store, SessionRef]:
     except json.JSONDecodeError:
         pass
     stats: dict[str, int] = {}
-    records = list(iter_jsonl(path, stats))[:5]
+    records = list(islice(iter_jsonl(path, stats), 5))
     types = {r.get("type") for _ln, r in records}
     if "session_meta" in types or "turn_context" in types or "response_item" in types:
         store = Store("codex", "custom", path.parent, "jsonl_dir")

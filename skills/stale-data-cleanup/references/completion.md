@@ -125,7 +125,12 @@ Offer the fix as a separate follow-up task with a complete brief (it is code or
 configuration work with its own review), through the harness's way of proposing
 a task. Do not fold it into the cleanup, and do not start it unasked.
 
-Monitoring or alerting on free space is a different job; mention it once if the
+Offer the observer for the time between cleanups ([upkeep.md](upkeep.md)): write
+the machine's stocks file from the zones of this cleanup and take the first scan
+now, so the next look starts from a baseline. A schedule for it is installed
+only on the owner's explicit yes.
+
+Alerting on free space within hours is a different job; mention it once if the
 owner has none.
 
 ## After the report

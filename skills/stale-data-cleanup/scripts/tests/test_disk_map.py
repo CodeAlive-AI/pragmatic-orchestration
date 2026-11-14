@@ -409,7 +409,7 @@ class DiskMapTests(unittest.TestCase):
 
     def test_help_has_workflow_and_option_descriptions(self):
         outputs = {}
-        for command in (None, "scan", "query", "diff", "reconcile"):
+        for command in (None, "scan", "query", "diff", "reconcile", "trend", "rotate"):
             args = ["--help"] if command is None else [command, "--help"]
             p = self.run_cli(*args)
             self.assertEqual(p.returncode, 0, p.stderr)
@@ -437,6 +437,277 @@ class DiskMapTests(unittest.TestCase):
         p = self.run_cli("reconcile", fa, fb, "--manifest", manifest, "--explain", "gone", cwd=root)
         self.assertEqual(p.returncode, 2)
         self.assertIn("error: --explain needs an absolute path: gone", p.stderr)
+
+    def stock_file(self, body):
+        path = os.path.join(self.base, "stocks.tsv")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+
+    def set_scan_time_volume(self, data, at, free, size=1000000):
+        data["scanned_at"] = at
+        data["volume"] = {"size_bytes": size, "free_bytes": free}
+        return data
+
+    def test_scan_has_volume_and_stock_partition_patterns(self):
+        dirs = ["outer", "outer/nested", "outer/a/node_modules", "outer/a/b/node_modules",
+                "outside/node_modules", "carved", "carved/node_modules", "repeats",
+                "repeats/node_modules", "repeats/node_modules/deeper/node_modules"]
+        for rel in dirs:
+            os.makedirs(os.path.join(self.root, rel))
+            with open(os.path.join(self.root, rel, "f"), "wb") as fh:
+                fh.write(rel.encode() * 16)
+        data = self.scan("--min-node-mb", "0")
+        self.assertGreaterEqual(data["volume"]["size_bytes"], data["volume"]["free_bytes"])
+        self.assertGreaterEqual(data["volume"]["free_bytes"], 0)
+        stocks = self.stock_file("stock\tpath\tempties\n"
+                                 "work\t{}/outer\trules\n"
+                                 "nested\t{}/outer/nested\towner\n"
+                                 "above\t{}/**/node_modules\tnobody\n"
+                                 "carved\t{}/carved\trules\n"
+                                 "carved-modules\t{}/carved/**/node_modules\tnobody\n"
+                                 "repeated\t{}/repeats/**/node_modules\towner\n".format(
+                                     self.root, self.root, self.root, self.root, self.root, self.root))
+        scanfile = self.save(os.path.join(self.base, "tree.json"), data)
+        p = self.run_cli("trend", scanfile, "--stocks", stocks, "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        result = json.loads(p.stdout)
+        self.assertEqual(sum(row["bytes"] for row in result["stocks"]) + result["outside"]["bytes"], data["total_bytes"])
+        rows = {row["stock"]: row["bytes"] for row in result["stocks"]}
+        def queried(path):
+            query = self.run_cli("query", scanfile, path, "--json")
+            self.assertEqual(query.returncode, 0, query.stderr)
+            return json.loads(query.stdout)[0]["bytes"]
+        self.assertEqual(rows["work"], queried(self.root + "/outer") - queried(self.root + "/outer/nested"))
+        self.assertEqual(rows["nested"], queried(self.root + "/outer/nested"))
+        self.assertEqual(rows["above"], queried(self.root + "/outside/node_modules"))
+        self.assertEqual(rows["carved"], queried(self.root + "/carved") - queried(self.root + "/carved/node_modules"))
+        self.assertEqual(rows["carved-modules"], queried(self.root + "/carved/node_modules"))
+        self.assertEqual(rows["repeated"], queried(self.root + "/repeats/node_modules"))
+
+    def test_trend_rates_forecasts_pressure_and_target_units(self):
+        root = self.root
+        first = document(root, node(root, 1000, own=1000))
+        second = document(root, node(root, 1300, own=1300))
+        self.set_scan_time_volume(first, "2026-01-01T00:00:00+00:00", 500, 1000)
+        self.set_scan_time_volume(second, "2026-01-03T00:00:00+00:00", 100, 1000)
+        a = self.save(os.path.join(self.base, "a.json"), first)
+        b = self.save(os.path.join(self.base, "b.json"), second)
+        stocks = self.stock_file("stock\tpath\tempties\nroot\t{}\trules\n".format(root))
+        p = self.run_cli("trend", a, b, "--stocks", stocks, "--target-free", "20%", "--horizon-days", "0.5", "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        result = json.loads(p.stdout)
+        self.assertEqual(result["stocks"][0]["per_day_last"], 150)
+        self.assertEqual(result["volume"]["fill_per_day_last"], 200)
+        self.assertEqual(result["volume"]["days_to_full"], .5)
+        self.assertEqual(result["volume"]["target_free_bytes"], 200)
+        self.assertIsNone(result["volume"]["days_to_target"])
+        self.assertEqual(result["pressure"], "now")
+        second["volume"]["free_bytes"] = 400
+        self.save(b, second)
+        p = self.run_cli("trend", a, b, "--stocks", stocks, "--target-free", "20%", "--horizon-days", "1", "--json")
+        result = json.loads(p.stdout)
+        self.assertEqual(result["volume"]["days_to_target"], 4)
+        self.assertEqual(result["pressure"], "quiet")
+        second["volume"]["free_bytes"] = 150
+        self.save(b, second)
+        p = self.run_cli("trend", a, b, "--stocks", stocks, "--target-free", "20%", "--horizon-days", "0", "--json")
+        self.assertEqual(json.loads(p.stdout)["pressure"], "decide")
+        second.pop("volume")
+        self.save(b, second)
+        p = self.run_cli("trend", a, b, "--stocks", stocks, "--target-free", "20%", "--json")
+        self.assertEqual(json.loads(p.stdout)["pressure"], "unknown")
+        second["volume"] = {"size_bytes": 1000, "free_bytes": 500}
+        self.save(b, second)
+        first.pop("volume")
+        self.save(a, first)
+        p = self.run_cli("trend", a, b, "--stocks", stocks, "--json")
+        result = json.loads(p.stdout)
+        self.assertEqual(result["volume"]["free_bytes"], 500)
+        self.assertIsNone(result["volume"]["fill_per_day_last"])
+        for target, expected in (("10G", 10 * 1024**3), ("500M", 500 * 1024**2), ("20%", 200)):
+            p = self.run_cli("trend", a, b, "--stocks", stocks, "--target-free", target, "--json")
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual(json.loads(p.stdout)["volume"]["target_free_bytes"], expected)
+        self.assertEqual(self.run_cli("trend", a, b, "--stocks", stocks, "--target-free", "banana").returncode, 2)
+
+    def test_trend_short_interval_is_called_rough(self):
+        root = self.root
+        first = document(root, node(root, 1000, own=1000))
+        second = document(root, node(root, 1100, own=1100))
+        self.set_scan_time_volume(first, "2026-01-01T00:00:00+00:00", 500, 1000)
+        self.set_scan_time_volume(second, "2026-01-01T00:09:00+00:00", 490, 1000)
+        a = self.save(os.path.join(self.base, "short-a.json"), first)
+        b = self.save(os.path.join(self.base, "short-b.json"), second)
+        stocks = self.stock_file("stock\tpath\tempties\nroot\t{}\trules\n".format(root))
+        p = self.run_cli("trend", a, b, "--stocks", stocks)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("last interval 9 minutes", p.stdout)
+        self.assertIn("are rough", p.stderr)
+        p = self.run_cli("trend", a, b, "--stocks", stocks, "--json")
+        self.assertTrue(any("are rough" in w for w in json.loads(p.stdout)["warnings"]))
+        # Two days apart: a measured rate, no warning, the span in days.
+        second["scanned_at"] = "2026-01-03T00:00:00+00:00"
+        self.save(b, second)
+        p = self.run_cli("trend", a, b, "--stocks", stocks)
+        self.assertIn("last interval 2.0 days", p.stdout)
+        self.assertNotIn("are rough", p.stderr)
+
+    def test_trend_directory_skips_bad_files_missing_paths_and_one_scan(self):
+        data = document(self.root, node(self.root, 20, own=20))
+        self.set_scan_time_volume(data, "2026-01-01T00:00:00+00:00", 500, 1000)
+        one = self.save(os.path.join(self.base, "one.json"), data)
+        scan_dir = os.path.join(self.base, "inputs")
+        os.mkdir(scan_dir)
+        for name, content in (("broken.json", "{"), ("not-scan.json", '{"format":"other"}')):
+            with open(os.path.join(scan_dir, name), "w", encoding="utf-8") as fh:
+                fh.write(content)
+        stocks = self.stock_file("stock\tpath\tempties\nmissing\t{}/absent\towner\n".format(self.root))
+        p = self.run_cli("trend", one, "--stocks", stocks, "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        result = json.loads(p.stdout)
+        self.assertIsNone(result["stocks"][0]["per_day_last"])
+        self.assertIn("one scan: no rates yet", self.run_cli("trend", one, "--stocks", stocks).stdout)
+        p = self.run_cli("trend", scan_dir, "--stocks", stocks, "--json")
+        self.assertEqual(p.returncode, 2)  # no usable scans remain
+        bad = self.save(os.path.join(self.base, "bad-explicit.json"), {"format": "no"})
+        p = self.run_cli("trend", bad, "--stocks", stocks)
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("cannot load scan", p.stderr)
+        # A directory mixed with a valid scan reports each skipped input in JSON and stderr.
+        with open(os.path.join(scan_dir, "valid.json"), "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        p = self.run_cli("trend", scan_dir, "--stocks", stocks, "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(len(json.loads(p.stdout)["warnings"]), 3)
+        self.assertIn("stock path is in no scan", p.stderr)
+
+    def test_trend_data_volume_mapping_and_unseen_arithmetic(self):
+        root = "/System/Volumes/Data"
+        a = document(root, node(root, 1000, children=[node("Users", 1000, children=[node("x", 1000)])]))
+        b = document(root, node(root, 1200, children=[node("Users", 1200, children=[node("x", 1200)])]))
+        self.set_scan_time_volume(a, "2026-01-01T00:00:00+00:00", 9000, 10000)
+        self.set_scan_time_volume(b, "2026-01-03T00:00:00+00:00", 8000, 10000)
+        fa, fb = self.save(os.path.join(self.base, "data-a.json"), a), self.save(os.path.join(self.base, "data-b.json"), b)
+        stocks = self.stock_file("stock\tpath\tempties\nuser\t/Users/x\trules\n")
+        p = self.run_cli("trend", fa, fb, "--stocks", stocks, "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        result = json.loads(p.stdout)
+        self.assertEqual(result["stocks"][0]["bytes"], 1200)
+        self.assertEqual(result["unseen"]["change_last"], 800)  # 1000 free loss less 200 scanned growth
+        b["volume"]["free_bytes"] = 9500
+        self.save(fb, b)
+        p = self.run_cli("trend", fa, fb, "--stocks", stocks, "--json")
+        self.assertEqual(json.loads(p.stdout)["unseen"]["change_last"], -700)
+
+    def test_trend_refuses_bad_stock_rows_and_different_roots(self):
+        data = document(self.root, node(self.root, 1))
+        first = self.save(os.path.join(self.base, "one.json"), data)
+        invalid = ["stock\tpath\n", "stock\tempties\n", "path\tempties\n",
+                   "stock\tpath\tempties\nx\trelative\trules\n",
+                   "stock\tpath\tempties\nx\t{}\tinvalid\n".format(self.root),
+                   "stock\tpath\tempties\na\t{}\trules\nb\t{}\towner\n".format(self.root, self.root + "/.") ,
+                   "stock\tpath\tempties\n\t{}\trules\n".format(self.root),
+                   "stock\tpath\tempties\nx\t\trules\n",
+                   "stock\tpath\tempties\nx\t{}\t\n".format(self.root),
+                   "stock\tpath\tempties\nx\t{}/a/**/b/**/c\trules\n".format(self.root)]
+        for content in invalid:
+            stocks = self.stock_file(content)
+            p = self.run_cli("trend", first, "--stocks", stocks)
+            self.assertEqual(p.returncode, 2, content)
+            self.assertRegex(p.stderr, r"line [123]")
+        other = document(self.root + "-other", node(self.root + "-other", 1))
+        second = self.save(os.path.join(self.base, "other.json"), other)
+        stocks = self.stock_file("stock\tpath\tempties\nx\t{}\trules\n".format(self.root))
+        p = self.run_cli("trend", first, second, "--stocks", stocks)
+        self.assertEqual(p.returncode, 2)
+        self.assertIn(self.root, p.stderr)
+        self.assertIn(other["root"], p.stderr)
+
+    def test_trend_refuses_empties_conflict_and_warns_for_missing_pattern(self):
+        data = document(self.root, node(self.root, 1))
+        scanfile = self.save(os.path.join(self.base, "one.json"), data)
+        stocks = self.stock_file("stock\tpath\tempties\n"
+                                 "same\t{}/one\trules\n"
+                                 "same\t{}/two\towner\n".format(self.root, self.root))
+        refused = self.run_cli("trend", scanfile, "--stocks", stocks)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("stocks file line 3: stock \"same\" is listed with empties=rules above and empties=owner here", refused.stderr)
+        stocks = self.stock_file("stock\tpath\tempties\nmissing\t{}/**/node_modules\towner\n".format(self.root))
+        warned = self.run_cli("trend", scanfile, "--stocks", stocks, "--json")
+        self.assertEqual(warned.returncode, 0, warned.stderr)
+        result = json.loads(warned.stdout)
+        expected = "{}/**/node_modules".format(self.root)
+        message = "stock pattern matches nothing in any scan: {} (check the spelling)".format(expected)
+        self.assertIn(message, warned.stderr)
+        self.assertIn(message, result["warnings"])
+        self.assertEqual(result["stocks"][0]["missing_paths"], [expected])
+
+    def test_growth_outside_reports_deep_folder_and_rotate(self):
+        oldtree = node(self.root, 100, children=[node("ancestor", 100, children=[node("growing", 100)])])
+        newtree = node(self.root, 400, children=[node("ancestor", 400, children=[node("growing", 400)])])
+        a, b = document(self.root, oldtree), document(self.root, newtree)
+        self.set_scan_time_volume(a, "2026-01-01T00:00:00+00:00", 900, 1000)
+        self.set_scan_time_volume(b, "2026-01-02T00:00:00+00:00", 800, 1000)
+        fa, fb = self.save(os.path.join(self.base, "growth-a.json"), a), self.save(os.path.join(self.base, "growth-b.json"), b)
+        stocks = self.stock_file("stock\tpath\tempties\nx\t{}/not-here\towner\n".format(self.root))
+        p = self.run_cli("trend", fa, fb, "--stocks", stocks, "--min-mb", "0.000001", "--json")
+        paths = [r["path"] for r in json.loads(p.stdout)["growth_outside"]]
+        self.assertIn(self.root + "/ancestor/growing", paths)
+        self.assertNotIn(self.root + "/ancestor", paths)
+        self.assertNotIn(self.root, paths)
+        scans = os.path.join(self.base, "rotate")
+        os.mkdir(scans)
+        for name, when in (("old.json", "2026-01-01"), ("new.json", "2026-01-03"), ("mid.json", "2026-01-02")):
+            with open(os.path.join(scans, name), "w", encoding="utf-8") as fh:
+                fh.write('{{"format":"disk-map/1","scanned_at":"{}"}}'.format(when))
+        with open(os.path.join(scans, "other.json"), "w", encoding="utf-8") as fh:
+            fh.write("not a scan")
+        sub = os.path.join(scans, "sub")
+        os.mkdir(sub)
+        with open(os.path.join(sub, "nested.json"), "w", encoding="utf-8") as fh:
+            fh.write("nested")
+        p = self.run_cli("rotate", scans, "--keep", "2", "--dry-run")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("would remove " + os.path.join(scans, "old.json"), p.stdout)
+        self.assertTrue(os.path.exists(os.path.join(scans, "old.json")))
+        p = self.run_cli("rotate", scans, "--keep", "2")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertFalse(os.path.exists(os.path.join(scans, "old.json")))
+        self.assertTrue(os.path.exists(os.path.join(scans, "other.json")))
+        self.assertTrue(os.path.exists(os.path.join(sub, "nested.json")))
+        self.assertEqual(self.run_cli("rotate", scans, "--keep", "0").returncode, 2)
+
+    def test_growth_outside_lists_child_residuals_or_parent(self):
+        mib = 1024 * 1024
+        stockfile = self.stock_file("stock\tpath\tempties\nx\t{}/not-here\towner\n".format(self.root))
+
+        def pair(old_tree, new_tree, stem):
+            old = document(self.root, old_tree)
+            new = document(self.root, new_tree)
+            self.set_scan_time_volume(old, "2026-01-01T00:00:00+00:00", 900, 1000)
+            self.set_scan_time_volume(new, "2026-01-02T00:00:00+00:00", 800, 1000)
+            before = self.save(os.path.join(self.base, stem + "-old.json"), old)
+            after = self.save(os.path.join(self.base, stem + "-new.json"), new)
+            result = self.run_cli("trend", before, after, "--stocks", stockfile,
+                                  "--min-mb", "1", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)["growth_outside"]
+
+        children = pair(
+            node(self.root, 2 * mib, children=[node("parent", 2 * mib, children=[node("a", mib), node("b", mib)])]),
+            node(self.root, 4 * mib, children=[node("parent", 4 * mib, children=[node("a", 2 * mib), node("b", 2 * mib)])]),
+            "two-children")
+        child_paths = {row["path"] for row in children}
+        self.assertEqual(child_paths, {self.root + "/parent/a", self.root + "/parent/b"})
+        self.assertEqual(sum(row["change_last"] for row in children), 2 * mib)
+
+        parent = pair(
+            node(self.root, 0, children=[node("parent", 0, children=[node("a", 0), node("b", 0), node("c", 0), node("d", 0)])]),
+            node(self.root, 1200 * 1024, children=[node("parent", 1200 * 1024, children=[
+                node("a", 300 * 1024), node("b", 300 * 1024), node("c", 300 * 1024), node("d", 300 * 1024)])]),
+            "many-small")
+        self.assertEqual(parent, [{"path": self.root + "/parent", "change_last": 1200 * 1024}])
 
 
 if __name__ == "__main__":

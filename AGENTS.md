@@ -21,7 +21,7 @@ explicitly requests one.
 ## Naming
 
 - Skill names: `pragmatic-orchestration`, `coordinator-mode`, `stale-data-cleanup`, `remote-agents` (SKILL.md frontmatter, directory, state dirs).
-- CLI name: `porch` (`scripts/porch`, `scripts/porch.cmd`); remote-agents has no CLI of its own, its entry point is `scripts/host.sh`; coordinator-mode has one helper, `scripts/coordinator_mode.py`; stale-data-cleanup has two, `scripts/disk_map.py` (scan, query, diff, reconcile) and `scripts/apply_removals.py` (the guarded removal step), both single-file standard-library Python that must keep working when piped over ssh.
+- CLI name: `porch` (`scripts/porch`, `scripts/porch.cmd`); remote-agents has no CLI of its own, its entry point is `scripts/host.sh`; coordinator-mode has one helper, `scripts/coordinator_mode.py`; stale-data-cleanup has two, `scripts/disk_map.py` (scan, query, diff, reconcile, trend, rotate) and `scripts/apply_removals.py` (the guarded removal step), both single-file standard-library Python that must keep working when piped over ssh.
 - Environment variables: `PORCH_*` for orchestration; `REMOTE_AGENTS_*` for the host skill; `COORDINATOR_MODE_HOME` for the coordinator's state root (default `~/.local/state/coordinator-mode`).
 - Historical name: `agents-consilium` / `consilium` — do not reintroduce.
 

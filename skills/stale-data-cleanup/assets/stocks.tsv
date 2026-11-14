@@ -1,0 +1,16 @@
+# Stocks of one machine: the places where things accumulate, and who can empty each.
+# Copy to STATE/stocks.tsv and replace the example rows. Columns are separated by tabs.
+# path     an absolute folder, or PREFIX/**/NAME for every folder called NAME below PREFIX
+# empties  rules  = a cleanup run can, by evidence (finished work, build output, caches)
+#          owner  = only the owner decides (history, data awaiting a decision, personal content)
+#          nobody = system, applications, live work
+# The most specific row wins. Everything unlisted is reported as "outside stocks".
+stock	path	empties	note
+# task workspaces	/home/me/projects/app/.workspaces	rules	closed with the workspace tool once the work is in trunk
+# dependency folders	/home/me/projects/**/node_modules	rules	reinstalled from the lockfile
+# build output	/home/me/projects/**/target	rules	rebuilt by the build command
+# package caches	/home/me/.cache	rules	each tool's own prune command
+# agent history	/home/me/.agent/sessions	owner	needs a retention decision
+# experiment data	/srv/data/experiments	owner	raw data, the only copy
+# personal	/home/me/Documents	owner
+# system	/usr	nobody

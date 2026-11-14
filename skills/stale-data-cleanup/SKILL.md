@@ -1,6 +1,6 @@
 ---
 name: stale-data-cleanup
-description: "Find and remove stale data on a developer's machines by evidence, with verdicts instead of a checklist for the owner: finished agent workspaces and git worktrees, old task checkouts, build and run output, package and model caches, container images, on a laptop and on remote dev hosts. Use when a disk is full or keeps filling, or the user asks to free space, clean up after coding agents, close old workspaces or worktrees, audit what takes the space, or work out what is obsolete (\"disk is full\", \"free up space\", \"clean up my machine\", \"what can I delete\", \"диск забит\", \"почисти диск\", \"разбери старые воркспейсы\"). Runs as a coordinated multi-agent job in Coordinator Mode. Not for refactoring or dead code, not for cloud storage or database retention, not for an emergency that must free space within minutes, and never for a delegated worker."
+description: "Find and remove stale data on a developer's machines by evidence, with verdicts instead of a checklist for the owner: finished agent workspaces and git worktrees, old task checkouts, build and run output, package and model caches, container images, on a laptop and on remote dev hosts. Use when a disk is full or keeps filling, or the user asks to free space, clean up after coding agents, close old workspaces or worktrees, audit what takes the space, or work out what is obsolete (\"disk is full\", \"free up space\", \"clean up my machine\", \"what can I delete\", \"диск забит\", \"почисти диск\", \"разбери старые воркспейсы\"), or to watch what grows between cleanups (\"keep the disk under control\"). A cleanup runs as a coordinated multi-agent job in Coordinator Mode; the observer is one read-only session. Not for refactoring or dead code, not for cloud storage or database retention, not for an emergency that must free space within minutes, and never for a delegated worker."
 ---
 
 # Stale Data Cleanup
@@ -33,6 +33,8 @@ three states: REMOVED, KEPT with a one-line reason, or ASKED, and ASKED is rare.
 - **Decide the scale after the map** (step 2). When everything fits a few zones
   you can audit yourself within the hour, work alone: no team, but the same
   rules, the same gate and manifest, and a journal.
+- **An observation is not a cleanup** ([Between cleanups](#between-cleanups)):
+  one read-only session, no team, no Coordinator Mode.
 
 ## Who decides what
 
@@ -55,7 +57,9 @@ Full lists and the question patterns: [owner-decisions.md](references/owner-deci
    "Sort it out", "clean it up", "delete what is obsolete" already answer the
    first; "let's look", "what takes the space" do not.
 2. **Baseline and map.** Measure each volume. Take **one scan per volume** with
-   `scripts/disk_map.py` and let every worker query it. Name the blind spot
+   `scripts/disk_map.py` and let every worker query it. Where scans of earlier
+   runs exist, `disk_map.py trend` over them shows what grew since: start
+   there. Name the blind spot
    (used space the scan could not read). Find the other actors on the machine
    now: live agent sessions, scheduled jobs. Check the access you will need. If
    the disk is nearly out of room, free the zero-risk tier first (caches through
@@ -83,7 +87,8 @@ Full lists and the question patterns: [owner-decisions.md](references/owner-deci
    still working, space measured again.
 8. **Report and close.** Verdicts in the owner's language, one screen. Then the
    closing questions, interactive, at most four at a time, largest first; the
-   cause of the growth; and the fix offered as a separate task.
+   cause of the growth; the fix offered as a separate task; and the observer
+   offered for the time between cleanups.
 
 Tell the owner in one line when a phase changes; an hour of silence on a full
 disk reads as nothing happening.
@@ -170,6 +175,28 @@ yours to decide, with a recommendation; why the disk filled and the one change
 that stops it. Stop conditions, the template and follow-ups:
 [completion.md](references/completion.md).
 
+## Between cleanups
+
+A cleanup empties the disk once; what fills it again is usually not what was
+removed. The **observer** is a read-only run every couple of days: one scan,
+then `disk_map.py trend` against the machine's list of **stocks**, the places
+where things accumulate, each marked with who can empty it (`rules`, `owner`,
+`nobody`). It reports the free space, the fill rate, the days until the volume
+is full and a pressure level. It removes nothing.
+
+- **At the end of a cleanup** write the stocks file from the zones, take the
+  first scan and offer the observer. A schedule is standing configuration:
+  install one only on the owner's explicit yes.
+- **Stocks only the owner can empty** (session history, data awaiting a
+  decision, abandoned unfinished work) are what fills a disk after a good
+  cleanup. No sweep helps there; the work is a cheap, timely decision for the
+  owner.
+- **Growth outside the listed stocks** means a new stock has appeared: find out
+  what it is and propose a row.
+
+File format, reading the result, the report and scheduling:
+[upkeep.md](references/upkeep.md).
+
 ## Bundled tools
 
 Standard-library Python, macOS and Linux. `SKILL_DIR` is this file's directory;
@@ -181,6 +208,8 @@ python3 SKILL_DIR/scripts/disk_map.py query scan.json DIR --depth 2   # size and
 python3 SKILL_DIR/scripts/disk_map.py diff before.json after.json
 python3 SKILL_DIR/scripts/disk_map.py reconcile before.json after.json --manifest M.tsv
 python3 SKILL_DIR/scripts/apply_removals.py LIST.tsv --allow-prefix DIR --manifest M.tsv [--apply]
+python3 SKILL_DIR/scripts/disk_map.py trend SCANS_DIR --stocks stocks.tsv --target-free 100G   # growth per stock, days until full
+python3 SKILL_DIR/scripts/disk_map.py rotate SCANS_DIR --keep 8                                # drop the oldest scans
 ```
 
 `apply_removals.py` is a dry run without `--apply`. It refuses or keeps paths
@@ -199,4 +228,6 @@ tools explain themselves with `--help`.
 | [owner-decisions.md](references/owner-decisions.md) | about to ask the owner anything, or unsure whether to |
 | [completion.md](references/completion.md) | deciding to stop; final checks; writing the report; follow-ups |
 | [platforms.md](references/platforms.md) | a specific tool's cache, an AI tool's files, a filesystem that will not free space |
+| [upkeep.md](references/upkeep.md) | setting up or running the observer; reading what grew since the last scan |
 | [assets/audit-contract.md](assets/audit-contract.md), [assets/cleanup-contract.md](assets/cleanup-contract.md) | briefing researchers and executors |
+| [assets/stocks.tsv](assets/stocks.tsv), [assets/observer-prompt.md](assets/observer-prompt.md) | starting a machine's stocks file; a scheduled observation |

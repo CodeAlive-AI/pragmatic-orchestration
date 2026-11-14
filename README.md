@@ -63,6 +63,7 @@ Turn it on explicitly: `/coordinator-mode` in Claude Code, `$coordinator-mode` i
 - **A strong coordinator, cheap researchers.** One scan per volume is shared by parallel read-only researchers; narrower passes run until every sizeable candidate is clear. Executors then act on written verdict rules, one track per exclusive path prefix.
 - **A gate for removals.** Plain paths go only through `apply_removals.py`, which re-checks containment, version-control state, recency and live processes, and writes a manifest. A second scan must reconcile with the manifests.
 - **A playbook for conflicts and for finishing:** what to do when signals, rules, numbers or workers disagree; when to stop; the report; the cause of the growth and the fix.
+- **An observer between cleanups.** A read-only run every couple of days: `disk_map.py trend` shows which stocks (workspaces, caches, session history, data awaiting a decision) grow, how soon the volume is full and who can empty each. It removes nothing.
 
 Start it with `/stale-data-cleanup` in Claude Code or `$stale-data-cleanup` in Codex, or just say the disk is full. See [skills/stale-data-cleanup/SKILL.md](skills/stale-data-cleanup/SKILL.md).
 

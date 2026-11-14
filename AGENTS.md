@@ -21,7 +21,7 @@ explicitly requests one.
 ## Naming
 
 - Skill names: `pragmatic-orchestration`, `coordinator-mode`, `stale-data-cleanup`, `remote-agents` (SKILL.md frontmatter, directory, state dirs).
-- CLI name: `porch` (`scripts/porch`, `scripts/porch.cmd`); remote-agents has no CLI of its own, its entry point is `scripts/host.sh`; coordinator-mode has one helper, `scripts/coordinator_mode.py`; stale-data-cleanup has two, `scripts/disk_map.py` (scan, query, diff, reconcile, trend, rotate) and `scripts/apply_removals.py` (the guarded removal step), both single-file standard-library Python that must keep working when piped over ssh.
+- CLI name: `porch` (`scripts/porch`, `scripts/porch.cmd`); remote-agents has no CLI of its own, its entry point is `scripts/host.sh`; coordinator-mode has one helper, `scripts/coordinator_mode.py`; stale-data-cleanup has three: `scripts/disk_map.py` (scan, query, diff, reconcile, trend, rotate) and `scripts/apply_removals.py` (the guarded removal step), both single-file standard-library Python that must keep working when piped over ssh, and `scripts/observe.py` (the scheduled read-only observer; it runs locally and pipes `disk_map.py` to remote machines).
 - Environment variables: `PORCH_*` for orchestration; `REMOTE_AGENTS_*` for the host skill; `COORDINATOR_MODE_HOME` for the coordinator's state root (default `~/.local/state/coordinator-mode`).
 - Historical name: `agents-consilium` / `consilium` — do not reintroduce.
 
@@ -44,13 +44,14 @@ The coordinator helper has its own standard-library tests:
 python3 skills/coordinator-mode/scripts/tests/test_coordinator_mode.py -v
 ```
 
-So do the two helpers of `stale-data-cleanup`. Their tests work only in temporary
+So do the helpers of `stale-data-cleanup`. Their tests work only in temporary
 directories; never run `apply_removals.py --apply` against a real path while
 developing:
 
 ```bash
 python3 skills/stale-data-cleanup/scripts/tests/test_disk_map.py -v
 python3 skills/stale-data-cleanup/scripts/tests/test_apply_removals.py -v
+python3 skills/stale-data-cleanup/scripts/tests/observe_test.py -v
 ```
 
 ## Versioning and releases

@@ -175,10 +175,66 @@ A schedule is standing configuration on the owner's machine. Install or change
 one only on their explicit yes, and tell them how to turn it off. Three ways,
 cheapest first:
 
-1. **Script only.** The machine's scheduler (launchd on macOS, a systemd timer or
-   cron on Linux) runs the three commands and writes the output of `trend` to
-   `latest.md`. No model runs. A session is needed only when the pressure is not
-   `quiet`, and the owner starts it.
+1. **Script only.** Use [`scripts/observe.py`](../scripts/observe.py), its
+   [example configuration](../assets/observer.ini) and, on macOS, the
+   [launchd template](../assets/observer-launchd.plist). It scans each configured
+   machine in order, rotates scans and writes a report. No model runs. Copy and
+   edit the configuration, then try it without writes:
+
+   ```bash
+   mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/stale-data-cleanup"
+   cp SKILL_DIR/assets/observer.ini "${XDG_CONFIG_HOME:-$HOME/.config}/stale-data-cleanup/observer.ini"
+   uv run --no-project python SKILL_DIR/scripts/observe.py --config "${XDG_CONFIG_HOME:-$HOME/.config}/stale-data-cleanup/observer.ini" --dry-run
+   uv run --no-project python SKILL_DIR/scripts/observe.py --config "${XDG_CONFIG_HOME:-$HOME/.config}/stale-data-cleanup/observer.ini"
+   ```
+
+   The `--machine NAME` option selects one section; `--no-notify` suppresses
+   notifications for a run. `[notify] command` is parsed as POSIX shell words
+   but launched directly without a shell; the one-line message is appended as
+   one argument. Optional `decide`, `now`, `floor` and `scan_failed` template
+   values accept `{machine}`, `{free}`, `{total}`, `{target}`, `{floor}`,
+   `{free_gb}`, `{total_gb}`, `{pressure}`, `{days_until_full}` and
+   `{report_path}`. The GB fields use decimal gigabytes with one decimal place
+   (the same byte counts as `{free}` and `{total}`); unknown values say
+   `unknown`.
+   Populate each machine's `STATE/stocks.tsv` from
+   [assets/stocks.tsv](../assets/stocks.tsv); until it exists, the report says
+   that `trend` needs a stocks file.
+
+   For launchd, copy the template and replace its marked values. Use a stable
+   launcher path such as the output of `command -v uv`, not the patch-versioned
+   Python path printed by `sys.executable`. Set that path as
+   `__INTERPRETER_COMMAND__`; the following `run`, `--no-project`, and `python`
+   entries are separate arguments. A direct Python command can use its stable
+   path and remove those three entries. Also set the label, runner and config
+   paths, log folder and local hour/minute, then run:
+
+   ```bash
+   mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/stale-data-cleanup"
+   cp SKILL_DIR/assets/observer-launchd.plist "$HOME/Library/LaunchAgents/__LABEL__.plist"
+   # Replace every __PLACEHOLDER__ in that copied plist before continuing.
+   plutil -lint "$HOME/Library/LaunchAgents/__LABEL__.plist"
+   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/__LABEL__.plist"
+   launchctl kickstart "gui/$(id -u)/__LABEL__"   # run once now
+   launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/__LABEL__.plist"
+   rm "$HOME/Library/LaunchAgents/__LABEL__.plist"  # remove after stopping
+   ```
+
+   Set the hour and minute in local time. The scan sees only what the scheduler
+   process may read: on macOS, privacy-protected folders remain unread until the
+   interpreter has Full Disk Access. The volume's free-space measurement is
+   exact either way.
+
+   `target_free` is the desired minimum free space; below it, pressure is
+   `decide` unless the forecast is `now`. `floor_free` is an optional urgent
+   threshold: when free space is below it, the runner marks the header and
+   sends a message on every run. `now` also messages on every run. `decide`
+   messages on the first day it appears, then at most every third day while it
+   continues. Failed scans message on failures 2, 5, 8, and each third failure
+   after that. Size suffixes use binary units: `100G` means 100 GiB, or 107.4 GB;
+   a 100 GB decimal threshold is written `93.13G`. Percentages are measured
+   against the volume size. Example thresholds are in
+   [assets/observer.ini](../assets/observer.ini).
 2. **A scheduled prompt in the harness** (a desktop application's scheduled task,
    a routine): [assets/observer-prompt.md](../assets/observer-prompt.md), filled
    in. Check when such tasks run; some run only while the application is open.

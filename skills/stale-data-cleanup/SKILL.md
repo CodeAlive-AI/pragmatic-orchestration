@@ -210,6 +210,7 @@ python3 SKILL_DIR/scripts/disk_map.py reconcile before.json after.json --manifes
 python3 SKILL_DIR/scripts/apply_removals.py LIST.tsv --allow-prefix DIR --manifest M.tsv [--apply]
 python3 SKILL_DIR/scripts/disk_map.py trend SCANS_DIR --stocks stocks.tsv --target-free 100G   # growth per stock, days until full
 python3 SKILL_DIR/scripts/disk_map.py rotate SCANS_DIR --keep 8                                # drop the oldest scans
+uv run --no-project python SKILL_DIR/scripts/observe.py --config observer.ini                # scheduled multi-machine observer
 ```
 
 `apply_removals.py` is a dry run without `--apply`. It refuses or keeps paths
@@ -229,5 +230,6 @@ tools explain themselves with `--help`.
 | [completion.md](references/completion.md) | deciding to stop; final checks; writing the report; follow-ups |
 | [platforms.md](references/platforms.md) | a specific tool's cache, an AI tool's files, a filesystem that will not free space |
 | [upkeep.md](references/upkeep.md) | setting up or running the observer; reading what grew since the last scan |
+| [observer.ini](assets/observer.ini), [observer-launchd.plist](assets/observer-launchd.plist), [observe.py](scripts/observe.py) | script-only scheduled observation and macOS launchd template |
 | [assets/audit-contract.md](assets/audit-contract.md), [assets/cleanup-contract.md](assets/cleanup-contract.md) | briefing researchers and executors |
 | [assets/stocks.tsv](assets/stocks.tsv), [assets/observer-prompt.md](assets/observer-prompt.md) | starting a machine's stocks file; a scheduled observation |

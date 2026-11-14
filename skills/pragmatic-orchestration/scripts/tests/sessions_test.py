@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1334,6 +1335,206 @@ class WindowsPathTests(FixtureMixin, unittest.TestCase):
         c.close()
 
 
+class SessionSafeguardTests(FixtureMixin, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1",
+                        PORCH_STEER_DIR=str(self.root / "cache"))
+
+    def child(self, code, **extra):
+        env = dict(self.env, **extra)
+        return subprocess.Popen([sys.executable, "-c", code], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def test_budget_kills_process_and_keeps_partial_output_without_summary(self):
+        code = f'''import sys, os
+sys.path.insert(0, {str(LIB)!r})
+import sessions
+baseline = sessions._memory_usage_bytes()
+os.environ[sessions.MEMORY_ENV] = str(baseline // (1024 * 1024) + 32)
+def roots(_args):
+    print('{{"partial":true}}', flush=True)
+    data = bytearray(96 * 1024 * 1024)
+    for i in range(0, len(data), 4096): data[i] = 1
+    while True: time.sleep(.05)
+import time
+sessions.cmd_roots = roots
+sys.argv = ["sessions", "roots"]
+sessions.main()
+'''
+        started = time.monotonic()
+        proc = self.child(code, PORCH_SESSIONS_MEMORY_LIMIT_MB="80")
+        stdout, stderr = proc.communicate(timeout=8)
+        self.assertLess(time.monotonic() - started, 2.0, "memory guard did not stop promptly")
+        self.assertEqual(proc.returncode, sessions.EXIT_MEMORY_LIMIT, stderr)
+        self.assertIn('"partial":true', stdout)
+        self.assertNotIn('"_summary"', stdout)
+        self.assertIn("porch sessions roots: memory budget exceeded", stderr)
+        self.assertIn("footprint", stderr)
+        self.assertIn("--file", stderr)
+        self.assertIn("output above is incomplete", stderr)
+
+    def test_budget_under_limit_and_zero_are_untouched(self):
+        code = f'''import sys
+sys.path.insert(0, {str(LIB)!r})
+import sessions
+sessions.cmd_roots = lambda _args: (print('{{"ok":true}}') or 0)
+sys.argv = ["sessions", "roots"]
+raise SystemExit(sessions.main())
+'''
+        for limit in ("256", "0"):
+            proc = subprocess.run([sys.executable, "-c", code], env=dict(self.env, PORCH_SESSIONS_MEMORY_LIMIT_MB=limit),
+                                  capture_output=True, text=True, timeout=5)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), '{"ok":true}')
+
+    def test_malformed_budget_is_refused(self):
+        for name in (sessions.MEMORY_ENV, sessions.PARALLEL_ENV, sessions.QUEUE_TIMEOUT_ENV):
+            with self.subTest(name=name):
+                proc = subprocess.run([sys.executable, str(LIB / "sessions.py"), "roots"],
+                                      env=dict(self.env, **{name: "1.5"}),
+                                      capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(f"{name} must be a non-negative integer", proc.stderr)
+
+    def test_queue_fifo_capacity_and_all_callers_finish(self):
+        code = f'''import sys, time
+sys.path.insert(0, {str(LIB)!r})
+import sessions
+slot = sessions._acquire_scan_slot(2, 10)
+with open(sys.argv[1], "a") as f: f.write(f"enter {{sys.argv[2]}} {{time.monotonic_ns()}}\\n")
+time.sleep(.16)
+with open(sys.argv[1], "a") as f: f.write(f"exit {{sys.argv[2]}} {{time.monotonic_ns()}}\\n")
+'''
+        events = self.root / "events"
+        procs = []
+        for n in range(5):
+            env = dict(self.env, PORCH_SESSIONS_MAX_PARALLEL="2", PORCH_SESSIONS_QUEUE_TIMEOUT_S="10")
+            procs.append(subprocess.Popen([sys.executable, "-c", code, str(events), str(n)], env=env,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+            time.sleep(.04)
+        for proc in procs:
+            stdout, stderr = proc.communicate(timeout=8)
+            self.assertEqual(proc.returncode, 0, stdout + stderr)
+        rows = [line.split() for line in events.read_text().splitlines()]
+        enters = [int(row[1]) for row in rows if row[0] == "enter"]
+        self.assertEqual(len(enters), 5)
+        self.assertEqual([int(row[1]) for row in rows if row[0] == "enter"], list(range(5)))
+        timeline = sorted((int(row[2]), 1 if row[0] == "enter" else -1) for row in rows)
+        active = peak = 0
+        for _stamp, delta in timeline:
+            active += delta
+            peak = max(peak, active)
+        self.assertEqual(peak, 2)
+
+    def test_queue_burst_stress_keeps_capacity_and_cleans_waiters(self):
+        code = f'''import sys, time
+sys.path.insert(0, {str(LIB)!r})
+import sessions
+slot = sessions._acquire_scan_slot(2, 20)
+with open(sys.argv[1], "a") as f: f.write(f"enter {{sys.argv[2]}} {{time.monotonic_ns()}}\\n")
+time.sleep(.03)
+with open(sys.argv[1], "a") as f: f.write(f"exit {{sys.argv[2]}} {{time.monotonic_ns()}}\\n")
+'''
+        for round_number in range(3):
+            events = self.root / f"burst-{round_number}-events"
+            procs = []
+            for child_number in range(24):
+                env = dict(self.env, PORCH_SESSIONS_MAX_PARALLEL="2", PORCH_SESSIONS_QUEUE_TIMEOUT_S="20")
+                procs.append(subprocess.Popen([sys.executable, "-c", code, str(events), str(child_number)],
+                                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+            for proc in procs:
+                stdout, stderr = proc.communicate(timeout=25)
+                self.assertEqual(proc.returncode, 0, stdout + stderr)
+            rows = [line.split() for line in events.read_text().splitlines()]
+            self.assertEqual(len([row for row in rows if row[0] == "enter"]), 24)
+            timeline = sorted((int(row[2]), 1 if row[0] == "enter" else -1) for row in rows)
+            active = peak = 0
+            for _stamp, delta in timeline:
+                active += delta
+                peak = max(peak, active)
+            self.assertEqual(peak, 2)
+            self.assertEqual(list((self.root / "cache").glob("sessions-waiter-*.lock")), [])
+
+    def test_sigkill_releases_slot_and_timeout_is_reported(self):
+        lock_api = sessions._lock_api()
+        if lock_api is None:
+            self.skipTest("platform has no advisory lock API")
+        code = f'''import sys, time
+sys.path.insert(0, {str(LIB)!r})
+import sessions
+slot = sessions._acquire_scan_slot(1, 10)
+print("acquired", flush=True)
+time.sleep(30)
+'''
+        owner = self.child(code, PORCH_SESSIONS_MAX_PARALLEL="1")
+        self.assertEqual(owner.stdout.readline().strip(), "acquired")
+        owner.kill()
+        owner.wait(timeout=3)
+        owner.stdout.close()
+        owner.stderr.close()
+        next_code = f'''import sys
+sys.path.insert(0, {str(LIB)!r})
+import sessions
+sessions._acquire_scan_slot(1, 3)
+print("acquired")
+'''
+        follower = subprocess.run([sys.executable, "-c", next_code], env=dict(self.env, PORCH_SESSIONS_MAX_PARALLEL="1"),
+                                  capture_output=True, text=True, timeout=5)
+        self.assertEqual(follower.returncode, 0, follower.stderr)
+        self.assertIn("acquired", follower.stdout)
+
+        held = self.root / "cache" / "sessions-slot-0.lock"
+        held.parent.mkdir(parents=True, exist_ok=True)
+        handle = held.open("a+b")
+        lock_api[0](handle, True)
+        try:
+            timeout_code = f'''import sys
+sys.path.insert(0, {str(LIB)!r})
+import sessions
+sessions._acquire_scan_slot(1, 1)
+'''
+            timeout_proc = subprocess.run([sys.executable, "-c", timeout_code],
+                                          env=dict(self.env, PORCH_SESSIONS_MAX_PARALLEL="1"),
+                                          capture_output=True, text=True, timeout=4)
+        finally:
+            lock_api[1](handle)
+            handle.close()
+        self.assertEqual(timeout_proc.returncode, sessions.EXIT_QUEUE_TIMEOUT)
+        self.assertIn("timed out waiting for a scan slot", timeout_proc.stderr)
+        self.assertIn("PORCH_SESSIONS_QUEUE_TIMEOUT_S", timeout_proc.stderr)
+
+    def test_queue_zero_and_roots_do_not_wait(self):
+        lock_api = sessions._lock_api()
+        if lock_api is None:
+            self.skipTest("platform has no advisory lock API")
+        lock_path = self.root / "cache" / "sessions-slot-0.lock"
+        lock_path.parent.mkdir(parents=True)
+        handle = lock_path.open("a+b")
+        lock_api[0](handle, True)
+        try:
+            started = time.monotonic()
+            roots = subprocess.run([sys.executable, str(LIB / "sessions.py"), "roots", "-a", "claude-code"],
+                                   env=dict(self.env, PORCH_SESSIONS_MAX_PARALLEL="2",
+                                            PORCH_SESSIONS_QUEUE_TIMEOUT_S="0"),
+                                   capture_output=True, text=True, timeout=3)
+            elapsed = time.monotonic() - started
+            self.assertEqual(roots.returncode, 0, roots.stderr)
+            self.assertLess(elapsed, 2)
+            disabled = subprocess.run([sys.executable, "-c", f'''import sys; sys.path.insert(0, {str(LIB)!r})
+import sessions
+print(sessions._acquire_scan_slot(0, 0))'''], env=self.env, capture_output=True, text=True, timeout=3)
+            self.assertEqual(disabled.stdout.strip(), "None")
+            disabled_cli = subprocess.run([sys.executable, str(LIB / "sessions.py"), "list", "-a", "qwen-code"],
+                                           env=dict(self.env, PORCH_SESSIONS_MAX_PARALLEL="0",
+                                                    PORCH_SESSIONS_QUEUE_TIMEOUT_S="0"),
+                                           capture_output=True, text=True, timeout=3)
+            self.assertEqual(disabled_cli.returncode, 0, disabled_cli.stderr)
+        finally:
+            lock_api[1](handle)
+            handle.close()
+
+
 class CliTests(FixtureMixin, unittest.TestCase):
     """End-to-end through argv parsing using PORCH_HISTORY_ROOT_* overrides."""
 
@@ -1344,10 +1545,8 @@ class CliTests(FixtureMixin, unittest.TestCase):
     def run_cli(self, *args, env_extra=None):
         env = dict(self.env)
         env.update(env_extra or {})
-        proc = subprocess.run(
-            [sys.executable, str(LIB / "sessions.py"), *args],
-            capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
-        return proc
+        return subprocess.run([sys.executable, str(LIB / "sessions.py"), *args],
+                              capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
 
     def make_claude(self):
         proj = self.root / "claude" / "-work-repo"
@@ -1362,6 +1561,26 @@ class CliTests(FixtureMixin, unittest.TestCase):
                          "content": [{"type": "text", "text": "found it"}]}},
         ])
         return self.root / "claude", sid
+
+    def test_list_streams_first_record_to_pipe_reader(self):
+        root = self.root / "claude"
+        for index in range(600):
+            write_jsonl(root / f"project-{index:04d}" / f"session-{index:04d}.jsonl", [
+                {"type": "user", "timestamp": "2026-01-11T00:00:01Z",
+                 "sessionId": f"session-{index:04d}", "message": {"role": "user", "content": "record"}},
+            ])
+        env = dict(self.env, PORCH_HISTORY_ROOT_CLAUDE_CODE=str(root))
+        proc = subprocess.Popen([sys.executable, str(LIB / "sessions.py"), "list", "-a", "claude-code"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        first_line = proc.stdout.readline()
+        self.assertTrue(first_line, "list produced no first record")
+        first_record = json.loads(first_line)
+        self.assertNotIn("_summary", first_record)
+        proc.stdout.close()  # `head -1` closes its pipe after this first line.
+        _stdout, stderr = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 0, stderr)
+        self.assertNotIn("Traceback", stderr)
+        self.assertEqual(stderr, "")
 
     def lines(self, proc):
         return [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]

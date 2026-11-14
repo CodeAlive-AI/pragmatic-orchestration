@@ -31,6 +31,16 @@ headers (`_session`), fragments, and a final `_summary` record. Diagnostics go
 to stderr; exit codes are 0 ok / 2 partial / 3 hard failure. See the
 [compatibility matrix](session-compatibility.md) for per-format evidence.
 
+Each process has a 1536 MiB memory budget and content scans share two advisory
+lock slots per user, bounding concurrent scans to about 3 GiB total. Set
+`PORCH_SESSIONS_MEMORY_LIMIT_MB=0` to disable the per-call budget;
+`PORCH_SESSIONS_MAX_PARALLEL=0` disables the queue. `PORCH_SESSIONS_QUEUE_TIMEOUT_S`
+sets the default 600-second wait. Exit 6 means the memory budget stopped the
+scan; exit 7 means it timed out waiting for a slot. `roots` reports when the
+current platform cannot provide either safeguard. A budget stop can leave
+partial output on stdout; exit 6 and the absence of a final `_summary` record
+mean the output above is incomplete.
+
 ## Platform defaults
 
 All commands run on macOS, Linux, and Windows. On Windows use the sibling

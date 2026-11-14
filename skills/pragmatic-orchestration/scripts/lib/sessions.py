@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import ctypes
 import json
 import os
 import re
 import sqlite3
 import sys
+import threading
+import time
 import urllib.parse
 import uuid
 from datetime import datetime, timezone
@@ -46,6 +49,12 @@ EXIT_OK = 0
 EXIT_USAGE = 5
 EXIT_PARTIAL = 2
 EXIT_FAILED = 3
+EXIT_MEMORY_LIMIT = 6
+EXIT_QUEUE_TIMEOUT = 7
+MEMORY_ENV = "PORCH_SESSIONS_MEMORY_LIMIT_MB"
+PARALLEL_ENV = "PORCH_SESSIONS_MAX_PARALLEL"
+QUEUE_TIMEOUT_ENV = "PORCH_SESSIONS_QUEUE_TIMEOUT_S"
+MEMORY_SAMPLE_S = 0.2
 
 # ---------------------------------------------------------------------------
 # Normalized fragment model
@@ -2526,7 +2535,7 @@ def in_window(fragment: dict[str, Any], since: float | None, until: float | None
 
 
 def emit(obj: dict[str, Any]) -> None:
-    print(json.dumps(obj, ensure_ascii=False, default=str))
+    print(json.dumps(obj, ensure_ascii=False, default=str), flush=True)
 
 
 def coverage_summary(stores: list[Store], scanned: int, matched: int, stats: dict[str, int], *, truncated: bool = False) -> dict[str, Any]:
@@ -2969,6 +2978,241 @@ def _pick_single_session(conn: sqlite3.Connection, table: str, col: str, like: s
 
 
 # ---------------------------------------------------------------------------
+# Process safeguards
+# ---------------------------------------------------------------------------
+
+def _nonnegative_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    if not re.fullmatch(r"[0-9]+", raw):
+        raise ValueError(f"{name} must be a non-negative integer (for example 0 or 1536); got {raw!r}")
+    return int(raw)
+
+
+class _RUsageV2(ctypes.Structure):
+    _fields_ = [("uuid", ctypes.c_ubyte * 16), ("values", ctypes.c_uint64 * 18)]
+
+
+_MAC_RUSAGE_FUNC = None
+_MAC_RUSAGE_UNAVAILABLE = False
+
+
+def _memory_usage_bytes() -> int | None:
+    """Return kernel-accounted memory: macOS physical footprint or Linux RSS+swap."""
+    if sys.platform == "darwin":
+        global _MAC_RUSAGE_FUNC, _MAC_RUSAGE_UNAVAILABLE
+        if _MAC_RUSAGE_UNAVAILABLE:
+            return None
+        try:
+            if _MAC_RUSAGE_FUNC is None:
+                libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+                _MAC_RUSAGE_FUNC = libproc.proc_pid_rusage
+                _MAC_RUSAGE_FUNC.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.POINTER(_RUsageV2)]
+                _MAC_RUSAGE_FUNC.restype = ctypes.c_int
+            usage = _RUsageV2()
+            if _MAC_RUSAGE_FUNC(os.getpid(), 2, ctypes.byref(usage)) != 0:
+                return None
+            # rusage_info_v2: uuid, then user/system time, wakeups, pageins,
+            # wired size, resident size, physical footprint, ...
+            return int(usage.values[7])
+        except (AttributeError, OSError):
+            _MAC_RUSAGE_UNAVAILABLE = True
+            return None
+    if sys.platform.startswith("linux"):
+        try:
+            values: dict[str, int] = {}
+            with open("/proc/self/status", encoding="ascii") as status:
+                for line in status:
+                    if line.startswith(("VmRSS:", "VmSwap:")):
+                        key, raw, *_ = line.split()
+                        values[key] = int(raw) * 1024
+            if "VmRSS:" not in values or "VmSwap:" not in values:
+                return None
+            return values["VmRSS:"] + values["VmSwap:"]
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _memory_limit_monitor(command: str, limit_mb: int) -> tuple[threading.Event, threading.Thread] | None:
+    if limit_mb == 0:
+        return None
+    initial = _memory_usage_bytes()
+    if initial is None:
+        return None
+    limit = limit_mb * 1024 * 1024
+    if initial > limit:
+        _memory_limit_exit(command, initial, limit_mb)
+    stop = threading.Event()
+
+    def watch() -> None:
+        while not stop.wait(MEMORY_SAMPLE_S):
+            current = _memory_usage_bytes()
+            if current is not None and current > limit:
+                _memory_limit_exit(command, current, limit_mb)
+
+    thread = threading.Thread(target=watch, name="porch-sessions-memory", daemon=True)
+    thread.start()
+    return stop, thread
+
+
+def _memory_limit_exit(command: str, current: int, limit_mb: int) -> None:
+    reached = current / (1024 * 1024)
+    print(
+        f"porch sessions {command}: memory budget exceeded ({reached:.0f} MiB footprint; limit {limit_mb} MiB). "
+        "Narrow the query with --file, --limit, or --since, use one session instead of a group, "
+        f"or raise {MEMORY_ENV} for this call; output above is incomplete.",
+        file=sys.stderr,
+        flush=True,
+    )
+    os._exit(EXIT_MEMORY_LIMIT)
+
+
+def _lock_api():
+    if os.name == "nt":
+        import msvcrt
+
+        def acquire(handle, blocking: bool) -> bool:
+            handle.seek(0)
+            try:
+                mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+                msvcrt.locking(handle.fileno(), mode, 1)
+                return True
+            except OSError:
+                return False
+
+        def release(handle) -> None:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        return acquire, release
+    try:
+        import fcntl
+    except ImportError:
+        return None
+
+    def acquire(handle, blocking: bool) -> bool:
+        flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+        try:
+            fcntl.flock(handle.fileno(), flags)
+            return True
+        except BlockingIOError:
+            return False
+
+    def release(handle) -> None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return acquire, release
+
+
+def _queue_capability() -> bool:
+    return _lock_api() is not None
+
+
+def _ticket_number(directory: Path, lock_api):
+    acquire, release = lock_api
+    guard = (directory / "sessions-queue-counter.lock").open("a+b")
+    acquire(guard, True)
+    try:
+        counter = directory / "sessions-queue-counter"
+        try:
+            current = int(counter.read_text(encoding="ascii"))
+        except (FileNotFoundError, ValueError):
+            current = 0
+        number = current + 1
+        counter.write_text(str(number), encoding="ascii")
+        waiter_path = directory / f"sessions-waiter-{number}.lock"
+        waiter = waiter_path.open("a+b")
+        acquire(waiter, True)
+        return number, waiter_path, waiter
+    finally:
+        release(guard)
+        guard.close()
+
+
+def _live_waiter_numbers(directory: Path, lock_api) -> list[int]:
+    acquire, release = lock_api
+    # Ticket creation also holds this lock until its waiter file is locked, so
+    # probes cannot mistake a newly-created live waiter for a dead one.
+    guard = (directory / "sessions-queue-counter.lock").open("a+b")
+    acquire(guard, True)
+    try:
+        numbers = []
+        for path in directory.glob("sessions-waiter-*.lock"):
+            try:
+                number = int(path.stem.rsplit("-", 1)[1])
+                handle = path.open("a+b")
+            except (ValueError, OSError):
+                continue
+            if acquire(handle, False):
+                release(handle)
+                handle.close()
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            else:
+                handle.close()
+                numbers.append(number)
+        return sorted(numbers)
+    finally:
+        release(guard)
+        guard.close()
+
+
+def _acquire_scan_slot(max_parallel: int, timeout_s: int):
+    """FIFO admission: only the oldest live waiter may claim the next free slot."""
+    if max_parallel == 0:
+        return None
+    lock_api = _lock_api()
+    if lock_api is None:
+        return None
+    directory = _steer_root()
+    directory.mkdir(parents=True, exist_ok=True)
+    number, waiter_path, waiter = _ticket_number(directory, lock_api)
+    acquire, release = lock_api
+    start = time.monotonic()
+    next_notice = start + 1
+    warned = False
+    slot = None
+    try:
+        while True:
+            live = _live_waiter_numbers(directory, lock_api)
+            if live and live[0] == number:
+                for index in range(max_parallel):
+                    candidate = (directory / f"sessions-slot-{index}.lock").open("a+b")
+                    if acquire(candidate, False):
+                        slot = candidate
+                        break
+                    candidate.close()
+                if slot is not None:
+                    return slot
+            now = time.monotonic()
+            if not warned and now - start >= 1 or warned and now >= next_notice:
+                print(f"waiting for a free slot: {max_parallel} session scans are already running", file=sys.stderr, flush=True)
+                warned = True
+                next_notice = now + 60
+            if now - start >= timeout_s:
+                print(
+                    f"porch sessions: timed out waiting for a scan slot after {timeout_s}s; "
+                    f"retry later or set {QUEUE_TIMEOUT_ENV} higher (or {PARALLEL_ENV}=0 for this call).",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise SystemExit(EXIT_QUEUE_TIMEOUT)
+            time.sleep(0.05)
+    finally:
+        release(waiter)
+        waiter.close()
+        try:
+            waiter_path.unlink()
+        except OSError:
+            pass
+
+
+_ACTIVE_SLOT = None
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -3029,6 +3273,12 @@ def main() -> int:
     p.add_argument("--by", choices=("model", "harness", "cwd", "day"), default="model")
 
     args = parser.parse_args()
+    try:
+        memory_limit_mb = _nonnegative_env(MEMORY_ENV, 1536)
+        max_parallel = _nonnegative_env(PARALLEL_ENV, 2)
+        queue_timeout_s = _nonnegative_env(QUEUE_TIMEOUT_ENV, 600)
+    except ValueError as exc:
+        parser.error(str(exc))
     if getattr(args, "cwd_exact", False) and not args.cwd:
         parser.error("--cwd-exact requires --cwd")
     args.max_chars = getattr(args, "max_chars", 400) or 0
@@ -3039,15 +3289,44 @@ def main() -> int:
         import analyze  # noqa: E402 — local lib, lazy to keep this file standalone
         handlers.update({"turns": analyze.cmd_turns, "flags": analyze.cmd_flags,
                          "stats": analyze.cmd_stats})
+    monitor = _memory_limit_monitor(args.command, memory_limit_mb)
     try:
-        return handlers[args.command](args)
+        if args.command == "roots":
+            unavailable = []
+            if memory_limit_mb and _memory_usage_bytes() is None:
+                unavailable.append("memory budget")
+            if max_parallel and not _queue_capability():
+                unavailable.append("scan queue")
+            if unavailable:
+                print(f"porch sessions safeguards unavailable: {', '.join(unavailable)} on this platform", file=sys.stderr)
+        global _ACTIVE_SLOT
+        if args.command != "roots":
+            _ACTIVE_SLOT = _acquire_scan_slot(max_parallel, queue_timeout_s)
+        result = handlers[args.command](args)
+        if monitor:
+            monitor[0].set()
+            monitor[1].join()
+            current = _memory_usage_bytes()
+            if current is not None and memory_limit_mb and current > memory_limit_mb * 1024 * 1024:
+                _memory_limit_exit(args.command, current, memory_limit_mb)
+        return result
     except BrokenPipeError:
+        # Prevent Python's shutdown flush from retrying the closed pipe.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+            os.close(devnull)
+        except OSError:
+            pass
         return EXIT_OK
     except SystemExit:
         raise
     except Exception as e:  # never leak a traceback as the only diagnostic
         print(json.dumps({"_summary": True, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False), file=sys.stderr)
         return EXIT_FAILED
+    finally:
+        if monitor:
+            monitor[0].set()
 
 
 if __name__ == "__main__":

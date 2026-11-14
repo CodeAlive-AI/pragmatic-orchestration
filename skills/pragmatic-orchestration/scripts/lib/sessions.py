@@ -1697,7 +1697,9 @@ def claude_desktop_iter_sessions(store: Store) -> Iterator[SessionRef]:
         yield _claude_desktop_manifest(store, meta_path, data)
 
 
-def claude_desktop_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+def _claude_desktop_head(store: Store, ref: SessionRef, max_chars: int) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
+    """The manifest's own fragments, its parsed data, and the last seq used."""
+    out: list[dict[str, Any]] = []
     seq = 0
     meta: dict[str, Any] = {}
     meta_file = ref.locator.get("file") or ref.locator.get("meta")
@@ -1705,29 +1707,53 @@ def claude_desktop_iter_fragments(store: Store, ref: SessionRef, max_chars: int,
         data = read_json(Path(meta_file))
         if isinstance(data, dict):
             meta = data
-            yield frag("claude-desktop", store.name, ref.session_id, seq, "metadata", "manifest", 
+            out.append(frag("claude-desktop", store.name, ref.session_id, seq, "metadata", "manifest", 
                        {"file": str(meta_file)},
                        text={k: meta.get(k) for k in
                              ("title", "model", "effort", "permissionMode", "completedTurns",
                               "cliSessionId", "cwd", "processName", "isArchived") if meta.get(k) is not None},
                        ts=meta.get("createdAt"), authorship="system", visible=False,
                        model=meta.get("model"), cwd=meta.get("cwd"),
-                       basis="desktop session manifest", max_chars=max_chars)
+                       basis="desktop session manifest", max_chars=max_chars))
     for prior in meta.get("priorCliSessionIds") or []:
         seq += 1
-        yield frag("claude-desktop", store.name, ref.session_id, seq, "metadata", "prior_cli_session",
+        out.append(frag("claude-desktop", store.name, ref.session_id, seq, "metadata", "prior_cli_session",
                    {"file": str(meta_file)} if meta_file else ref.locator,
                    text=None, authorship="system", visible=False,
                    basis="session continues an earlier CLI transcript",
-                   rel={"cli_session_id": prior, "continued_from": True}, max_chars=max_chars)
+                   rel={"cli_session_id": prior, "continued_from": True}, max_chars=max_chars))
+
+    return out, meta, seq
+
+
+_CLAUDE_TRANSCRIPTS: dict[Path, dict[str, Path]] = {}
+
+
+def _claude_transcript(cli_sid: str) -> Path | None:
+    """The claude-code transcript of a desktop code session, as rglob(f"{cli_sid}.jsonl")[0] found it.
+
+    One walk per process replaces a walk of ~/.claude/projects per session.
+    """
+    root = _root_override("claude-code") or (HOME / ".claude" / "projects")
+    if not root.is_dir():
+        return None
+    if root not in _CLAUDE_TRANSCRIPTS:
+        index: dict[str, Path] = {}
+        for path in root.rglob("*.jsonl"):
+            index.setdefault(path.name, path)
+        _CLAUDE_TRANSCRIPTS[root] = index
+    return _CLAUDE_TRANSCRIPTS[root].get(f"{cli_sid}.jsonl")
+
+
+def claude_desktop_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    head, meta, seq = _claude_desktop_head(store, ref, max_chars)
+    yield from head
+    meta_file = ref.locator.get("file") or ref.locator.get("meta")
 
     if store.name == "code-sessions":
         cli_sid = meta.get("cliSessionId")
-        hits: list[Path] = []
-        if cli_sid:
-            claude_root = _root_override("claude-code") or (HOME / ".claude" / "projects")
-            if claude_root.is_dir():
-                hits = list(claude_root.rglob(f"{cli_sid}.jsonl"))
+        transcript = _claude_transcript(cli_sid) if cli_sid else None
+        hits = [transcript] if transcript else []
         if hits:
             sub = Store("claude-code", "via-claude-desktop", hits[0].parent, "jsonl_dir")
             sref = SessionRef("claude-code", "via-claude-desktop", cli_sid,
@@ -2944,6 +2970,40 @@ def _raw_prefilter_path(store: Store, ref: SessionRef) -> Path | None:
     return Path(file)
 
 
+def _file_verdict(harness: str, path: Path, store: Store, ref: SessionRef, prefilter: RawPrefilter,
+                  wanted: Callable[[dict[str, Any]], bool], verdicts: dict[tuple[str, str], bool]) -> bool:
+    """Whether a session file can hold a wanted fragment, judged once per file.
+
+    Codex index rows and desktop code sessions point at files another store
+    already judged; the verdict depends on the file's records alone.
+    """
+    key = (harness, str(path))
+    if key not in verdicts:
+        verdicts[key] = prefilter.session_may_match(
+            path, lambda records: RECORD_READERS[harness](store, ref, path, records, 0), wanted)
+    return verdicts[key]
+
+
+def _prefilter_may_match(store: Store, ref: SessionRef, prefilter: RawPrefilter,
+                         wanted: Callable[[dict[str, Any]], bool], verdicts: dict[tuple[str, str], bool]) -> bool:
+    """False only if the session provably holds no fragment that wanted() accepts."""
+    raw_path = _raw_prefilter_path(store, ref)
+    if raw_path is not None:
+        return _file_verdict(store.harness, raw_path, store, ref, prefilter, wanted, verdicts)
+    if store.harness == "claude-desktop" and store.name == "code-sessions":
+        head, meta, _seq = _claude_desktop_head(store, ref, 0)
+        cli_sid = meta.get("cliSessionId")
+        transcript = _claude_transcript(cli_sid) if cli_sid else None
+        if transcript is None or any(wanted(f) for f in head):
+            return True
+        sub = Store("claude-code", "via-claude-desktop", transcript.parent, "jsonl_dir")
+        sref = SessionRef("claude-code", "via-claude-desktop", cli_sid, locator={"file": str(transcript)})
+        return _file_verdict("claude-code", transcript, sub, sref, prefilter, wanted, verdicts)
+    # Devin's sqlite store is not prefiltered: reading its message rows costs
+    # as much as parsing them (an 8 GiB database here), measured 2026-11-15.
+    return True
+
+
 # ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
@@ -3026,17 +3086,9 @@ def cmd_grep(args: argparse.Namespace) -> int:
             continue
         for ref in iter_all_sessions(store, args.cwd, None, None, cwd_exact=args.cwd_exact, light=True):
             scanned += 1
-            raw_path = _raw_prefilter_path(store, ref) if prefilter.active else None
-            if raw_path is not None:
-                # Codex index rows point at rollouts the sessions store already
-                # judged; the verdict depends on the file's records alone.
-                key = (store.harness, str(raw_path))
-                if key not in verdicts:
-                    verdicts[key] = prefilter.session_may_match(
-                        raw_path, lambda records: RECORD_READERS[store.harness](store, ref, raw_path, records, 0), wanted)
-                if not verdicts[key]:
-                    prefilter.skipped += 1
-                    continue
+            if prefilter.active and not _prefilter_may_match(store, ref, prefilter, wanted, verdicts):
+                prefilter.skipped += 1
+                continue
             grouped = []
             # Match the entire decoded fragment; --max-chars limits output only.
             for f in iter_all_fragments(store, ref, 0, stats):

@@ -100,7 +100,7 @@ data — do not grep before you know which sessions exist.
    project paths. `grep --group-by-session` emits one object per source
    session with a `matches` array; `--limit` still counts matching fragments.
    For a literal pattern, grep first reads each claude-code and codex
-   session file as raw bytes (`.jsonl.zst` decompressed). Only lines that
+   session file (and the transcript behind a claude-desktop code session) as raw bytes (`.jsonl.zst` decompressed). Only lines that
    hold the pattern (or a JSON escape of one of its characters) are parsed,
    and only a session where one of them yields a match in scope is parsed in
    full; the rest are skipped. A word that every session carries in a

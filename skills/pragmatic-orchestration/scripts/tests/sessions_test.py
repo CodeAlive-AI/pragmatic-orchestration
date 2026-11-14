@@ -176,6 +176,23 @@ class JsonlStreamingTests(FixtureMixin, unittest.TestCase):
         self.assertLess(float(proc.stdout.split()[1]), 256)
 
 
+def check_prefilter_skips(case, store, refs, patterns):
+    """Every session _prefilter_may_match drops has no wanted fragment; returns how many were dropped."""
+    dropped = 0
+    for pattern, fold, scope in patterns:
+        prefilter = sessions.RawPrefilter(pattern, ignore_case=fold, regex=False)
+        case.assertTrue(prefilter.active, pattern)
+        wanted = lambda f: (sessions.in_scope(f, scope) and isinstance(f.get("text"), str)
+                            and ((pattern.lower() in f["text"].lower()) if fold else (pattern in f["text"])))
+        verdicts = {}
+        for ref in refs:
+            truth = any(wanted(f) for f in sessions.READERS[store.harness][1](store, ref, 0, {}))
+            kept = sessions._prefilter_may_match(store, ref, prefilter, wanted, verdicts)
+            case.assertTrue(kept or not truth, (pattern, scope, ref.session_id))
+            dropped += not kept
+    return dropped
+
+
 class ClaudeCodeTests(FixtureMixin, unittest.TestCase):
     def make(self):
         proj = self.root / "claude" / "-Users-x-proj"
@@ -890,6 +907,31 @@ class ClaudeDesktopTests(FixtureMixin, unittest.TestCase):
         self.assertFalse(any(f["kind"] in ("prompt", "assistant") for f in out))
         self.assertTrue(any(f["native_type"] == "cli_transcript" and "no transcript" in f["basis"]
                             for f in out))
+
+
+    def test_raw_prefilter_on_code_sessions(self):
+        root = self.root / "ccs"
+        claude_root = self.root / "claude"
+        for index in range(4):
+            cli_sid = f"cccccccc-1111-2222-3333-00000000000{index}"
+            write_json(root / "grp" / f"local_{index}.json",
+                       {"sessionId": f"local_{index}", "cliSessionId": cli_sid if index < 3 else "gone",
+                        "title": f"Chat {index} manifest-word", "cwd": "/work/repo",
+                        "initialMessage": "starter", "createdAt": "2026-01-07T00:00:00Z"})
+            write_jsonl(claude_root / "-work-repo" / f"{cli_sid}.jsonl", [
+                {"type": "attachment", "attachment": {"type": "skill_listing", "content": "listed words"}},
+                {"type": "user", "timestamp": "2026-01-07T00:00:01Z", "origin": {"kind": "human"},
+                 "message": {"role": "user", "content": f"prompt number {index}"}}])
+        store = sessions.Store("claude-desktop", "code-sessions", root, "json_dir")
+        with patch.dict(os.environ, {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(claude_root)}):
+            sessions._CLAUDE_TRANSCRIPTS.clear()
+            refs = list(sessions.claude_desktop_iter_sessions(store))
+            dropped = check_prefilter_skips(self, store, refs, [
+                ("prompt number 1", False, "convo"), ("PROMPT", True, "convo"), ("listed words", False, "convo"),
+                ("listed words", False, "all"), ("manifest-word", False, "all"), ("manifest-word", False, "convo"),
+                ("absent text", False, "all")])
+        sessions._CLAUDE_TRANSCRIPTS.clear()
+        self.assertGreater(dropped, 8)
 
 
 class QwenTests(FixtureMixin, unittest.TestCase):

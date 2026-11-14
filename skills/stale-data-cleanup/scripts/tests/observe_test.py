@@ -382,7 +382,10 @@ class ObserveTests(unittest.TestCase):
         fake = bindir / "ssh"
         marker = self.base / "ssh.pid"
         fake.write_text("""#!/usr/bin/env python3
-import os,subprocess,sys,time
+import json,os,subprocess,sys,time
+args_path = os.environ.get('FAKE_SSH_ARGS_FILE')
+if args_path:
+    with open(args_path,'w') as stream: json.dump(sys.argv[1:],stream)
 mode = os.environ.get('FAKE_SSH_MODE','success')
 if mode == 'fail': sys.exit(255)
 if mode == 'empty': sys.exit(0)
@@ -402,15 +405,20 @@ sys.exit(p.returncode)
 
     def test_remote_ssh_success_unreachable_empty_and_two_failure_message(self):
         bindir, _ = self.make_ssh()
+        ssh_args_file = self.base / "ssh-args.json"
         notify_file = self.base / "remote-notify.txt"
         notify = self.base / "notify.py"
         notify.write_text("#!/usr/bin/env python3\nimport sys\nopen(%r,'a').write(sys.argv[-1]+'\\n')\n" % str(notify_file), encoding="utf-8")
         notify.chmod(0o755)
-        env = dict(self.env, PATH=bindir + os.pathsep + self.env.get("PATH", ""), FAKE_SSH_MODE="success")
+        env = dict(self.env, PATH=bindir + os.pathsep + self.env.get("PATH", ""), FAKE_SSH_MODE="success",
+                   FAKE_SSH_ARGS_FILE=str(ssh_args_file))
         self.remote_config()
         self.config.write_text(self.config.read_text().replace("command = /usr/bin/true", "command = {}".format(notify)), encoding="utf-8")
         success = self.run_runner(env=env)
         self.assertEqual(success.returncode, 0, success.stdout + success.stderr)
+        ssh_args = json.loads(ssh_args_file.read_text())
+        self.assertIn(["-o", "ControlMaster=no"], [ssh_args[index:index + 2] for index in range(len(ssh_args) - 1)])
+        self.assertIn(["-o", "ControlPath=none"], [ssh_args[index:index + 2] for index in range(len(ssh_args) - 1)])
         env["FAKE_SSH_MODE"] = "fail"
         first = self.run_runner(env=env)
         second = self.run_runner(env=env)
@@ -424,17 +432,35 @@ sys.exit(p.returncode)
         self.assertEqual(empty.returncode, 2)
         self.assertIn("empty scan output", self.report().read_text())
 
-    def test_remote_timeout_terminates_process_group(self):
+    def test_remote_command_bounds_scan_with_best_effort_priority(self):
+        command = observe.remote_command("/srv", 45)
+        self.assertIn("timeout --kill-after=30 2640", command)
+        self.assertIn("ionice -c2 -n7", command)
+        self.assertIn("nice -n 10", command)
+        self.assertIn("command -v timeout", command)
+        self.assertIn("command -v ionice", command)
+        self.assertIn("command -v nice", command)
+        self.assertIn("timeout --kill-after=30 60", observe.remote_command("/srv", 0.01))
+
+    def test_remote_timeout_permission_error_kills_client_and_reports_timeout(self):
         bindir, marker = self.make_ssh()
         self.remote_config(timeout="0.01")
         env = dict(self.env, PATH=bindir + os.pathsep + self.env.get("PATH", ""), FAKE_SSH_MODE="sleep", FAKE_SSH_PID=str(marker))
-        result = self.run_runner(env=env, timeout=10)
-        self.assertEqual(result.returncode, 2)
+        config = {"root": str(self.root), "ssh": "stub-host", "target_free": "100G",
+                  "stocks": str(self.base / "missing.tsv"), "scan_timeout_minutes": "0.01"}
+        log = []
+        with mock.patch.dict(os.environ, env):
+            with mock.patch.object(observe.os, "killpg", side_effect=PermissionError("not permitted")):
+                failed = observe.observe("laptop", config, [], observe.DEFAULTS, True, log.append)
+        self.assertTrue(failed)
         self.assertTrue(marker.exists())
         pid = int(marker.read_text())
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
-        self.assertIn("timed out", self.report().read_text())
+        report = self.report().read_text()
+        self.assertIn("scan timed out after 0.01 minutes", report)
+        self.assertNotIn("remote scan could not start", report)
+        self.assertTrue(any("scan timed out after 0.01 minutes" in line for line in log))
 
     def test_lock_skips_second_run_and_releases_when_first_is_killed(self):
         bindir, marker = self.make_ssh()

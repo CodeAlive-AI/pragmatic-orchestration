@@ -122,29 +122,33 @@ def run_command(argv, *, stdin=None, timeout=None, cwd=None):
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        signal_process(proc, signal.SIGTERM)
         try:
             out, err = proc.communicate(timeout=2)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            signal_process(proc, signal.SIGKILL)
             out, err = proc.communicate()
         return proc.returncode, out, err, True
     return proc.returncode, out, err, False
 
 
-def remote_command(root):
+def signal_process(proc, signum):
+    try:
+        os.killpg(proc.pid, signum)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def remote_command(root, scan_timeout_minutes):
+    remote_seconds = max(60, int(float(scan_timeout_minutes) * 60 - 60))
     scan = "python3 - scan {}".format(shlex.quote(root))
-    return ("if command -v ionice >/dev/null 2>&1; then "
-            "if command -v nice >/dev/null 2>&1; then exec ionice -c3 nice -n 10 {}; "
-            "else exec ionice -c3 {}; fi; "
-            "elif command -v nice >/dev/null 2>&1; then exec nice -n 10 {}; "
-            "else exec {}; fi".format(scan, scan, scan, scan))
+    return ("T=''; if command -v timeout >/dev/null 2>&1; then T='timeout --kill-after=30 {}'; fi; "
+            "I=''; if command -v ionice >/dev/null 2>&1; then I='ionice -c2 -n7'; fi; "
+            "N=''; if command -v nice >/dev/null 2>&1; then N='nice -n 10'; fi; "
+            "exec $T $I $N {}".format(remote_seconds, scan))
 
 
 def pretty_bytes(value):
@@ -205,37 +209,51 @@ def observe(name, config, command, templates, no_notify, log):
     timeout_minutes = float(config.get("scan_timeout_minutes", "45"))
     argv = [sys.executable, DISK_MAP, "scan", config["root"]]
     if config.get("ssh"):
-        argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", config["ssh"],
-                remote_command(config["root"])]
+        argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+                "-o", "ControlMaster=no", "-o", "ControlPath=none", config["ssh"],
+                remote_command(config["root"], timeout_minutes)]
         try:
-            with open(DISK_MAP, "rb") as script, open(temp_scan, "wb") as output:
-                proc = subprocess.Popen(argv, stdin=script, stdout=output, stderr=subprocess.PIPE,
-                                        start_new_session=True)
-                try:
-                    _, stderr = proc.communicate(timeout=timeout_minutes * 60)
-                    timed_out = False
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(proc.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        _, stderr = proc.communicate(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            os.killpg(proc.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                        _, stderr = proc.communicate()
-                    timed_out = True
-            if timed_out:
-                errors.append("scan timed out after {} minutes".format(timeout_minutes))
-            elif proc.returncode:
-                errors.append("remote scan failed (ssh exit {}): {}".format(proc.returncode, stderr.decode("utf-8", "replace").strip()))
-            else:
-                scan_ok = True
+            script = open(DISK_MAP, "rb")
         except OSError as exc:
             errors.append("remote scan could not start: {}".format(exc))
+            script = None
+        if script is not None:
+            try:
+                output = open(temp_scan, "wb")
+            except OSError as exc:
+                script.close()
+                errors.append("remote scan could not start: {}".format(exc))
+                output = None
+            if output is not None:
+                try:
+                    try:
+                        proc = subprocess.Popen(argv, stdin=script, stdout=output, stderr=subprocess.PIPE,
+                                                start_new_session=True)
+                    except OSError as exc:
+                        errors.append("remote scan could not start: {}".format(exc))
+                        proc = None
+                    if proc is not None:
+                        try:
+                            _, stderr = proc.communicate(timeout=timeout_minutes * 60)
+                            timed_out = False
+                        except subprocess.TimeoutExpired:
+                            signal_process(proc, signal.SIGTERM)
+                            try:
+                                _, stderr = proc.communicate(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                signal_process(proc, signal.SIGKILL)
+                                _, stderr = proc.communicate()
+                            timed_out = True
+                        if timed_out:
+                            errors.append("scan timed out after {} minutes".format(timeout_minutes))
+                        elif proc.returncode:
+                            errors.append("remote scan failed (ssh exit {}): {}".format(
+                                proc.returncode, stderr.decode("utf-8", "replace").strip()))
+                        else:
+                            scan_ok = True
+                finally:
+                    script.close()
+                    output.close()
     else:
         local_argv = argv + ["-o", temp_scan]
         code, _out, err, timed_out = run_command(local_argv, timeout=timeout_minutes * 60)
@@ -408,8 +426,8 @@ def main(argv=None):
             scans = os.path.join(state_base(), name, "scans")
             out = os.path.join(scans, "scan-DATE.json.tmp")
             if config.get("ssh"):
-                scan_line = "ssh -o BatchMode=yes -o ConnectTimeout=15 {} {} < {} > {}".format(
-                    shlex.quote(config["ssh"]), shlex.quote(remote_command(root)),
+                scan_line = "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ControlMaster=no -o ControlPath=none {} {} < {} > {}".format(
+                    shlex.quote(config["ssh"]), shlex.quote(remote_command(root, config.get("scan_timeout_minutes", "45"))),
                     shlex.quote(DISK_MAP), shlex.quote(out))
             else:
                 scan_line = "{} {} scan {} -o {}".format(shlex.quote(sys.executable), shlex.quote(DISK_MAP),

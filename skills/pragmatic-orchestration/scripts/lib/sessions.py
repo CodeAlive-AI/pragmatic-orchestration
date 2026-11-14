@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 HOME = Path.home()
 IS_MACOS = sys.platform == "darwin"
@@ -606,6 +606,9 @@ class SessionRef:
         self.agent = kw.get("agent")          # subagent identity when present
         self.hidden = kw.get("hidden")
         self.extra = kw.get("extra") or {}
+        # A light ref has its identity and locator but not the metadata that
+        # takes a full read (title, dates, models); see LIGHT_READERS.
+        self.light = False
 
     def matches(self, cwd: str | None, since: float | None, until: float | None) -> bool:
         if cwd and not (self.cwd and cwd in self.cwd):
@@ -644,13 +647,24 @@ class SessionRef:
 
 def claude_iter_sessions(store: Store) -> Iterator[SessionRef]:
     for path in sorted(store.path.rglob("*.jsonl")):
-        rel = path.relative_to(store.path).with_suffix("").as_posix()
-        project_dir = path.relative_to(store.path).parts[0] if len(path.relative_to(store.path).parts) > 1 else ""
+        yield _claude_session_ref(store, path)
+
+
+def _claude_session_ref(store: Store, path: Path, *, light: bool = False) -> SessionRef:
+    """Build a session's ref from its file.
+
+    A light ref carries only what the path gives (id, locator, lineage) and
+    reads nothing; the full ref needs one parse of the whole file, because a
+    title record can come at any line.
+    """
+    rel = path.relative_to(store.path).with_suffix("").as_posix()
+    project_dir = path.relative_to(store.path).parts[0] if len(path.relative_to(store.path).parts) > 1 else ""
+    first_ts = last_ts = cwd = title = None
+    models: list[str] = []
+    parent = None
+    agent = None
+    if not light:
         stats: dict[str, int] = {}
-        first_ts = last_ts = cwd = title = None
-        models: list[str] = []
-        parent = None
-        agent = None
         for line_no, rec in iter_jsonl(path, stats):
             if first_ts is None:
                 first_ts = rec.get("timestamp")
@@ -669,24 +683,54 @@ def claude_iter_sessions(store: Store) -> Iterator[SessionRef]:
                 m = rec["message"].get("model")
                 if m and m != "<synthetic>" and m not in models:
                     models.append(m)
-        if "subagents/" in rel:
-            parent = rel.split("/subagents/")[0]
-            agent = path.stem
-        yield SessionRef(
-            "claude-code", store.name, rel,
-            locator={"file": str(path)},
-            title=title, cwd=cwd or (None if not project_dir else None),
-            created=first_ts, updated=last_ts, models=models,
-            parent=parent, agent=agent,
-            extra={"project_dir": project_dir} if project_dir else {},
-        )
+    if "subagents/" in rel:
+        parent = rel.split("/subagents/")[0]
+        agent = path.stem
+    ref = SessionRef(
+        "claude-code", store.name, rel,
+        locator={"file": str(path)},
+        title=title, cwd=cwd,
+        created=first_ts, updated=last_ts, models=models,
+        parent=parent, agent=agent,
+        extra={"project_dir": project_dir} if project_dir else {},
+    )
+    ref.light = light
+    return ref
+
+
+def _claude_head_cwd(path: Path) -> str | None:
+    """The cwd a full parse would report: the first non-empty one in the file.
+
+    It usually sits in the first records, so the read stops there.
+    """
+    for _line_no, rec in iter_jsonl(path, {}):
+        if rec.get("cwd"):
+            return rec["cwd"]
+    return None
+
+
+def _claude_light_sessions(store: Store, need_cwd: bool) -> Iterator[SessionRef]:
+    for path in sorted(store.path.rglob("*.jsonl")):
+        ref = _claude_session_ref(store, path, light=True)
+        if need_cwd:
+            ref.cwd = _claude_head_cwd(path)
+        yield ref
+
+
+def _claude_hydrate(store: Store, ref: SessionRef) -> SessionRef:
+    return _claude_session_ref(store, Path(ref.locator["file"]))
 
 
 def claude_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
-    path = Path(ref.locator["file"])
+    yield from _claude_record_fragments(store, ref, Path(ref.locator["file"]), iter_jsonl(Path(ref.locator["file"]), stats), max_chars)
+
+
+def _claude_record_fragments(store: Store, ref: SessionRef, path: Path,
+                             records: Iterable[tuple[int, dict[str, Any]]], max_chars: int) -> Iterator[dict[str, Any]]:
+    """Fragments of the given records; each record's fragments depend on that record alone."""
     sidechain = "subagents/" in ref.session_id
     seq = 0
-    for line_no, rec in iter_jsonl(path, stats):
+    for line_no, rec in records:
         seq += 1
         loc = {"file": str(path), "line": line_no}
         t = rec.get("type")
@@ -770,12 +814,25 @@ def claude_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: 
                        ts=ts, authorship="system", visible=False, cwd=cwd, rel=rel_ids, max_chars=max_chars)
 
 
+def _text_value(value: Any) -> str:
+    """A JSON value as text: strings as they are, null as nothing, the rest as JSON.
+
+    Never Python's repr: "None" or "{'a': 1}" is text the session does not
+    contain, and grep's raw prefilter relies on that.
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _tool_result_text(block: dict[str, Any]) -> str:
     inner = block.get("content")
     if isinstance(inner, str):
         return inner
     if isinstance(inner, list):
-        return "\n".join(str(b.get("text", "")) for b in inner if isinstance(b, dict))
+        return "\n".join(_text_value(b.get("text", "")) for b in inner if isinstance(b, dict))
     return json.dumps(inner, ensure_ascii=False)
 
 
@@ -961,14 +1018,55 @@ def _codex_history_sessions(store: Store) -> Iterator[SessionRef]:
         )
 
 
+_ROLLOUT_INDEX: dict[Path, list[tuple[dict[str, Path], dict[str, Path]]]] = {}
+
+
+def _rollout_index(codex_home: Path) -> list[tuple[dict[str, Path], dict[str, Path]]]:
+    """Per base directory, the first .jsonl and .jsonl.zst rollout for every id.
+
+    One walk replaces two rglob calls per lookup (about 10 ms each on a
+    real ~/.codex, thousands of lookups per grep). A name matches the glob
+    rollout-*-<id>.jsonl for every id that follows one of its dashes, so
+    each such suffix is indexed. The walk is a snapshot for this process: a
+    rollout created after it is not found by index-store refs.
+    """
+    if codex_home not in _ROLLOUT_INDEX:
+        bases = []
+        for base in (codex_home / "sessions", codex_home / "archived_sessions"):
+            plain: dict[str, Path] = {}
+            packed: dict[str, Path] = {}
+            if base.is_dir():
+                for pattern, suffix, index in (("rollout-*.jsonl", ".jsonl", plain),
+                                               ("rollout-*.jsonl.zst", ".jsonl.zst", packed)):
+                    for path in base.rglob(pattern):
+                        core = path.name[len("rollout-"):-len(suffix)]
+                        for pos, char in enumerate(core):
+                            if char == "-":
+                                index.setdefault(core[pos + 1:], path)
+            bases.append((plain, packed))
+        _ROLLOUT_INDEX[codex_home] = bases
+    return _ROLLOUT_INDEX[codex_home]
+
+
 def _find_codex_rollout(thread_id: str) -> Path | None:
     codex_home = Path(os.environ.get("CODEX_HOME") or (HOME / ".codex"))
-    for base in (codex_home / "sessions", codex_home / "archived_sessions"):
-        if not base.is_dir():
-            continue
-        hits = list(base.rglob(f"rollout-*-{thread_id}.jsonl")) + list(base.rglob(f"rollout-*-{thread_id}.jsonl.zst"))
-        if hits:
-            return hits[0]
+    for plain, packed in _rollout_index(codex_home):
+        hit = plain.get(thread_id) or packed.get(thread_id)
+        if hit:
+            return hit
+    return None
+
+
+def _codex_rollout_for(ref: SessionRef) -> str | None:
+    """The rollout file codex_iter_fragments reads for a non-history ref, or None for a db-only thread."""
+    file = ref.locator.get("file")
+    if file:
+        return file
+    rollout = ref.extra.get("rollout_path")
+    if not rollout or not Path(rollout).exists():
+        rollout = _find_codex_rollout(ref.session_id)
+    if rollout and Path(rollout).exists():
+        return str(rollout)
     return None
 
 
@@ -1025,21 +1123,24 @@ def codex_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
                        visible=True, basis="prompt log entry (no per-record authorship proof)",
                        rel={"sessionId": rec.get("session_id")}, max_chars=max_chars)
         return
-    file = ref.locator.get("file")
+    file = _codex_rollout_for(ref)
     if not file:
-        rollout = ref.extra.get("rollout_path")
-        if not rollout or not Path(rollout).exists():
-            rollout = _find_codex_rollout(ref.session_id)
-        if rollout and Path(rollout).exists():
-            file = str(rollout)
-        else:
-            yield from _codex_db_only_fragments(store, ref, max_chars, stats)
-            return
-    path = Path(file)
+        yield from _codex_db_only_fragments(store, ref, max_chars, stats)
+        return
+    yield from _codex_record_fragments(store, ref, Path(file), iter_jsonl(Path(file), stats), max_chars)
+
+
+def _codex_record_fragments(store: Store, ref: SessionRef, path: Path,
+                            records: Iterable[tuple[int, dict[str, Any]]], max_chars: int) -> Iterator[dict[str, Any]]:
+    """Fragments of the given rollout records.
+
+    A record's kind and text depend on that record alone; the state carried
+    across records (event_texts) only changes a prompt's basis wording.
+    """
     seq = 0
     event_texts: set[str] = set()   # event-layer texts; response_item dups marked via membership
     pending_user_items: dict[str, int] = {}
-    for line_no, rec in iter_jsonl(path, stats):
+    for line_no, rec in records:
         seq += 1
         loc = {"file": str(path), "line": line_no}
         t = rec.get("type")
@@ -1167,7 +1268,7 @@ def _codex_message_text(payload: dict[str, Any]) -> str:
     parts = []
     for block in payload.get("content") or []:
         if isinstance(block, dict) and block.get("type") in ("input_text", "output_text", "text"):
-            parts.append(str(block.get("text", "")))
+            parts.append(_text_value(block.get("text", "")))
     return "\n".join(p for p in parts if p)
 
 
@@ -2454,6 +2555,18 @@ def hermes_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: 
 # dispatch tables
 # ---------------------------------------------------------------------------
 
+# Readers whose fragments can be built from any subset of a file's records,
+# for RawPrefilter: (store, ref, path, records, max_chars) -> fragments.
+RECORD_READERS = {
+    "claude-code": _claude_record_fragments,
+    "codex": _codex_record_fragments,
+}
+
+LIGHT_READERS = {
+    # harness: (iter light refs (store, need_cwd), hydrate (store, ref) -> full ref)
+    "claude-code": (_claude_light_sessions, _claude_hydrate),
+}
+
 READERS = {
     "claude-code": (claude_iter_sessions, claude_iter_fragments),
     "codex": (codex_iter_sessions, codex_iter_fragments),
@@ -2494,11 +2607,28 @@ def selected_stores(harnesses: list[str], store_filter: str | None = None) -> li
     return out
 
 
-def iter_all_sessions(store: Store, cwd: str | None, since: float | None, until: float | None, *, cwd_exact: bool = False) -> Iterator[SessionRef]:
+def iter_all_sessions(store: Store, cwd: str | None, since: float | None, until: float | None, *,
+                      cwd_exact: bool = False, light: bool = False) -> Iterator[SessionRef]:
+    """Sessions of one store that pass the cwd and date filters.
+
+    light=True lets a harness in LIGHT_READERS yield refs without the
+    metadata that costs a full read; the caller hydrates the ones it emits.
+    """
     if store.status != "ok":
         return
-    iter_sessions, _ = READERS[store.harness]
+    light_reader = LIGHT_READERS.get(store.harness) if since is None and until is None else None
     try:
+        if light_reader and (light or cwd):
+            # Without dates only the cwd decides, and a light reader knows it
+            # from the head of the file: the rest is read for kept sessions only.
+            iter_light, hydrate = light_reader
+            for ref in iter_light(store, bool(cwd)):
+                if cwd_exact and cwd is not None and ref.cwd != cwd:
+                    continue
+                if ref.matches(None if cwd_exact else cwd, None, None):
+                    yield ref if light else hydrate(store, ref)
+            return
+        iter_sessions, _ = READERS[store.harness]
         for ref in iter_sessions(store):
             if cwd_exact and cwd is not None and ref.cwd != cwd:
                 continue
@@ -2553,6 +2683,265 @@ def coverage_summary(stores: list[Store], scanned: int, matched: int, stats: dic
         "scan_complete": not truncated and not stats.get("unreadable") and not stats.get("unsupported_fragments") and all(s.status != "unavailable" for s in stores),
         "note": "empty result means: no matches AND scan_complete — check stores[].status for missing/unavailable",
     }
+
+
+# ---------------------------------------------------------------------------
+# grep: raw-byte prefilter
+# ---------------------------------------------------------------------------
+
+_PREFILTER_CHUNK = 1 << 20
+_PREFILTER_ERRORS: tuple[type[BaseException], ...] | None = None
+
+
+def _prefilter_read_errors() -> tuple[type[BaseException], ...]:
+    """Errors that mean "cannot read this file", which keep it for the full parse to report."""
+    global _PREFILTER_ERRORS
+    if _PREFILTER_ERRORS is None:
+        try:
+            from compression import zstd
+            _PREFILTER_ERRORS = (OSError, EOFError, ImportError, zstd.ZstdError)
+        except ImportError:
+            _PREFILTER_ERRORS = (OSError, EOFError, ImportError)
+    return _PREFILTER_ERRORS
+
+
+# What json.dumps writes between string values: structural characters, the
+# space of its separators, numbers and the words json.loads accepts.
+_JSON_GAP_WORDS = ("true", "false", "null", "NaN", "Infinity")
+_JSON_GAP_CHARS = frozenset("{}[],: 0123456789.+-") | frozenset("".join(_JSON_GAP_WORDS))
+# String values the claude-code and codex readers put into fragment text
+# themselves: the keys of the tool-call objects they serialize.
+_SYNTHETIC_STRINGS = ("name", "input", "arguments")
+# What json.dumps(ensure_ascii=False) can write after a backslash: a short
+# escape letter, or \u00XX in lowercase hex for a control character. A
+# pattern may start inside such an escape.
+_ESCAPE_TAILS = tuple(re.compile(p) for p in (
+    r"u00[01][0-9a-f]", r"00[01][0-9a-f]", r"0[01][0-9a-f]", r"[01][0-9a-f]", r"[0-9a-fbnrt]"))
+_CASE_TABLE: tuple[dict[str, set[str]], list[tuple[str, str]]] | None = None
+
+
+def _case_table() -> tuple[dict[str, set[str]], list[tuple[str, str]]]:
+    """Which characters lowercase to which, over planes 0 and 1.
+
+    Returns {lowercase char: chars whose lower() is exactly it} and the
+    characters whose lower() is several characters (U+0130). No character
+    beyond plane 1 has a case mapping; the test suite checks that.
+    """
+    global _CASE_TABLE
+    if _CASE_TABLE is None:
+        single: dict[str, set[str]] = {}
+        multi: list[tuple[str, str]] = []
+        for cp in range(0x20000):
+            if 0xD800 <= cp <= 0xDFFF:
+                continue
+            ch = chr(cp)
+            low = ch.lower()
+            if len(low) != 1:
+                multi.append((ch, low))
+            elif low != ch:
+                single.setdefault(low, set()).add(ch)
+        _CASE_TABLE = (single, multi)
+    return _CASE_TABLE
+
+
+def _json_gap_capable(text: str, folded: bool) -> bool:
+    """Could text occur in what json.dumps writes between two string values?"""
+    words = tuple(w.lower() for w in _JSON_GAP_WORDS) if folded else _JSON_GAP_WORDS
+    chars = frozenset(c.lower() for c in _JSON_GAP_CHARS) if folded else _JSON_GAP_CHARS
+    if not set(text) <= chars:
+        return False
+    return all(any(run in w for w in words) for run in re.findall(r"[A-Za-z]+", text))
+
+
+def _hex_class(digit: str) -> bytes:
+    return f"[{digit}{digit.upper()}]".encode() if digit.isalpha() else digit.encode()
+
+
+class RawPrefilter:
+    """Proves from a session file's raw bytes that a literal grep pattern cannot match.
+
+    grep matches decoded fragment text. In the claude-code and codex readers
+    that text is a string value of a record, json.dumps(ensure_ascii=False)
+    of part of a record, or such pieces joined by newlines. A pattern with
+    no quote, backslash or control character therefore lies inside one
+    string value, unless json.dumps could also write it between strings or
+    it is part of a key the reader adds; then the prefilter is off. The
+    pattern may begin inside an escape json.dumps wrote for a control
+    character (\\n, \\u001b), so those leading characters are dropped. The
+    rest is content of one string value, which the session's writer stored
+    as UTF-8 bytes or escaped as \\uXXXX, a surrogate pair or \\/. A file
+    with neither the bytes nor such an escape of one of those characters
+    holds no match. -i searches ASCII-lowercased bytes, with every other
+    character that lowercases into the pattern spelled out.
+
+    Anything in doubt keeps the file: it is then parsed exactly as without
+    the prefilter, so the output is the same, only faster.
+    """
+
+    def __init__(self, pattern: str, *, ignore_case: bool, regex: bool):
+        self.skipped = 0
+        self.reason: str | None = None
+        self._fold = False  # ASCII-lowercase the bytes before matching
+        self._literal: bytes | None = None
+        self._regex: re.Pattern[bytes] | None = None
+        self._special: tuple[bytes, ...] = ()
+        self._escapes: re.Pattern[bytes] | None = None
+        if regex:
+            self.reason = "regex pattern"
+            return
+        text = pattern.lower() if ignore_case else pattern
+        if not text:
+            self.reason = "empty pattern"
+            return
+        bad = next((c for c in text if c in '"\\' or ord(c) < 0x20
+                    or 0xD800 <= ord(c) <= 0xDFFF or c == "\ufffd"), None)
+        if bad is not None:
+            self.reason = f"pattern contains {bad!r}"
+            return
+        if _json_gap_capable(text, ignore_case):
+            self.reason = "pattern can match JSON syntax outside strings"
+            return
+        if any(text in (w.lower() if ignore_case else w) for w in _SYNTHETIC_STRINGS):
+            self.reason = "pattern is part of a key porch adds to tool calls"
+            return
+        skip = max((m.end() for m in (tail.match(text) for tail in _ESCAPE_TAILS) if m), default=0)
+        rest = text[skip:]
+        if not rest:
+            self.reason = "pattern can lie inside a JSON escape"
+            return
+        escaped = set(rest)
+        if ignore_case:
+            single, multi = _case_table()
+            special: set[str] = set()
+            parts: list[bytes] = []
+            for ch in rest:
+                # str.lower() maps a word-final capital sigma to ς, any other to σ.
+                variants = set(single.get(ch, ())) | ({"Σ"} if ch == "ς" else set())
+                escaped |= variants
+                if ch.isascii():
+                    # bytes.lower() folds ASCII; other characters that
+                    # lowercase to this one (KELVIN SIGN) keep the file.
+                    special |= {v for v in variants if not v.isascii()}
+                    parts.append(re.escape(ch.encode()))
+                else:
+                    alts = sorted({ch} | variants)
+                    parts.append(b"(?:" + b"|".join(re.escape(v.encode()) for v in alts) + b")")
+            for ch, low in multi:
+                if set(low) & set(rest):
+                    special.add(ch)
+                    escaped.add(ch)
+            self._special = tuple(sorted(c.encode() for c in special))
+            # Other characters' variants are spelled out in the regex.
+            self._fold = any(c.isascii() and c.isalpha() for c in rest)
+            if rest.isascii():
+                self._literal = rest.encode()
+            else:
+                self._regex = re.compile(b"".join(parts))
+        else:
+            self._literal = rest.encode()
+        alts = [b"".join(_hex_class(d) for d in f"{ord(c):04x}") for c in sorted(escaped) if ord(c) <= 0xFFFF]
+        if any(ord(c) > 0xFFFF for c in escaped):
+            alts.append(rb"[dD][89abAB][0-9a-fA-F]{2}")
+        self._escapes = re.compile(rb"\\u(?:" + b"|".join(alts) + rb")")
+        if "/" in escaped:
+            self._special += (b"\\/",)
+
+    @property
+    def active(self) -> bool:
+        return self.reason is None
+
+    def may_match(self, path: Path) -> bool:
+        """Byte check alone: False only if no line of the file could hold a match."""
+        try:
+            return any(True for _ in self._candidate_lines(path))
+        except _prefilter_read_errors():
+            return True
+
+    def session_may_match(self, path: Path,
+                          fragments_of: Callable[[Iterable[tuple[int, dict[str, Any]]]], Iterable[dict[str, Any]]],
+                          wanted: Callable[[dict[str, Any]], bool]) -> bool:
+        """False only if no fragment of the session can be one that wanted() accepts.
+
+        Every fragment's text comes from its own record, so only lines that
+        pass the byte check are parsed, and their records go through the
+        harness's own reader (fragments_of) and grep's scope, window and
+        match. Words that every session carries in bookkeeping records, such
+        as the skill listing, then cost a parse of those lines only.
+        A file that cannot be read or decompressed is kept, so that the full
+        parse reports it exactly as it would without the prefilter.
+        """
+        try:
+            return any(wanted(f) for f in fragments_of(self._candidate_records(path)))
+        except _prefilter_read_errors():
+            return True
+
+    def _chunks(self, path: Path) -> Iterator[bytes]:
+        if path.name.endswith(".jsonl.zst"):
+            from compression import zstd
+            with zstd.open(path, "rb") as fh:
+                yield from iter(lambda: fh.read(_PREFILTER_CHUNK), b"")
+        else:
+            with path.open("rb") as fh:
+                yield from _bounded_chunks(fh, os.fstat(fh.fileno()).st_size, _PREFILTER_CHUNK)
+
+    def _candidate_lines(self, path: Path) -> Iterator[bytes]:
+        """Each line that passes the byte check.
+
+        Nothing the check looks for spans a newline, so a run of complete
+        lines that fails it as a whole holds no candidate and is not split.
+        """
+        partial: list[bytes] = []  # the unfinished last line, kept without copying
+        for chunk in self._chunks(path):
+            cut = chunk.rfind(b"\n") + 1
+            if not cut:
+                partial.append(chunk)
+                continue
+            lines = b"".join([*partial, chunk[:cut]]) if partial else chunk[:cut]
+            partial = [chunk[cut:]] if cut < len(chunk) else []
+            if self._hit(lines):
+                yield from (line for line in lines.split(b"\n")[:-1] if self._hit(line))
+        tail = b"".join(partial)
+        if tail and self._hit(tail):
+            yield tail
+
+    def _candidate_records(self, path: Path) -> Iterator[tuple[int, dict[str, Any]]]:
+        # Line numbers would only label locators of fragments that are never emitted.
+        for line in self._candidate_lines(path):
+            rec = _parse_jsonl_line(line.decode("utf-8", "replace"), {})
+            if rec is not None:
+                yield 0, rec
+
+    def _hit(self, buf: bytes) -> bool:
+        if self._escapes is not None and self._escapes.search(buf):
+            return True
+        if any(s in buf for s in self._special):
+            return True
+        hay = buf.lower() if self._fold else buf
+        if self._literal is not None:
+            return self._literal in hay
+        return self._regex is not None and self._regex.search(hay) is not None
+
+    def report(self) -> dict[str, Any]:
+        if not self.active:
+            return {"active": False, "reason": self.reason,
+                    "hint": "a literal pattern without quotes, backslashes or JSON words lets grep skip "
+                            "claude-code and codex sessions that cannot match"}
+        return {"active": True, "skipped_sessions": self.skipped,
+                "note": "skipped sessions provably hold no match; malformed_records and "
+                        "truncated_tail_files count parsed sessions only"}
+
+
+def _raw_prefilter_path(store: Store, ref: SessionRef) -> Path | None:
+    """The plain JSONL file this ref's fragments come from, if RawPrefilter covers its reader."""
+    if store.harness == "claude-code":
+        file = ref.locator.get("file")
+    elif store.harness == "codex" and store.name != "history":
+        file = _codex_rollout_for(ref)  # None: a db-only thread, emitted from its index row
+    else:
+        return None
+    if not file or not str(file).endswith((".jsonl", ".jsonl.zst")):
+        return None
+    return Path(file)
 
 
 # ---------------------------------------------------------------------------
@@ -2622,14 +3011,32 @@ def cmd_grep(args: argparse.Namespace) -> int:
                     break
                 lower_offset = next_offset
             return (start, end) if start is not None and end is not None else None
+    prefilter = RawPrefilter(args.pattern, ignore_case=args.ignore_case, regex=args.regex)
+    verdicts: dict[tuple[str, str], bool] = {}
+
+    def wanted(f: dict[str, Any]) -> bool:  # the same tests the loop below applies
+        text = f.get("text")
+        return (in_scope(f, args.scope) and in_window(f, since, until)
+                and text is not None and match(text) is not None)
     scanned = emitted = 0
     stats: dict[str, int] = {}
     truncated = False
     for store in stores:
         if store.status != "ok":
             continue
-        for ref in iter_all_sessions(store, args.cwd, None, None, cwd_exact=args.cwd_exact):
+        for ref in iter_all_sessions(store, args.cwd, None, None, cwd_exact=args.cwd_exact, light=True):
             scanned += 1
+            raw_path = _raw_prefilter_path(store, ref) if prefilter.active else None
+            if raw_path is not None:
+                # Codex index rows point at rollouts the sessions store already
+                # judged; the verdict depends on the file's records alone.
+                key = (store.harness, str(raw_path))
+                if key not in verdicts:
+                    verdicts[key] = prefilter.session_may_match(
+                        raw_path, lambda records: RECORD_READERS[store.harness](store, ref, raw_path, records, 0), wanted)
+                if not verdicts[key]:
+                    prefilter.skipped += 1
+                    continue
             grouped = []
             # Match the entire decoded fragment; --max-chars limits output only.
             for f in iter_all_fragments(store, ref, 0, stats):
@@ -2645,6 +3052,8 @@ def cmd_grep(args: argparse.Namespace) -> int:
                     f["text"] = text[start:start + args.max_chars]
                     f["text_offset"] = start
                     f["truncated"] = True
+                if ref.light:
+                    ref = LIGHT_READERS[store.harness][1](store, ref)
                 f["session"] = {k: v for k, v in ref.as_dict().items() if k in ("session_id", "title", "cwd", "created", "parent", "agent")}
                 if args.group_by_session:
                     grouped.append(f)
@@ -2660,7 +3069,9 @@ def cmd_grep(args: argparse.Namespace) -> int:
                 break
         if truncated:
             break
-    emit(coverage_summary(stores, scanned, emitted, stats, truncated=truncated))
+    summary = coverage_summary(stores, scanned, emitted, stats, truncated=truncated)
+    summary["prefilter"] = prefilter.report()
+    emit(summary)
     return EXIT_OK if all(s.status != "unavailable" for s in stores) and not stats.get("unreadable") and not stats.get("unsupported_fragments") else EXIT_PARTIAL
 
 
@@ -2780,7 +3191,12 @@ def _hydrate_ref(store: Store, ref: SessionRef) -> SessionRef:
     f = ref.locator.get("file")
     scope = store if not f else Store(store.harness, store.name, Path(f).parent, store.kind)
     try:
-        for r in READERS[store.harness][0](scope):
+        if f and store.harness in LIGHT_READERS:
+            # The file's own metadata, without parsing every session before it in its directory.
+            candidates: Iterable[SessionRef] = [LIGHT_READERS[store.harness][1](scope, ref)]
+        else:
+            candidates = READERS[store.harness][0](scope)
+        for r in candidates:
             if (r.locator.get("file") != f) if f else (r.session_id != ref.session_id):
                 continue
             for key in ("title", "cwd", "created", "updated", "parent", "agent", "hidden"):

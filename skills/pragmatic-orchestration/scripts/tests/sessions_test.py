@@ -5,6 +5,7 @@ import json
 import contextlib
 import io
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -743,6 +744,29 @@ class CodexIndexTests(FixtureMixin, unittest.TestCase):
         out = list(sessions.codex_iter_fragments(store, refs[child], 400, stats))
         self.assertTrue(out and all(f["kind"] == "metadata" or f["kind"] == "prompt" for f in out))
         self.assertIn("no local rollout", out[0]["basis"])
+
+    def test_grep_over_layered_stores_judges_each_rollout_once(self):
+        home, sid, child = self.make()
+        env = {"CODEX_HOME": str(home)}
+        real = sessions.RawPrefilter
+        calls = []
+        original = real.session_may_match
+
+        def counting(self_, path, *rest):
+            calls.append(str(path))
+            return original(self_, path, *rest)
+
+        for argv in ([("pattern", "real prompt")], [("pattern", "absent words")],
+                     [("pattern", "REAL"), ("ignore_case", True), ("scope", "all")]):
+            argv = [("agent", "codex"), *argv]
+            calls.clear()
+            with patch.object(real, "session_may_match", counting):
+                fast = GrepPrefilterTests.grep(self, env, *argv)
+            self.assertEqual(len(calls), len(set(calls)), calls)
+            with patch.object(sessions, "RawPrefilter", lambda p, **kw: real(p, ignore_case=False, regex=True)):
+                slow = GrepPrefilterTests.grep(self, env, *argv)
+            self.assertEqual(fast[:-1], slow[:-1], argv)
+        sessions._ROLLOUT_INDEX.clear()
 
     def test_catalog_and_history(self):
         home, sid, child = self.make()
@@ -1690,6 +1714,343 @@ class CliTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         after = {str(p) for p in self.root.rglob("*")}
         self.assertEqual(before, after)
+
+
+# --- grep raw prefilter ------------------------------------------------------
+
+# Characters that stress the prefilter's reasoning: JSON escapes, case
+# mappings that are not one-to-one, astral characters, separators.
+TRICKY_CHARS = (
+    "abcdefnrtuxyzKSI0123456789 ,:{}[]./-_+\"\\'\n\t\x1b\x00"
+    "ПриветЁёжЖ" "Σσς" "İı\u212a\u212bßẞ" "😀\U00010400\U00010428" "\u2028\u0307ﬃ€"
+)
+
+
+def _escape_everything(obj) -> str:
+    """JSON with every string character written as \\uXXXX (uppercase hex, surrogate pairs)."""
+    if isinstance(obj, str):
+        units = obj.encode("utf-16-be")
+        return '"' + "".join("\\u%04X" % int.from_bytes(units[i:i + 2], "big")
+                             for i in range(0, len(units), 2)) + '"'
+    if isinstance(obj, dict):
+        return "{" + ",".join(_escape_everything(k) + ":" + _escape_everything(v) for k, v in obj.items()) + "}"
+    if isinstance(obj, list):
+        return "[" + ",".join(_escape_everything(v) for v in obj) + "]"
+    return json.dumps(obj)
+
+
+def _escape_style(obj) -> str:
+    """ensure_ascii JSON with uppercase hex, \\/ for slashes and \\u00XX instead of short escapes."""
+    text = json.dumps(obj, separators=(",", ":"))
+    short = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+    def repl(m):
+        tok = m.group(1)
+        if tok in short:
+            return "\\u%04X" % ord(short[tok])
+        if tok.startswith("u"):
+            return "\\u" + tok[1:].upper()
+        return "\\" + tok
+    text = re.sub(r'\\(u[0-9a-fA-F]{4}|["\\/bfnrt])', repl, text)
+    return text.replace("/", "\\/")  # '/' only occurs inside strings in JSON
+
+
+ENCODERS = (
+    lambda r: json.dumps(r, ensure_ascii=False, separators=(",", ":")),   # Node-like
+    lambda r: json.dumps(r),                                               # ensure_ascii
+    _escape_style,
+    _escape_everything,
+)
+
+
+class GrepPrefilterTests(FixtureMixin, unittest.TestCase):
+    def rand_text(self, rng, lo=0, hi=14):
+        return "".join(rng.choice(TRICKY_CHARS) for _ in range(rng.randint(lo, hi)))
+
+    def rand_value(self, rng, depth=0):
+        roll = rng.random()
+        if depth > 1 or roll < 0.45:
+            return self.rand_text(rng)
+        if roll < 0.55:
+            return rng.choice([None, True, False, 0, -3, 2.5, 1e-07, 10 ** 20])
+        if roll < 0.8:
+            return {self.rand_text(rng, 1, 6): self.rand_value(rng, depth + 1) for _ in range(rng.randint(0, 3))}
+        return [self.rand_value(rng, depth + 1) for _ in range(rng.randint(0, 3))]
+
+    def claude_records(self, rng):
+        t = self.rand_text
+        text_or_odd = lambda: rng.choice([t(rng), t(rng), None, 7, {"k": t(rng)}])
+        return [
+            {"type": "user", "cwd": "/w", "message": {"role": "user", "content": t(rng)}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "text", "text": t(rng)},
+                {"type": "tool_result", "tool_use_id": "x", "content": rng.choice([
+                    t(rng), [{"type": "text", "text": text_or_odd()}, {"type": "text", "text": text_or_odd()}],
+                    self.rand_value(rng)])}]}},
+            {"type": "assistant", "message": {"role": "assistant", "model": "m", "content": [
+                {"type": "text", "text": t(rng)}, {"type": "thinking", "thinking": t(rng)},
+                rng.choice([{"type": "tool_use", "id": "i", "name": t(rng, 1, 6), "input": self.rand_value(rng)},
+                            {"type": "tool_use", "id": "i"}]),
+                {"type": t(rng, 1, 5), t(rng, 1, 4): self.rand_value(rng)}]}},
+            {"type": "summary", "summary": t(rng)},
+            {"type": "permission-mode", "permissionMode": t(rng)},
+            {"type": t(rng, 1, 6), t(rng, 1, 6): self.rand_value(rng), "n": rng.choice([1, 2.0, None, True])},
+        ]
+
+    def codex_records(self, rng):
+        t = self.rand_text
+        text_or_odd = lambda: rng.choice([t(rng), t(rng), None, 3])
+        return [
+            {"type": "session_meta", "payload": {"id": "s", "cwd": t(rng), "originator": t(rng)}},
+            {"type": "turn_context", "payload": {"turn_id": t(rng), "model": t(rng), "effort": t(rng)}},
+            {"type": "response_item", "payload": {"type": "message", "role": rng.choice(["user", "assistant", "developer", "other"]),
+                                                  "content": [{"type": "input_text", "text": text_or_odd()},
+                                                              {"type": "output_text", "text": text_or_odd()}]}},
+            {"type": "response_item", "payload": {"type": "reasoning", "summary": [{"text": t(rng)}]}},
+            {"type": "response_item", "payload": {"type": "function_call", "name": t(rng, 1, 6),
+                                                  "arguments": json.dumps(self.rand_value(rng), ensure_ascii=False)}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": t(rng, 1, 6), "input": t(rng)}},
+            {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c",
+                                                  "output": rng.choice([t(rng), self.rand_value(rng)])}},
+            {"type": "response_item", "payload": {"type": t(rng, 1, 5), "x": self.rand_value(rng)}},
+            {"type": "event_msg", "payload": {"type": "user_message", "message": t(rng)}},
+            {"type": "event_msg", "payload": {"type": "agent_message", "message": t(rng)}},
+            {"type": "event_msg", "payload": {"type": t(rng, 1, 5), "v": self.rand_value(rng)}},
+            {"type": "compacted", "payload": {"message": t(rng)}},
+            {"type": t(rng, 1, 5), "payload": self.rand_value(rng)},
+        ]
+
+    def fragments(self, harness, path):
+        store = sessions.Store(harness, "sessions", path.parent, "jsonl_dir")
+        ref = sessions.SessionRef(harness, "sessions", "s", locator={"file": str(path)})
+        reader = sessions.READERS[harness][1]
+        return [f["text"] for f in reader(store, ref, 0, {}) if isinstance(f.get("text"), str)]
+
+    def test_no_false_negatives_on_randomized_sessions(self):
+        import random
+        rng = random.Random(20261114)
+        checked = active = 0
+        for index in range(160):
+            harness = ("claude-code", "codex")[index % 2]
+            records = self.claude_records(rng) if harness == "claude-code" else self.codex_records(rng)
+            records = rng.sample(records, rng.randint(1, len(records)))
+            encode = ENCODERS[(index // 2) % len(ENCODERS)]
+            path = self.root / f"s{index}.jsonl"
+            path.write_text("".join(encode(r) + "\n" for r in records), encoding="utf-8")
+            texts = [t for t in self.fragments(harness, path) if t]
+            if not texts:
+                continue
+            for _ in range(25):
+                source = rng.choice(texts)
+                start = rng.randrange(len(source))
+                needle = source[start:start + rng.randint(1, 10)]
+                fold = rng.random() < 0.5
+                if fold:
+                    needle = "".join(rng.choice((c, c.upper(), c.lower(), c.swapcase())) for c in needle)
+                    hit = any(needle.lower() in t.lower() for t in texts)
+                else:
+                    hit = any(needle in t for t in texts)
+                prefilter = sessions.RawPrefilter(needle, ignore_case=fold, regex=False)
+                checked += hit
+                if hit and prefilter.active:
+                    active += 1
+                    self.assertTrue(prefilter.may_match(path),
+                                    f"false negative: {needle!r} fold={fold} encoder={(index // 2) % len(ENCODERS)} "
+                                    f"in {path.read_text(encoding='utf-8')!r}")
+        # The check must not be vacuous: most drawn needles are matches the prefilter judged.
+        self.assertGreater(checked, 3000)
+        self.assertGreater(active, checked // 3)
+
+    def test_skips_files_without_the_pattern_and_keeps_escaped_ones(self):
+        path = write_jsonl(self.root / "plain.jsonl", [
+            {"type": "user", "message": {"role": "user", "content": "nothing to see " * 1000}}])
+        for needle, fold in (("Ошибка", False), ("ошибка", True), ("Needle", True), ("x/y", False)):
+            self.assertFalse(sessions.RawPrefilter(needle, ignore_case=fold, regex=False).may_match(path), needle)
+        escaped = self.root / "escaped.jsonl"
+        escaped.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "Ошибка x/y"}}) + "\n",
+                           encoding="utf-8")
+        for needle, fold in (("Ошибка", False), ("ОШИБКА", True), ("x/y", False)):
+            self.assertTrue(sessions.RawPrefilter(needle, ignore_case=fold, regex=False).may_match(escaped), needle)
+        # A match deep inside a long line is found.
+        big = write_jsonl(self.root / "big.jsonl", [
+            {"type": "user", "message": {"role": "user", "content": "p" * (2 << 20) + "deep needle"}}])
+        self.assertTrue(sessions.RawPrefilter("deep needle", ignore_case=False, regex=False).may_match(big))
+        self.assertTrue(sessions.RawPrefilter("DEEP NEEDLE", ignore_case=True, regex=False).may_match(big))
+
+    def test_candidate_lines_across_block_boundaries(self):
+        import random
+        rng = random.Random(3)
+        lines, expected = [], []
+        for number in range(1, 4001):
+            body = "x" * rng.choice([0, 1, 7, 300, 4095, 4096, 9000])
+            if rng.random() < 0.05:
+                body = body[:rng.randint(0, len(body))] + "needle" + body
+                expected.append(number)
+            lines.append(body)
+        for ending in ("\n", ""):  # with and without a final newline
+            path = self.root / f"lines{len(ending)}.jsonl"
+            path.write_text("\n".join(lines) + ending, encoding="utf-8")
+            prefilter = sessions.RawPrefilter("needle", ignore_case=False, regex=False)
+            with patch.object(sessions, "_PREFILTER_CHUNK", 4096):
+                found = list(prefilter._candidate_lines(path))
+            self.assertEqual(found, [lines[n - 1].encode() for n in expected], repr(ending))
+
+    def test_bookkeeping_records_do_not_keep_a_session(self):
+        path = write_jsonl(self.root / "s.jsonl", [
+            {"type": "attachment", "attachment": {"type": "skill_listing", "content": "kernel panic helper"}},
+            {"type": "user", "message": {"role": "user", "content": "an unrelated prompt"}}])
+        store = sessions.Store("claude-code", "s", self.root, "jsonl_dir")
+        ref = sessions.SessionRef("claude-code", "s", "s", locator={"file": str(path)})
+        prefilter = sessions.RawPrefilter("kernel panic", ignore_case=False, regex=False)
+        reader = lambda records: sessions._claude_record_fragments(store, ref, path, records, 0)
+        self.assertTrue(prefilter.may_match(path))
+        for scope, expected in (("convo", False), ("system", True), ("all", True)):
+            wanted = lambda f: sessions.in_scope(f, scope) and "kernel panic" in (f.get("text") or "")
+            self.assertEqual(prefilter.session_may_match(path, reader, wanted), expected, scope)
+        missing = self.root / "gone.jsonl"
+        self.assertTrue(prefilter.session_may_match(missing, reader, lambda f: False))
+
+    def test_compressed_rollouts_are_judged_and_corrupt_ones_kept(self):
+        try:
+            from compression import zstd
+        except ImportError:
+            self.skipTest("Zstandard requires Python 3.14+")
+        body = (json.dumps({"type": "event_msg", "payload": {"type": "user_message", "message": "zipped words"}}) + "\n").encode()
+        good = self.root / "rollout-a.jsonl.zst"
+        good.write_bytes(zstd.compress(body))
+        corrupt = self.root / "rollout-b.jsonl.zst"
+        corrupt.write_bytes(zstd.compress(body)[:-6])
+        self.assertTrue(sessions.RawPrefilter("zipped", ignore_case=False, regex=False).may_match(good))
+        self.assertFalse(sessions.RawPrefilter("absent", ignore_case=False, regex=False).may_match(good))
+        self.assertTrue(sessions.RawPrefilter("absent", ignore_case=False, regex=False).may_match(corrupt))
+        store = sessions.Store("codex", "sessions", self.root, "jsonl_dir")
+        ref = sessions.SessionRef("codex", "sessions", "a", locator={"file": str(good)})
+        self.assertEqual(sessions._raw_prefilter_path(store, ref), good)
+
+    def test_keeps_files_where_the_match_needs_porchs_own_spelling(self):
+        # porch writes the control character as \n or \u001b; this writer used \u000A and \u001B.
+        claude = self.root / "escapes.jsonl"
+        claude.write_text(_escape_style({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "i", "name": "T", "input": "a\nzq\x1bwv"}]}}) + "\n", encoding="utf-8")
+        texts = self.fragments("claude-code", claude)
+        for needle in ("nzq", "u001bwv", "1bwv", "bwv"):
+            self.assertTrue(any(needle in t for t in texts), needle)
+            self.assertTrue(sessions.RawPrefilter(needle, ignore_case=False, regex=False).may_match(claude), needle)
+        # porch names the input of a custom tool call "arguments"; the session never says so.
+        codex = write_jsonl(self.root / "rollout-x.jsonl", [{"type": "response_item", "payload": {
+            "type": "custom_tool_call", "name": "apply_patch", "input": "*** Begin Patch"}}])
+        self.assertTrue(any("rguments" in t for t in self.fragments("codex", codex)))
+        prefilter = sessions.RawPrefilter("rguments", ignore_case=False, regex=False)
+        self.assertFalse(prefilter.active and not prefilter.may_match(codex))
+
+    def test_patterns_the_prefilter_cannot_judge_turn_it_off(self):
+        for needle, fold in (("a.*b", False), ('say "hi"', False), ("a\\b", False), ("line\nbreak", False),
+                             ("true", False), ("NULL", True), ("-1.5e+3", False), (": 5", False),
+                             ("name", False), ("ARGUMENT", True), ("nput", False), ("", False)):
+            prefilter = sessions.RawPrefilter(needle, ignore_case=fold, regex=needle == "a.*b")
+            self.assertFalse(prefilter.active, needle)
+            self.assertIn("reason", prefilter.report())
+        self.assertTrue(sessions.RawPrefilter("final", ignore_case=False, regex=False).active)
+
+    def test_rollout_index_finds_what_the_per_id_glob_found(self):
+        home = self.root / "codex-home"
+        names = ["2026/01/rollout-2026-01-01T10-00-00-aaaa-bbbb.jsonl",
+                 "2026/01/rollout-2026-01-01T10-00-00-aaaa-bbbb.jsonl.zst",
+                 "2026/02/rollout-2026-02-01T10-00-00-cccc.jsonl.zst",
+                 "rollout-x-dddd.jsonl", "nested/deep/rollout--eeee.jsonl", "other-ffff.jsonl"]
+        for name in names:
+            (home / "sessions" / name).parent.mkdir(parents=True, exist_ok=True)
+            (home / "sessions" / name).write_text("")
+        (home / "archived_sessions").mkdir(parents=True)
+        (home / "archived_sessions" / "rollout-2025-cccc.jsonl").write_text("")
+        (home / "archived_sessions" / "rollout-2025-gggg.jsonl").write_text("")
+
+        def per_id_glob(thread_id):  # the lookup before the index, kept as the reference
+            for base in (home / "sessions", home / "archived_sessions"):
+                hits = list(base.rglob(f"rollout-*-{thread_id}.jsonl")) + list(base.rglob(f"rollout-*-{thread_id}.jsonl.zst"))
+                if hits:
+                    return hits[0]
+            return None
+
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            sessions._ROLLOUT_INDEX.clear()
+            for thread_id in ("aaaa-bbbb", "bbbb", "cccc", "dddd", "eeee", "ffff", "gggg", "00-cccc", "zzzz"):
+                self.assertEqual(sessions._find_codex_rollout(thread_id), per_id_glob(thread_id), thread_id)
+        sessions._ROLLOUT_INDEX.clear()
+
+    def test_case_mappings_stay_in_their_plane(self):
+        # RawPrefilter folds case from a table over planes 0 and 1 only.
+        for cp in range(0x10000, 0x110000):
+            low = chr(cp).lower()
+            self.assertTrue(all(ord(c) > 0xFFFF for c in low), hex(cp))
+            if cp >= 0x20000:
+                self.assertEqual(low, chr(cp), hex(cp))
+        for cp in range(0x10000):
+            if not 0xD800 <= cp <= 0xDFFF:
+                self.assertTrue(all(ord(c) <= 0xFFFF for c in chr(cp).lower()), hex(cp))
+
+    def test_null_text_blocks_are_empty_not_none(self):
+        self.assertEqual(sessions._tool_result_text({"content": [{"text": None}, {"text": "a"}, {"text": 5}]}), "\na\n5")
+        self.assertEqual(sessions._codex_message_text({"content": [{"type": "input_text", "text": None},
+                                                                   {"type": "output_text", "text": "b"}]}), "b")
+
+    def grep(self, env, *argv):
+        args = sessions.argparse.Namespace(agent=None, store=None, cwd=None, cwd_exact=False, since=None, until=None,
+                                           scope="convo", limit=0, max_chars=400, ignore_case=False, regex=False,
+                                           group_by_session=False, pattern=None)
+        for key, value in argv:
+            setattr(args, key, value)
+        out = io.StringIO()
+        with patch.dict(os.environ, env), contextlib.redirect_stdout(out):
+            sessions.cmd_grep(args)
+        # split("\n"), not splitlines(): U+2028 inside a JSON string is no line break.
+        return [json.loads(line) for line in out.getvalue().split("\n") if line]
+
+    def test_grep_output_is_the_same_with_the_prefilter_off(self):
+        import random
+        rng = random.Random(7)
+        claude, codex = self.root / "claude", self.root / "codex"
+        for index in range(12):
+            write_jsonl(claude / f"proj{index % 3}" / f"c{index}.jsonl",
+                        [{"type": "custom-title", "customTitle": f"title {index}", "cwd": f"/w/{index % 3}"},
+                         *self.claude_records(rng),
+                         {"type": "attachment", "attachment": {"type": "skill_listing", "content": "listing token"}},
+                         {"type": "user", "cwd": "/w", "message": {"role": "user", "content": f"common token {index}"}}])
+            write_jsonl(codex / "2026" / f"rollout-2026-01-01T00-00-0{index % 10}-id{index}.jsonl", self.codex_records(rng))
+        env = {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(claude), "PORCH_HISTORY_ROOT_CODEX": str(codex)}
+        real = sessions.RawPrefilter
+        for argv in ([("pattern", "common token 1")], [("pattern", "COMMON"), ("ignore_case", True)],
+                     [("pattern", "Привет")], [("pattern", "token"), ("group_by_session", True), ("scope", "all")],
+                     [("pattern", "common"), ("cwd", "/w/1")], [("pattern", "c"), ("agent", "codex"), ("scope", "all")],
+                     [("pattern", "listing token")], [("pattern", "listing token"), ("scope", "all")],
+                     [("pattern", "common"), ("since", "2026-01-01")]):
+            argv = [("agent", "claude-code,codex"), *argv]
+            fast = self.grep(env, *argv)
+            with patch.object(sessions, "RawPrefilter", lambda p, **kw: real(p, ignore_case=False, regex=True)):
+                slow = self.grep(env, *argv)
+            self.assertEqual(fast[:-1], slow[:-1], argv)
+            self.assertTrue(fast[-1]["prefilter"]["active"] or argv[-1] == ("scope", "all"))
+            for key in ("sessions_scanned", "fragments_emitted", "scan_complete"):
+                self.assertEqual(fast[-1][key], slow[-1][key], (argv, key))
+        rows = self.grep(env, ("agent", "claude-code"), ("pattern", "common token 4"))
+        self.assertEqual(rows[0]["session"]["title"], "title 4")
+        self.assertEqual(rows[-1]["prefilter"]["skipped_sessions"], 11)
+
+    def test_cwd_filter_reads_only_heads_and_matches_full_listing(self):
+        claude = self.root / "claude"
+        for index in range(6):
+            write_jsonl(claude / "p" / f"s{index}.jsonl", [
+                {"type": "user", "cwd": f"/repo/{index % 2}", "timestamp": f"2026-01-0{index + 1}T00:00:00Z",
+                 "message": {"role": "user", "content": "x"}},
+                {"type": "ai-title", "aiTitle": f"t{index}"},
+                {"type": "assistant", "cwd": "/elsewhere", "message": {"role": "assistant", "model": f"m{index}", "content": []}}])
+        store = sessions.Store("claude-code", "s", claude, "jsonl_dir")
+        full = [r.as_dict() for r in sessions.claude_iter_sessions(store) if r.cwd == "/repo/1"]
+        light = [r.as_dict() for r in sessions.iter_all_sessions(store, "/repo/1", None, None)]
+        self.assertEqual(light, full)
+        self.assertEqual(len(full), 3)
+        exact = [r.as_dict() for r in sessions.iter_all_sessions(store, "/repo/1", None, None, cwd_exact=True)]
+        self.assertEqual(exact, full)
 
 
 if __name__ == "__main__":

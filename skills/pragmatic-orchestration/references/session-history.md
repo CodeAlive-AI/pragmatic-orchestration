@@ -99,6 +99,20 @@ data — do not grep before you know which sessions exist.
    `grep`, combine `--cwd` and `--cwd-exact` to distinguish similarly named
    project paths. `grep --group-by-session` emits one object per source
    session with a `matches` array; `--limit` still counts matching fragments.
+   For a literal pattern, grep first reads each claude-code and codex
+   session file as raw bytes (`.jsonl.zst` decompressed). Only lines that
+   hold the pattern (or a JSON escape of one of its characters) are parsed,
+   and only a session where one of them yields a match in scope is parsed in
+   full; the rest are skipped. A word that every session carries in a
+   bookkeeping record, such as the skill listing, therefore costs a byte
+   scan plus a parse of those lines. The output is the same as without that
+   step.
+   `--regex`, a pattern with a quote, backslash or control character, one
+   made only of JSON syntax (`true`, `: 5`) or a fragment of the keys porch
+   adds to tool calls (`name`, `input`, `arguments`) parse every session;
+   `_summary.prefilter` says which applied and why. `--cwd` reads only the
+   head of a claude-code session to learn its cwd, and title, dates and
+   models are read only for sessions that have a match.
 4. **Read around a hit** — `sessions show <harness:id> --around SEQ --context N`.
    `seq` is the fragment's native sequence position within its session;
    `--context` emits N *emitted* fragments on each side — counted after
@@ -114,6 +128,8 @@ data — do not grep before you know which sessions exist.
    `unreadable_files`, `scan_complete`. If `scan_complete` is false or
    malformed counts are high, say so — an empty result under an incomplete
    scan means "not found in the readable part", not "does not exist".
+   For grep, `prefilter.skipped_sessions` counts sessions ruled out from raw
+   bytes; malformed and truncated counts cover the parsed sessions only.
 
 ### Finding "what the human actually asked"
 

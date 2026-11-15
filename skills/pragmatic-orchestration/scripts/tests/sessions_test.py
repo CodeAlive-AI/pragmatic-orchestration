@@ -1584,9 +1584,10 @@ raise SystemExit(sessions.main())
         code = f'''import sys, time
 sys.path.insert(0, {str(LIB)!r})
 import sessions
+with open(sys.argv[1], "a") as f: f.write(f"request {{sys.argv[2]}} {{time.monotonic_ns()}}\\n")
 slot = sessions._acquire_scan_slot(2, 10)
 with open(sys.argv[1], "a") as f: f.write(f"enter {{sys.argv[2]}} {{time.monotonic_ns()}}\\n")
-time.sleep(.16)
+time.sleep(1.0)
 with open(sys.argv[1], "a") as f: f.write(f"exit {{sys.argv[2]}} {{time.monotonic_ns()}}\\n")
 '''
         events = self.root / "events"
@@ -1595,7 +1596,14 @@ with open(sys.argv[1], "a") as f: f.write(f"exit {{sys.argv[2]}} {{time.monotoni
             env = dict(self.env, PORCH_SESSIONS_MAX_PARALLEL="2", PORCH_SESSIONS_QUEUE_TIMEOUT_S="10")
             procs.append(subprocess.Popen([sys.executable, "-c", code, str(events), str(n)], env=env,
                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
-            time.sleep(.04)
+            # FIFO is defined by the order callers reach the queue, not by
+            # launch order: module import time varies under load, so launch
+            # the next caller only after this one has asked for a slot.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not (
+                    events.exists() and f"request {n} " in events.read_text()):
+                time.sleep(.01)
+            time.sleep(.1)
         for proc in procs:
             stdout, stderr = proc.communicate(timeout=8)
             self.assertEqual(proc.returncode, 0, stdout + stderr)
@@ -1603,7 +1611,7 @@ with open(sys.argv[1], "a") as f: f.write(f"exit {{sys.argv[2]}} {{time.monotoni
         enters = [int(row[1]) for row in rows if row[0] == "enter"]
         self.assertEqual(len(enters), 5)
         self.assertEqual([int(row[1]) for row in rows if row[0] == "enter"], list(range(5)))
-        timeline = sorted((int(row[2]), 1 if row[0] == "enter" else -1) for row in rows)
+        timeline = sorted((int(row[2]), 1 if row[0] == "enter" else -1) for row in rows if row[0] in ("enter", "exit"))
         active = peak = 0
         for _stamp, delta in timeline:
             active += delta
@@ -2339,6 +2347,569 @@ class TurnContractTests(unittest.TestCase):
         self.assertTrue(sessions.is_delegated_brief("\n" + prefix + "\n\nDo the task."))
         self.assertFalse(sessions.is_delegated_brief("Please do the task. " + prefix))
         self.assertFalse(sessions.is_delegated_brief(None))
+
+
+class AgyTests(FixtureMixin, unittest.TestCase):
+    """agy (Antigravity CLI): metadata cache + brain transcripts, file-only."""
+
+    def make_root(self):
+        root = self.root / "agy"
+        (root / "cache").mkdir(parents=True)
+        (root / "brain").mkdir()
+        (root / "annotations").mkdir()
+        (root / "conversations").mkdir()
+        return root
+
+    def write_transcript(self, root, cid, records):
+        path = root / "brain" / cid / ".system_generated" / "logs" / "transcript_full.jsonl"
+        write_jsonl(path, records)
+        return path
+
+    def write_meta(self, root, convs):
+        write_json(root / "cache" / "conversation_metadata.json", {"conversations": convs})
+
+    def entry(self, **kw):
+        base = {"summary": {"ID": "x", "Title": "", "Preview": "", "NumSteps": 0,
+                            "UpdatedAt": "2020-01-01T00:00:00Z", "WorkspaceURIs": [],
+                            "AppDataDir": "", "AgentName": ""}}
+        base["summary"].update(kw.pop("summary", {}))
+        base.update(kw)
+        return base
+
+    def test_sessions_metadata_brain_edges_and_status(self):
+        root = self.make_root()
+        cli = "cid-cli-1"
+        sub = "cid-sub-1"
+        ide = "cid-ide-1"
+        gone = "cid-gone-1"
+        stale = "cid-stale-1"
+        # CLI conversation: metadata + transcript + annotation title override.
+        self.write_meta(root, {
+            cli: self.entry(summary={"Title": "Meta title", "NumSteps": 2,
+                                     "WorkspaceURIs": ["file:///work/repo"],
+                                     "Preview": "fix the bug"}),
+            sub: self.entry(summary={"Title": "Child", "NumSteps": 1}),
+            ide: self.entry(summary={"Title": "IDE row", "AppDataDir": "antigravity"}),
+            gone: self.entry(summary={"Title": "No transcript", "NumSteps": 3}),
+            stale: self.entry(summary={"Title": "Stale", "NumSteps": 10,
+                                       "UpdatedAt": "2099-01-01T00:00:00Z"}),
+        })
+        self.write_transcript(root, cli, [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+             "status": "DONE", "created_at": "2026-11-10T10:00:00Z",
+             "content": "<USER_REQUEST>\nFix the bug\n</USER_REQUEST><ADDITIONAL_METADATA>x</ADDITIONAL_METADATA>"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+             "status": "DONE", "created_at": "2026-11-10T10:00:01Z",
+             "content": "on it", "tool_calls": [{"name": "run_command", "args": {}}]},
+        ])
+        sub_desc = root / "brain" / cli / ".system_generated" / "subagents" / f"{sub}.json"
+        write_json(sub_desc, {"conversationId": sub, "subagentDescriptor": {"typeName": "explore"}})
+        self.write_transcript(root, sub, [
+            {"step_index": 0, "source": "SYSTEM", "type": "SYSTEM_MESSAGE",
+             "status": "DONE", "created_at": "2026-11-10T11:00:00Z",
+             "content": f"[Message] sender={cli}/task-2 content=<TASK>do it</TASK></SYSTEM_MESSAGE>"},
+        ])
+        # IDE row keeps a transcript on disk but stays metadata-only.
+        self.write_transcript(root, ide, [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+             "status": "DONE", "created_at": "2026-11-10T09:00:00Z",
+             "content": "<USER_REQUEST>ide prompt</USER_REQUEST>"},
+        ])
+        # Stale: 3 transcript lines < NumSteps 10, UpdatedAt ancient.
+        self.write_transcript(root, stale, [
+            {"step_index": i, "source": "MODEL", "type": "PLANNER_RESPONSE",
+             "status": "DONE", "created_at": "2026-11-10T12:00:00Z", "content": "x"}
+            for i in range(3)])
+        # Annotation title overrides metadata Title for cli.
+        (root / "annotations" / f"{cli}.pbtxt").write_text('title:"Annotated title"\n', encoding="utf-8")
+        store = sessions.Store("agy", "cli", root, "agy_root")
+        refs = {r.session_id: r for r in sessions.agy_iter_sessions(store)}
+        self.assertEqual(set(refs), {cli, sub, ide, gone, stale})
+        r = refs[cli]
+        self.assertEqual(r.title, "Annotated title")
+        self.assertEqual(r.cwd, "/work/repo")
+        self.assertEqual(r.extra["surface"], "cli")
+        self.assertEqual(r.extra["session_class"], "interactive")
+        self.assertEqual(r.extra["native_status"]["NumSteps"], 2)
+        self.assertNotIn("content_unavailable", r.extra["native_status"])
+        roles = [s["role"] for s in r.extra["sources"]]
+        self.assertIn("metadata", roles)
+        self.assertIn("content", roles)
+        child = refs[sub]
+        self.assertEqual(child.parent, cli)
+        self.assertEqual(child.extra["session_class"], "subagent")
+        self.assertEqual(child.extra["edges"][0]["type"], "subagent")
+        self.assertEqual(child.extra["edges"][0]["target_id"], cli)
+        self.assertEqual(child.agent, "explore")
+        ide_ref = refs[ide]
+        self.assertEqual(ide_ref.extra["surface"], "ide")
+        self.assertTrue(ide_ref.extra["native_status"]["content_unavailable"])
+        gone_ref = refs[gone]
+        self.assertEqual(gone_ref.extra["surface"], "cli")
+        self.assertTrue(gone_ref.extra["native_status"]["content_unavailable"])
+        self.assertEqual(gone_ref.extra["session_class"], "unknown")
+        # Discovery staleness is the cheap mtime-vs-UpdatedAt check.
+        self.assertTrue(refs[stale].extra["native_status"]["content_stale"])
+        self.assertNotIn("content_stale", r.extra["native_status"])
+        # Post-read step check: transcript steps vs metadata NumSteps.
+        cli_frags = list(sessions.agy_iter_fragments(store, r, 400, {}))
+        self.assertFalse(sessions.agy_content_stale(r, cli_frags))
+        stale_frags = list(sessions.agy_iter_fragments(store, refs[stale], 400, {}))
+        self.assertTrue(sessions.agy_content_stale(refs[stale], stale_frags))
+        gone_frags = list(sessions.agy_iter_fragments(store, gone_ref, 400, {}))
+        self.assertFalse(sessions.agy_content_stale(gone_ref, gone_frags))
+        # IDE rows are metadata-only even with a transcript on disk.
+        stats = {}
+        frags = list(sessions.agy_iter_fragments(store, ide_ref, 400, stats))
+        self.assertEqual(len(frags), 1)
+        self.assertEqual(frags[0]["kind"], "metadata")
+        self.assertEqual(frags[0]["native_type"], "ide_row")
+        # Missing transcript still yields one metadata fragment.
+        frags = list(sessions.agy_iter_fragments(store, gone_ref, 400, {}))
+        self.assertEqual(len(frags), 1)
+        self.assertEqual(frags[0]["basis"], "known conversation without transcript")
+
+    def test_fragments_origins_and_turns(self):
+        root = self.make_root()
+        cid = "cid-turns"
+        self.write_meta(root, {cid: self.entry(summary={"Title": "T", "NumSteps": 6})})
+        self.write_transcript(root, cid, [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+             "status": "DONE", "created_at": "2026-11-10T10:00:00Z",
+             "content": "<ADDITIONAL_METADATA>meta</ADDITIONAL_METADATA>"
+                        "<USER_REQUEST>\nFix the bug please\n</USER_REQUEST>"},
+            {"step_index": 1, "source": "SYSTEM", "type": "SYSTEM_MESSAGE",
+             "status": "DONE", "created_at": "2026-11-10T10:00:01Z",
+             "content": "[Message] sender=parent-1/task-9 content=<TASK>delegated brief</TASK></SYSTEM_MESSAGE>"},
+            {"step_index": 2, "source": "SYSTEM", "type": "SYSTEM_MESSAGE",
+             "status": "DONE", "created_at": "2026-11-10T10:00:02Z",
+             "content": "[Message] no sender here"},
+            {"step_index": 3, "source": "MODEL", "type": "PLANNER_RESPONSE",
+             "status": "DONE", "created_at": "2026-11-10T10:00:03Z",
+             "thinking": "hmm", "content": "Looking into it",
+             "tool_calls": [{"name": "run_command", "args": {"CommandLine": "ls"}}]},
+            {"step_index": 4, "source": "MODEL", "type": "GENERIC",
+             "status": "DONE", "created_at": "2026-11-10T10:00:04Z", "content": "out.txt"},
+            {"step_index": 5, "source": "MODEL", "type": "PLANNER_RESPONSE",
+             "status": "DONE", "created_at": "2026-11-10T10:00:05Z",
+             "content": "Fixed. All done.", "tool_calls": []},
+            {"step_index": 6, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+             "status": "DONE", "created_at": "2026-11-10T10:05:00Z",
+             "content": "<USER_REQUEST>\nOne more thing\n</USER_REQUEST>"},
+            {"step_index": 7, "source": "MODEL", "type": "PLANNER_RESPONSE",
+             "status": "DONE", "created_at": "2026-11-10T10:05:01Z",
+             "content": None, "tool_calls": [{"name": "run_command", "args": {}}]},
+        ])
+        store = sessions.Store("agy", "cli", root, "agy_root")
+        ref = next(r for r in sessions.agy_iter_sessions(store) if r.session_id == cid)
+        frags = list(sessions.agy_iter_fragments(store, ref, 400, {}))
+        prompts = [f for f in frags if f["kind"] == "prompt"]
+        # USER_REQUEST only (metadata block excluded), envelope -> delegated,
+        # senderless SYSTEM_MESSAGE stays context.
+        self.assertEqual([f["origin"] for f in prompts], ["human", "delegated", "human"])
+        self.assertEqual(prompts[0]["origin_basis"], "USER_REQUEST")
+        self.assertEqual(prompts[1]["origin_basis"], "system-envelope sender")
+        self.assertEqual(prompts[1]["rel"]["sender"], "parent-1")
+        self.assertTrue(any(f["kind"] == "context" and "no sender" in str(f.get("text"))
+                            for f in frags))
+        # Non-request USER_INPUT blocks become hidden context.
+        self.assertTrue(any(f["kind"] == "context" and "ADDITIONAL_METADATA" in str(f.get("text"))
+                            for f in frags))
+        # PLANNER_RESPONSE with tool_calls -> assistant + tool_call fragments,
+        # native evidence carries step/status/has_tool_calls.
+        asst = [f for f in frags if f["kind"] == "assistant"]
+        self.assertEqual(len(asst), 3)
+        self.assertEqual(asst[0]["native"]["has_tool_calls"], True)
+        self.assertEqual(asst[0]["native"]["step"], 3)
+        self.assertTrue(any(f["kind"] == "tool_call" and f["rel"]["tool"] == "run_command"
+                            for f in frags))
+        self.assertTrue(any(f["kind"] == "tool_result" and f["text"] == "out.txt"
+                            for f in frags))
+        self.assertTrue(any(f["kind"] == "reasoning" for f in frags))
+        turns = sessions.interpret_session(store, ref, frags)
+        self.assertEqual(len(turns), 3)
+        # Turn 1 is the bare human prompt (the delegated envelope starts turn 2).
+        self.assertIsNone(turns[0]["final"])
+        self.assertFalse(turns[0]["open"])
+        # Turn 2 closes on the DONE no-tool PLANNER_RESPONSE before the next prompt.
+        self.assertEqual(turns[1]["final"]["text"], "Fixed. All done.")
+        self.assertEqual(turns[1]["final_basis"], "native:PLANNER_RESPONSE")
+        self.assertFalse(turns[1]["open"])
+        # Turn 3 at EOF: last PLANNER_RESPONSE still has tool_calls -> open,
+        # never a final (live transcript tail is not an answer).
+        self.assertIsNone(turns[2]["final"])
+        self.assertTrue(turns[2]["open"])
+
+    def test_store_discovery_override(self):
+        root = self.make_root()
+        with patch.dict(os.environ, {"PORCH_HISTORY_ROOT_AGY": str(root)}, clear=True):
+            stores = sessions.stores_for("agy")
+        self.assertEqual(len(stores), 1)
+        self.assertEqual(stores[0].harness, "agy")
+        # Parent ~/.gemini override resolves to the antigravity-cli child.
+        parent = self.root / ".gemini"
+        (parent / "antigravity-cli" / "cache").mkdir(parents=True)
+        with patch.dict(os.environ, {"PORCH_HISTORY_ROOT_AGY": str(parent)}, clear=True):
+            stores = sessions.stores_for("agy")
+        self.assertEqual(stores[0].path, parent / "antigravity-cli")
+
+
+class OpenCodeV1Tests(FixtureMixin, unittest.TestCase):
+    """OpenCode 1.x: file storage + legacy SQLite tables, one V1 shape."""
+
+    def write_file_store(self, root):
+        storage = root / "storage"
+        ses = "ses_v1file"
+        write_json(storage / "session" / "proj" / f"{ses}.json", {
+            "id": ses, "version": "1.0.0", "projectID": "proj",
+            "directory": "/work/one", "title": "File session",
+            "time": {"created": 1760000000000, "updated": 1760000001000}})
+        msgs = storage / "message" / ses
+        parts = storage / "part"
+        # user message: synthetic + ignored + genuine text parts
+        write_json(msgs / "m_u1.json", {
+            "id": "m_u1", "sessionID": ses, "role": "user",
+            "time": {"created": 1760000000100},
+            "path": {"cwd": "/work/one"}})
+        write_json(parts / "m_u1" / "p_u1a.json", {
+            "id": "p_u1a", "messageID": "m_u1", "sessionID": ses, "type": "text",
+            "synthetic": True, "text": "<system-reminder>internal</system-reminder>",
+            "time": {"start": 1760000000100}})
+        write_json(parts / "m_u1" / "p_u1b.json", {
+            "id": "p_u1b", "messageID": "m_u1", "sessionID": ses, "type": "text",
+            "ignored": True, "text": "ignored note",
+            "time": {"start": 1760000000101}})
+        write_json(parts / "m_u1" / "p_u1c.json", {
+            "id": "p_u1c", "messageID": "m_u1", "sessionID": ses, "type": "text",
+            "text": "please fix the flaky test",
+            "time": {"start": 1760000000102}})
+        # assistant message: step1 tool-calls, step2 stop with answer
+        write_json(msgs / "m_a1.json", {
+            "id": "m_a1", "sessionID": ses, "role": "assistant",
+            "time": {"created": 1760000000200, "completed": 1760000000900},
+            "finish": "stop", "modelID": "model-x", "providerID": "prov",
+            "path": {"cwd": "/work/one"}})
+        pdir = parts / "m_a1"
+        write_json(pdir / "p_s1.json", {"id": "p_01", "messageID": "m_a1",
+                                       "sessionID": ses, "type": "step-start",
+                                       "time": {"start": 1760000000210}})
+        write_json(pdir / "p_x1.json", {"id": "p_02", "messageID": "m_a1",
+                                       "sessionID": ses, "type": "text",
+                                       "text": "before tool note",
+                                       "time": {"start": 1760000000211}})
+        write_json(pdir / "p_t1.json", {"id": "p_03", "messageID": "m_a1",
+                                       "sessionID": ses, "type": "tool",
+                                       "tool": "read", "callID": "call_1",
+                                       "time": {"start": 1760000000212},
+                                       "state": {"status": "completed",
+                                                 "input": {"path": "x"},
+                                                 "output": "file body"}})
+        write_json(pdir / "p_f1.json", {"id": "p_04", "messageID": "m_a1",
+                                       "sessionID": ses, "type": "step-finish",
+                                       "reason": "tool-calls",
+                                       "time": {"start": 1760000000213},
+                                       "tokens": {"input": 10, "output": 5}})
+        write_json(pdir / "p_s2.json", {"id": "p_05", "messageID": "m_a1",
+                                       "sessionID": ses, "type": "step-start",
+                                       "time": {"start": 1760000000220}})
+        write_json(pdir / "p_t2.json", {"id": "p_06", "messageID": "m_a1",
+                                       "sessionID": ses, "type": "tool",
+                                       "tool": "bash", "callID": "call_2",
+                                       "time": {"start": 1760000000221},
+                                       "state": {"status": "completed",
+                                                 "input": {"cmd": "ls"},
+                                                 "output": "listing"}})
+        write_json(pdir / "p_x2.json", {"id": "p_07", "messageID": "m_a1",
+                                       "sessionID": ses, "type": "text",
+                                       "text": "final answer text",
+                                       "time": {"start": 1760000000222}})
+        write_json(pdir / "p_f2.json", {"id": "p_08", "messageID": "m_a1",
+                                       "sessionID": ses, "type": "step-finish",
+                                       "reason": "stop",
+                                       "time": {"start": 1760000000223},
+                                       "tokens": {"input": 20, "output": 8}})
+        # subagent session via parentID + a subtask prompt part
+        sub = "ses_v1sub"
+        write_json(storage / "session" / "proj" / f"{sub}.json", {
+            "id": sub, "version": "1.0.0", "projectID": "proj",
+            "directory": "/work/one", "title": "Child",
+            "parentID": ses,
+            "time": {"created": 1760000001000, "updated": 1760000001100}})
+        write_json(storage / "message" / sub / "m_su.json", {
+            "id": "m_su", "sessionID": sub, "role": "user",
+            "time": {"created": 1760000001050}})
+        write_json(parts / "m_su" / "p_st.json", {
+            "id": "p_st", "messageID": "m_su", "sessionID": sub,
+            "type": "subtask", "agent": "explore", "description": "look around",
+            "prompt": "You are the executor of one delegated assignment. Do X.",
+            "time": {"start": 1760000001050}})
+        return storage
+
+    def test_file_sessions_fragments_and_turns(self):
+        storage = self.write_file_store(self.root / "data")
+        store = sessions.Store("opencode", "storage", storage, "json_dir")
+        refs = {r.session_id: r for r in sessions.opencode_iter_sessions(store)}
+        self.assertEqual(set(refs), {"ses_v1file", "ses_v1sub"})
+        r = refs["ses_v1file"]
+        self.assertEqual(r.extra["oc_source"], "file")
+        self.assertEqual(r.extra["surface"], "cli")
+        self.assertEqual(r.extra["native_id"], "ses_v1file")
+        self.assertEqual(r.extra["session_class"], "interactive")
+        sub = refs["ses_v1sub"]
+        self.assertEqual(sub.parent, "ses_v1file")
+        self.assertEqual(sub.extra["session_class"], "subagent")
+        self.assertEqual(sub.extra["edges"][0]["type"], "subagent")
+        stats = {}
+        frags = list(sessions.opencode_iter_fragments(store, r, 400, stats))
+        prompts = [f for f in frags if f["kind"] == "prompt"]
+        # synthetic + ignored parts are context, only the genuine text is a prompt.
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0]["origin"], "human")
+        self.assertTrue(any(f["kind"] == "context" and f.get("basis") == "synthetic text part"
+                            for f in frags))
+        self.assertTrue(any(f["kind"] == "context" and f.get("basis") == "ignored text part"
+                            for f in frags))
+        # assistant native evidence + step boundaries
+        asst = [f for f in frags if f["kind"] == "assistant"]
+        self.assertEqual([f["text"] for f in asst], ["before tool note", "final answer text"])
+        self.assertTrue(all((f.get("native") or {}).get("message_id") == "m_a1" for f in asst))
+        self.assertEqual(asst[0]["native"]["after_last_tool"], False)
+        self.assertEqual(asst[1]["native"]["after_last_tool"], True)
+        self.assertTrue(any(f["kind"] == "boundary" and f.get("status") == "tool-calls"
+                            for f in frags))
+        # turns: only step-finish stop/length produces a final; tool-calls does not.
+        turns = sessions.interpret_session(store, r, frags)
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["final"]["text"], "final answer text")
+        self.assertEqual(turns[0]["final_basis"], "native:step-finish=stop")
+        self.assertFalse(turns[0]["open"])
+        # subagent: subtask part -> delegated prompt
+        sfrags = list(sessions.opencode_iter_fragments(store, sub, 400, {}))
+        sprompts = [f for f in sfrags if f["kind"] == "prompt"]
+        self.assertEqual(len(sprompts), 1)
+        self.assertEqual(sprompts[0]["origin"], "delegated")
+        self.assertEqual(sprompts[0]["origin_basis"], "subtask part")
+
+    def test_legacy_sqlite_sessions_and_dedup(self):
+        db = self.root / "opencode.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE session_v2 (id TEXT, directory TEXT, title TEXT,
+                time_created INTEGER, time_updated INTEGER, parent_id TEXT,
+                fork_session_id TEXT, agent TEXT, model TEXT, version TEXT,
+                time_idle INTEGER, idle_outcome TEXT, time_busy INTEGER,
+                time_archived INTEGER);
+            CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE session_part (message_id TEXT, session_id TEXT, ordinal INTEGER,
+                type TEXT, call_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE session (id TEXT, project_id TEXT, parent_id TEXT, slug TEXT,
+                directory TEXT, title TEXT, version TEXT, agent TEXT, model TEXT,
+                time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+            CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER,
+                time_updated INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,
+                time_created INTEGER, time_updated INTEGER, data TEXT);
+        """)
+        # v2 session that also exists in legacy tables -> emitted once, from v2.
+        conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_both", "/work/v2", "V2 wins", 1, 2, None, None, None,
+                      '{"id":"m2"}', "2", None, None, None, None))
+        conn.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_both", "p", None, "slug", "/work/legacy", "Legacy dup",
+                      "1", None, '{"id":"m1"}', 1, 2, None))
+        conn.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?,?)",
+                     ("mv2u", "ses_both", "user", 0, 1, 1,
+                      json.dumps({"text": "v2 prompt"})))
+        # legacy-only session
+        conn.execute("INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_leg", "p", "ses_both", "slug2", "/work/leg", "Legacy only",
+                      "1", None, '{"id":"m1"}', 3, 4, None))
+        conn.execute("INSERT INTO message VALUES (?,?,?,?,?)",
+                     ("mu1", "ses_leg", 3, 3, json.dumps({
+                         "id": "mu1", "sessionID": "ses_leg", "role": "user",
+                         "time": {"created": 3}, "path": {"cwd": "/work/leg"}})))
+        conn.execute("INSERT INTO part VALUES (?,?,?,?,?,?)",
+                     ("pu1", "mu1", "ses_leg", 3, 3, json.dumps({
+                         "id": "pu1", "messageID": "mu1", "sessionID": "ses_leg",
+                         "type": "text", "text": "legacy prompt",
+                         "time": {"start": 3}})))
+        conn.execute("INSERT INTO message VALUES (?,?,?,?,?)",
+                     ("ma1", "ses_leg", 4, 5, json.dumps({
+                         "id": "ma1", "sessionID": "ses_leg", "role": "assistant",
+                         "time": {"created": 4, "completed": 5}, "finish": "stop",
+                         "modelID": "m", "providerID": "p",
+                         "path": {"cwd": "/work/leg"}})))
+        conn.execute("INSERT INTO part VALUES (?,?,?,?,?,?)",
+                     ("pa1", "ma1", "ses_leg", 4, 5, json.dumps({
+                         "id": "pa1", "messageID": "ma1", "sessionID": "ses_leg",
+                         "type": "step-start"})))
+        conn.execute("INSERT INTO part VALUES (?,?,?,?,?,?)",
+                     ("pa2", "ma1", "ses_leg", 4, 5, json.dumps({
+                         "id": "pa2", "messageID": "ma1", "sessionID": "ses_leg",
+                         "type": "text", "text": "legacy answer",
+                         "time": {"start": 4}})))
+        conn.execute("INSERT INTO part VALUES (?,?,?,?,?,?)",
+                     ("pa3", "ma1", "ses_leg", 4, 5, json.dumps({
+                         "id": "pa3", "messageID": "ma1", "sessionID": "ses_leg",
+                         "type": "step-finish", "reason": "stop"})))
+        conn.commit()
+        conn.close()
+        store = sessions.Store("opencode", "db", db, "sqlite")
+        refs = list(sessions.opencode_iter_sessions(store))
+        ids = [r.session_id for r in refs]
+        self.assertEqual(ids.count("ses_both"), 1)
+        self.assertEqual(ids.count("ses_leg"), 1)
+        both = next(r for r in refs if r.session_id == "ses_both")
+        self.assertEqual(both.extra["oc_source"], "v2")
+        self.assertEqual(both.title, "V2 wins")
+        leg = next(r for r in refs if r.session_id == "ses_leg")
+        self.assertEqual(leg.extra["oc_source"], "legacy")
+        self.assertEqual(leg.parent, "ses_both")
+        self.assertEqual(leg.extra["session_class"], "subagent")
+        self.assertEqual(leg.extra["edges"][0]["type"], "subagent")
+        frags = list(sessions.opencode_iter_fragments(store, leg, 400, {}))
+        prompts = [f for f in frags if f["kind"] == "prompt"]
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0]["origin"], "human")
+        self.assertTrue(any(f["kind"] == "assistant" and f["text"] == "legacy answer"
+                            for f in frags))
+        self.assertTrue(any(f["kind"] == "boundary" and f.get("status") == "stop"
+                            for f in frags))
+        turns = sessions.interpret_session(store, leg, frags)
+        self.assertEqual(turns[0]["final"]["text"], "legacy answer")
+        self.assertEqual(turns[0]["final_basis"], "native:step-finish=stop")
+
+    def test_file_store_skips_db_claimed_ids(self):
+        # storage + sibling opencode.db: a session present in both is emitted
+        # once, from the DB (session_v2 > legacy > file storage).
+        data = self.root / "opencode"
+        storage = self.write_file_store(data)
+        db = data / "opencode.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE session_v2 (id TEXT, directory TEXT, title TEXT,
+                time_created INTEGER, time_updated INTEGER, parent_id TEXT,
+                fork_session_id TEXT, agent TEXT, model TEXT, version TEXT,
+                time_idle INTEGER, idle_outcome TEXT, time_busy INTEGER,
+                time_archived INTEGER);
+            CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE session (id TEXT);
+            CREATE TABLE message (id TEXT);
+            CREATE TABLE part (id TEXT);
+        """)
+        conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_v1file", "/work/db", "DB version", 1, 2, None, None, None,
+                      None, "2", None, None, None, None))
+        conn.commit()
+        conn.close()
+        with patch.dict(os.environ, {"XDG_DATA_HOME": str(data.parent)}, clear=True):
+            stores = sessions.stores_for("opencode")
+        db_refs = [r for s in stores if s.kind == "sqlite"
+                   for r in sessions.opencode_iter_sessions(s)]
+        file_refs = [r for s in stores if s.kind != "sqlite"
+                     for r in sessions.opencode_iter_sessions(s)]
+        self.assertEqual([r.session_id for r in db_refs], ["ses_v1file"])
+        self.assertEqual([r.session_id for r in file_refs], ["ses_v1sub"])
+
+
+class OpenCodeV2ContractTests(FixtureMixin, unittest.TestCase):
+    """OpenCode 2.x additive classification fields."""
+
+    def test_v2_origins_native_evidence_edges_status(self):
+        db = self.root / "opencode.db"
+        sqlite3.connect(db).close()
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE session_v2 (id TEXT, directory TEXT, title TEXT,
+                time_created INTEGER, time_updated INTEGER, parent_id TEXT,
+                fork_session_id TEXT, agent TEXT, model TEXT, version TEXT,
+                time_idle INTEGER, idle_outcome TEXT, time_busy INTEGER,
+                time_archived INTEGER);
+            CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE session_part (message_id TEXT, session_id TEXT, ordinal INTEGER,
+                type TEXT, call_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+        """)
+        conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_main", "/work", "Main", 1, 9, None, None, None, None,
+                      "2", 5000, "completed", None, 8000))
+        conn.execute("INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     ("ses_child", "/work", "Child", 2, 9, "ses_main", "ses_fork",
+                      "build", None, "2", None, None, None, None))
+        msgs = [
+            ("m_sys", "ses_main", "system", 0, {"text": "rules injected"}),
+            ("m_synth", "ses_main", "synthetic", 1, {"text": "<auto>"}),
+            ("m_skill", "ses_main", "skill", 2, {"text": "skill body"}),
+            ("m_user", "ses_main", "user", 3, {"text": "hello there"}),
+            ("m_sub", "ses_main", "user", 4,
+             {"text": "You are a subagent spawned by another session. do x"}),
+            ("m_exec", "ses_main", "user", 5,
+             {"text": sessions.executor_prefix() + "\n\ndo y"}),
+            ("m_asst", "ses_main", "assistant", 6,
+             {"finish": "tool-calls",
+              "time": {"created": 6, "completed": 7},
+              "content": [
+                  {"type": "text", "text": "before tool"},
+                  {"type": "tool", "id": "c1", "name": "read",
+                   "state": {"input": {}, "status": "completed", "content": "out"}},
+                  {"type": "text", "text": "after tool"}]}),
+            ("m_asst2", "ses_main", "assistant", 7,
+             {"finish": "stop", "time": {"created": 8, "completed": 9},
+              "content": [{"type": "text", "text": "the answer"}]}),
+        ]
+        for mid, sid, mtype, seq, data in msgs:
+            conn.execute("INSERT INTO session_message VALUES (?,?,?,?,?,?,?)",
+                         (mid, sid, mtype, seq, seq, seq, json.dumps(data)))
+        conn.commit()
+        conn.close()
+        store = sessions.Store("opencode", "db", db, "sqlite")
+        refs = {r.session_id: r for r in sessions.opencode_iter_sessions(store)}
+        main, child = refs["ses_main"], refs["ses_child"]
+        # additive contract fields
+        for r in (main, child):
+            self.assertEqual(r.extra["native_id"], r.session_id)
+            self.assertEqual(r.extra["surface"], "cli")
+            self.assertIn("sources", r.extra)
+        self.assertEqual(main.extra["native_status"]["idle_outcome"], "completed")
+        self.assertEqual(main.extra["native_status"]["time_idle"], 5000)
+        self.assertEqual(main.extra["native_status"]["time_archived"], 8000)
+        self.assertEqual(child.extra["session_class"], "subagent")
+        self.assertEqual(child.extra["class_basis"], "parent_id")
+        edge_types = [e["type"] for e in child.extra["edges"]]
+        self.assertEqual(edge_types, ["subagent", "fork"])
+        self.assertEqual(child.extra["edges"][0]["target_id"], "ses_main")
+        self.assertEqual(child.extra["edges"][1]["target_id"], "ses_fork")
+        self.assertEqual(child.parent, "ses_main")
+        frags = list(sessions.opencode_iter_fragments(store, main, 400, {}))
+        by_text = {f.get("text"): f for f in frags if isinstance(f.get("text"), str)}
+        self.assertEqual(by_text["hello there"]["origin"], "human")
+        self.assertEqual(by_text["You are a subagent spawned by another session. do x"]["origin"],
+                         "delegated")
+        self.assertEqual(by_text[sessions.executor_prefix() + "\n\ndo y"]["origin"],
+                         "delegated")
+        # synthetic/system/skill rows are injected context, not prompts
+        for f in frags:
+            if f["kind"] == "context":
+                self.assertNotEqual(f.get("origin"), "human")
+        prompts = [f for f in frags if f["kind"] == "prompt"]
+        self.assertEqual(len(prompts), 3)
+        # assistant native evidence: finish, completed, after_last_tool
+        asst = [f for f in frags if f["kind"] == "assistant"]
+        native = {(f.get("native") or {}).get("message_id"): f.get("native") for f in asst}
+        self.assertEqual(native["m_asst"]["finish"], "tool-calls")
+        self.assertTrue(native["m_asst"]["completed"])
+        texts = [f for f in asst if (f.get("native") or {}).get("message_id") == "m_asst"]
+        self.assertEqual([f["native"]["after_last_tool"] for f in texts], [False, True])
+        self.assertEqual(native["m_asst2"]["finish"], "stop")
+        # turn rule: last completed assistant with final finish -> its
+        # post-last-tool text is the answer.
+        turns = sessions.interpret_session(store, main, frags)
+        self.assertEqual(len(turns), 3)
+        self.assertEqual(turns[-1]["final"]["text"], "the answer")
+        self.assertEqual(turns[-1]["final_basis"], "native:finish=stop")
+        self.assertFalse(turns[-1]["open"])
 
 
 if __name__ == "__main__":

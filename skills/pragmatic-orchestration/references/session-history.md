@@ -7,6 +7,7 @@ index, no database, and no cache. Every emitted record carries a native locator
 raw source.
 
 Supported harnesses: `claude-code`, `codex` (CLI + Desktop), `opencode`,
+`agy` (Antigravity CLI),
 `grok`, `devin` (CLI/Desktop), `gemini`, `cursor`, `claude-desktop`,
 `qwen-code`, `kimi-code`, `omp`, `hermes`, plus `porch` for this skill's own
 delegate/review runs.
@@ -53,6 +54,7 @@ itself is platform-neutral; only the *default store roots* differ:
 | `claude-code` | `~/.claude/projects` | `%USERPROFILE%\.claude\projects` |
 | `codex` | `~/.codex` (or `$CODEX_HOME`) | `%USERPROFILE%\.codex` (or `%CODEX_HOME%`) |
 | `opencode` | `~/.local/share/opencode` | `%LOCALAPPDATA%\opencode` |
+| `agy` | `~/.gemini/antigravity-cli` | `%USERPROFILE%\.gemini\antigravity-cli` |
 | `grok` | `~/.grok/sessions` | `%USERPROFILE%\.grok\sessions` |
 | `devin` | `~/.local/share/devin/cli` | `%APPDATA%\devin\cli` and `%LOCALAPPDATA%\devin\cli` (both checked) |
 | `gemini` | `~/.gemini` | `%USERPROFILE%\.gemini` |
@@ -179,6 +181,8 @@ Every emitted fragment:
 | `basis` | why the classifier chose `kind`/`authorship` |
 | `rel` | native relationship ids (see above) |
 | `status` | record status when meaningful (e.g. `stop`, `error`) |
+| `origin`, `origin_basis` | prompt provenance: `human` / `delegated` / `injected` / `unknown` + why |
+| `native` | harness-native evidence dict (e.g. agy `step`/`status`/`has_tool_calls`, opencode `finish`/`completed`/`after_last_tool`) |
 
 `kind` and `authorship` are deliberately separate axes: a `kind=prompt`
 record is user-*shaped*, while `authorship` says who actually wrote it.
@@ -256,13 +260,66 @@ Codex stores the same threads in several layers with different authority.
   User-role authorship is unknown because the record does not establish whether
   the text came from a person or an integration. Fixture-verified.
 
-### opencode — `~/.local/share/opencode/opencode.db`
+### opencode — `~/.local/share/opencode/` (2.x SQLite + 1.x file storage)
 
-- Reads OpenCode 2 `session_v2`, `session_message`, and `session_part` tables
-  read-only. Assistant content may be stored inline or in separate ordered rows.
-  Honors `XDG_DATA_HOME` and `OPENCODE_DB`, and discovers channel-specific
-  databases when no database is configured. In-memory databases have no disk
-  history to read. Earlier OpenCode storage formats are not supported.
+Three generations are read, in precedence order `session_v2` > legacy tables
+> file storage; each session id is emitted once from its best source.
+
+- **2.x** — `opencode.db` (or `opencode-*.db`, `$OPENCODE_DB`,
+  `$XDG_DATA_HOME/opencode`): `session_v2`, `session_message`,
+  `session_part` tables, read-only. `session_message.type` ∈
+  `user`/`assistant`/`shell`/`synthetic`/`system`/`skill`; assistant parts may
+  be inline `content[]` or `session_part` rows (stored rows first, then
+  inline). `user` text starting with the subagent-spawn prefix or the porch
+  executor prefix classifies `delegated`; `synthetic`/`system`/`skill` rows
+  are `injected` context. `parent_id`/`fork_session_id` give `subagent`/`fork`
+  edges; `time_idle`/`idle_outcome`/`time_busy`/`time_archived` land in
+  `native_status`. Final answer = last completed assistant message
+  (`time.completed`) whose `finish` is `stop`/`length`/`content-filter`,
+  taking the text after its last tool part.
+- **1.x legacy tables** — same DB's `session`, `message`, `part` tables
+  (`data` JSON columns, same shapes as file storage). Read only for sessions
+  absent from `session_v2`.
+- **1.x file storage** — `storage/session/<project>/<sid>.json`,
+  `storage/message/<sid>/*.json`, `storage/part/<mid>/*.json` under the
+  OpenCode data dir (kind `json_dir`, store name `storage`). Read only for
+  ids not claimed by any sibling DB. V1 part types: `text` (user text parts
+  are prompts unless `synthetic`/`ignored`; `subtask` parts carry delegated
+  briefs), `reasoning`, `tool` (`state.status`/`input`/`output`),
+  `step-start`/`step-finish` (`reason` ∈ `stop`/`length`/`tool-calls`/…),
+  `file`, `agent`, `compaction`, `retry`, `patch`. Final = text parts of the
+  last step whose `step-finish.reason` is `stop` or `length`.
+- In-memory databases (`OPENCODE_DB=:memory:`) have no disk history.
+
+### agy — `~/.gemini/antigravity-cli/` (Antigravity CLI)
+
+- Sessions = union of `cache/conversation_metadata.json` `conversations`,
+  `brain/<cid>/` dirs, and `conversations/<cid>.db` names (the `.db` files
+  are **never opened** — read-only SQLite opens create `-wal`/`-shm`
+  sidecars in the user's store).
+- Content: `brain/<cid>/.system_generated/logs/transcript_full.jsonl`
+  (falls back to `transcript.jsonl`), records `{source, type, status,
+  step_index, created_at, content, thinking, tool_calls, model}`.
+  `USER_EXPLICIT/USER_INPUT` → prompt from inside `<USER_REQUEST>` only
+  (other blocks become hidden context); `SYSTEM/SYSTEM_MESSAGE` with a
+  `[Message] … sender=<parent>[/task-N]` envelope → `delegated` prompt;
+  other `SYSTEM_*` → injected context; `MODEL/PLANNER_RESPONSE` →
+  assistant (+`thinking` reasoning, +`tool_calls`); `MODEL/GENERIC` →
+  tool_result. Every fragment carries `native.step` = `step_index`.
+- Titles: `annotations/<cid>.pbtxt` `title:"…"` overrides metadata `Title`;
+  cwd from `WorkspaceURIs` `file://` URIs. Subagent edges from
+  `brain/<parent>/.system_generated/subagents/<child>.json` descriptors or
+  the SYSTEM_MESSAGE sender fallback.
+- `surface`: `cli` for CLI rows, `ide` for metadata rows with
+  `AppDataDir == "antigravity"` (metadata-only: one `ide_row` fragment,
+  `content_unavailable` always). `native_status`: `NumSteps`,
+  `content_unavailable` (no transcript / IDE row), `content_stale`
+  (transcript mtime older than `UpdatedAt` by >60 s). The NumSteps-vs-
+  transcript check runs post-read via `agy_content_stale(ref, fragments)`.
+- Turn rule: a turn's final is its LAST assistant fragment only when that
+  PLANNER_RESPONSE has non-empty content, no `tool_calls`, `status=DONE`;
+  a live transcript tail (tool calls pending, thinking-only, trailing
+  prompt) leaves the last turn open.
 
 ### grok — `~/.grok/sessions/<encoded-cwd>/<session-id>/`
 

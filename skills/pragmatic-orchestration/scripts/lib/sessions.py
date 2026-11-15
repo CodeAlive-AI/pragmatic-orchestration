@@ -135,6 +135,9 @@ def frag(
     error: bool = False,
     usage: Any = None,
     interrupted: bool = False,
+    origin: str | None = None,
+    origin_basis: str = "",
+    native: dict[str, Any] | None = None,
     max_chars: int = 400,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {
@@ -176,6 +179,12 @@ def frag(
         out["usage"] = _compact_usage(usage)
     if interrupted:
         out["interrupted"] = True
+    if origin:
+        out["origin"] = origin
+    if origin_basis:
+        out["origin_basis"] = origin_basis
+    if native:
+        out["native"] = native
     return out
 
 
@@ -440,6 +449,7 @@ HARNESS_EVIDENCE = {
     "kimi-code": "spec",
     "omp": "spec",
     "hermes": "spec",
+    "agy": "verified",
 }
 
 ENV_ROOT = "PORCH_HISTORY_ROOT_"
@@ -593,19 +603,40 @@ def stores_for(harness: str) -> list[Store]:
         out.append(Store(harness, "history", codex_home / "history.jsonl", "jsonl_dir"))
         return out
     if harness == "opencode":
+        def _storage_store(path: Path) -> Store | None:
+            # V1 file storage: storage/{session,message,part}. An override may
+            # point at the storage dir itself or at the opencode data dir.
+            if (path / "session").is_dir() and (path / "message").is_dir():
+                return Store(harness, "storage", path, "json_dir")
+            nested = path / "storage"
+            if nested.is_dir():
+                return Store(harness, "storage", nested, "json_dir")
+            return None
         if ov:
-            db = ov if ov.is_file() or ov.suffix in (".db", ".sqlite", ".sqlite3") else ov / "opencode.db"
-            return [Store(harness, "db", db, "sqlite")]
+            if ov.is_file() or ov.suffix in (".db", ".sqlite", ".sqlite3"):
+                return [Store(harness, "db", ov, "sqlite")]
+            if (ov / "session").is_dir() and (ov / "message").is_dir():
+                return [_storage_store(ov)]  # type: ignore[list-item]
+            out = [Store(harness, "db", ov / "opencode.db", "sqlite")]
+            storage = _storage_store(ov)
+            if storage is not None:
+                out.append(storage)
+            return out
         base = Path(os.environ.get("XDG_DATA_HOME") or (HOME / ".local" / "share")) / "opencode"
         configured = os.environ.get("OPENCODE_DB")
         if configured == ":memory:":
-            return []
-        if configured is not None:
-            return [Store(harness, "db", Path(os.path.abspath(base / configured)), "sqlite")]
-        # Stable and non-stable OpenCode channels can use different files.
-        paths = [base / "opencode.db", *sorted(base.glob("opencode-*.db"))]
-        return [Store(harness, "db" if i == 0 else f"db:{path.name}", path, "sqlite")
-                for i, path in enumerate(paths)]
+            paths = []
+        elif configured is not None:
+            paths = [Path(os.path.abspath(base / configured))]
+        else:
+            # Stable and non-stable OpenCode channels can use different files.
+            paths = [base / "opencode.db", *sorted(base.glob("opencode-*.db"))]
+        out = [Store(harness, "db" if i == 0 else f"db:{path.name}", path, "sqlite")
+               for i, path in enumerate(paths)]
+        storage = _storage_store(base)
+        if storage is not None:
+            out.append(storage)
+        return out
     if harness == "grok":
         return [Store(harness, "sessions", ov or (HOME / ".grok" / "sessions"), "session_dirs")]
     if harness == "devin":
@@ -668,12 +699,19 @@ def stores_for(harness: str) -> list[Store]:
         return [Store(harness, "sessions", ov or (HOME / ".omp" / "agent" / "sessions"), "jsonl_dir")]
     if harness == "porch":
         return [Store(harness, "runs", _steer_root() / "runs", "run_registry")]
+    if harness == "agy":
+        base = ov or (HOME / ".gemini" / "antigravity-cli")
+        # An override may name the CLI root itself or its ~/.gemini parent.
+        if not (base / "cache").exists() and (base / "antigravity-cli").is_dir():
+            base = base / "antigravity-cli"
+        return [Store(harness, "cli", base, "agy_root")]
     return []
 
 
 ALL_HARNESSES = [
     "claude-code", "codex", "opencode", "grok", "devin", "gemini",
     "claude-desktop", "cursor", "qwen-code", "kimi-code", "omp", "porch", "hermes",
+    "agy",
 ]
 
 
@@ -732,7 +770,7 @@ class SessionRef:
 # ---------------------------------------------------------------------------
 # Readers add what they know, so raw listings only gain fields:
 # - SessionRef.extra keys: native_id, surface, session_class, class_basis,
-#   edges, status, sources.
+#   edges, native_status, sources.
 # - prompt fragments: origin (one of ORIGINS) and origin_basis.
 # - assistant fragments: native (the format's own evidence, e.g. stop_reason).
 # Record readers stay per-record (RawPrefilter feeds them candidate lines);
@@ -1487,34 +1525,581 @@ def _codex_message_text(payload: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# OpenCode 2 — SQLite session projection
+# OpenCode — SQLite session_v2 (2.x) + legacy session/message/part tables and
+# the V1 file storage (1.x). One V1 JSON shape serves files and legacy rows.
+# Canonical source order: session_v2 > legacy tables > file storage.
 # ---------------------------------------------------------------------------
 
-def opencode_iter_sessions(store: Store) -> Iterator[SessionRef]:
+_OPENCODE_SUBAGENT_PREFIX = "You are a subagent spawned by another session."
+_OPENCODE_V2_FINAL_FINISH = {"stop", "length", "content-filter"}
+
+
+def _oc_prompt_origin(text: Any) -> tuple[str, str, str]:
+    """(origin, origin_basis, authorship) for a user-role prompt text."""
+    if not isinstance(text, str) or not text.strip():
+        return "unknown", "missing text", "unknown"
+    if text.lstrip().startswith(_OPENCODE_SUBAGENT_PREFIX):
+        return "delegated", "subagent prefix", "agent"
+    if is_delegated_brief(text):
+        return "delegated", "executor-prefix", "agent"
+    return "human", "user message", "human"
+
+
+def _oc_session_class(parent_id: Any, first_prompt: str | None) -> tuple[str, str]:
+    if parent_id:
+        return "subagent", "parent_id"
+    if first_prompt:
+        if first_prompt.lstrip().startswith(_OPENCODE_SUBAGENT_PREFIX):
+            return "headless", "subagent-spawn prefix"
+        if is_delegated_brief(first_prompt):
+            return "headless", "executor-prefix"
+        return "interactive", "user prompt"
+    return "unknown", "no user prompt"
+
+
+def _oc_first_user_text_v2(conn: sqlite3.Connection) -> dict[str, str]:
+    """session_id -> text of its first user message (for class detection).
+
+    One bounded query: first user row per session, text via json_extract —
+    no per-session content reads at discovery."""
+    if not table_exists(conn, "session_message"):
+        return {}
+    try:
+        rows = conn.execute(
+            "SELECT session_id, json_extract(data,'$.text') FROM ("
+            "  SELECT session_id, seq, data,"
+            "    ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY seq) AS rn"
+            "  FROM session_message WHERE type='user')"
+            " WHERE rn=1").fetchall()
+    except sqlite3.Error:
+        return {}
+    out: dict[str, str] = {}
+    for sid, text in rows:
+        if isinstance(text, str):
+            out[sid] = text
+    return out
+
+
+def _oc_edges_v2(parent_id: Any, fork_id: Any, db: Path) -> list[dict[str, Any]]:
+    edges = []
+    if parent_id:
+        edges.append({"type": "subagent", "target_harness": "opencode", "target_id": parent_id,
+                      "unresolved": None, "basis": "parent_id",
+                      "locator": {"db": str(db), "table": "session_v2", "key": parent_id}})
+    if fork_id:
+        edges.append({"type": "fork", "target_harness": "opencode", "target_id": fork_id,
+                      "unresolved": None, "basis": "fork_session_id",
+                      "locator": {"db": str(db), "table": "session_v2", "key": fork_id}})
+    return edges
+
+
+def _oc_native_status_v2(row: dict[str, Any]) -> dict[str, Any]:
+    out = {}
+    for key in ("time_idle", "idle_outcome", "time_busy", "time_archived"):
+        if row.get(key) is not None:
+            out[key] = row[key]
+    return out
+
+
+def _oc_v2_sources(db: Path, sid: str, has_parts: bool) -> list[dict[str, Any]]:
+    sources = [{"db": str(db), "table": "session_v2", "key": sid, "role": "metadata"},
+               {"db": str(db), "table": "session_message", "key": sid, "role": "content"}]
+    if has_parts:
+        sources.append({"db": str(db), "table": "session_part", "key": sid, "role": "content"})
+    return sources
+
+
+def _opencode_db_sessions(store: Store) -> Iterator[SessionRef]:
     try:
         conn = open_sqlite_ro(store.path)
     except sqlite3.Error as exc:
         store.status, store.error = "unavailable", str(exc)
         return
     try:
-        if not table_exists(conn, "session_v2") or not table_exists(conn, "session_message"):
-            store.status, store.error = "unavailable", "OpenCode 2 session tables not found"
+        cols = table_columns(conn, "session_v2")
+        has_v2 = "id" in cols and table_exists(conn, "session_message")
+        has_v1 = all(table_exists(conn, t) for t in ("session", "message", "part"))
+        if not has_v2 and not has_v1:
+            store.status, store.error = "unavailable", "OpenCode session tables not found"
             return
-        rows = conn.execute("SELECT id, directory, title, time_created, time_updated, parent_id, agent, model, version FROM session_v2")
-        for row in rows:
-            try:
-                model = json.loads(row[7]).get("id") if row[7] else None
-            except (json.JSONDecodeError, AttributeError):
-                model = row[7]
-            yield SessionRef("opencode", store.name, row[0],
-                locator={"table": "session_v2", "key": row[0], "db": str(store.path)},
-                title=row[2], cwd=row[1], created=row[3], updated=row[4],
-                parent=row[5], models=[model] if model else [],
-                extra={"agent": row[6], "version": row[8]})
+        first_user: dict[str, str] = {}
+        if has_v2:
+            first_user = _oc_first_user_text_v2(conn)
+        v2_ids: set[str] = set()
+        if has_v2:
+            want = [c for c in ("id", "directory", "title", "time_created", "time_updated",
+                                "parent_id", "fork_session_id", "agent", "model", "version",
+                                "time_idle", "idle_outcome", "time_busy", "time_archived")
+                    if c in cols]
+            if "id" not in want:
+                want = ["id"]
+            rows = conn.execute(
+                f"SELECT {', '.join(want)} FROM session_v2").fetchall()
+            colidx = {c: i for i, c in enumerate(want)}
+            has_parts = table_exists(conn, "session_part")
+            for row in rows:
+                rec = {c: row[i] for c, i in colidx.items()}
+                sid = rec["id"]
+                v2_ids.add(sid)
+                model_raw = rec.get("model")
+                try:
+                    model = json.loads(model_raw).get("id") if model_raw else None
+                except (json.JSONDecodeError, AttributeError):
+                    model = model_raw
+                parent_id, fork_id = rec.get("parent_id"), rec.get("fork_session_id")
+                session_class, class_basis = _oc_session_class(parent_id, first_user.get(sid))
+                yield SessionRef("opencode", store.name, sid,
+                    locator={"table": "session_v2", "key": sid, "db": str(store.path)},
+                    title=rec.get("title"), cwd=rec.get("directory"),
+                    created=rec.get("time_created"), updated=rec.get("time_updated"),
+                    parent=parent_id, models=[model] if model else [],
+                    extra={
+                        "agent": rec.get("agent"), "version": rec.get("version"),
+                        "oc_source": "v2",
+                        "native_id": sid, "surface": "cli",
+                        "session_class": session_class, "class_basis": class_basis,
+                        "edges": _oc_edges_v2(parent_id, fork_id, store.path),
+                        "native_status": _oc_native_status_v2(rec),
+                        "sources": _oc_v2_sources(store.path, sid, has_parts),
+                    })
+        if has_v1:
+            for ref in _oc_legacy_db_sessions(conn, store, v2_ids):
+                yield ref
     except sqlite3.Error as exc:
         store.status, store.error = "unavailable", str(exc)
     finally:
         conn.close()
+
+
+def opencode_iter_sessions(store: Store) -> Iterator[SessionRef]:
+    if store.kind != "sqlite":
+        yield from _oc_v1_file_sessions(store)
+        return
+    yield from _opencode_db_sessions(store)
+
+
+# --- OpenCode 1.x shared V1 shapes (file storage + legacy tables) -----------
+
+def _oc_v1_message_info(msg: dict[str, Any]) -> dict[str, Any]:
+    t = msg.get("time") if isinstance(msg.get("time"), dict) else {}
+    path = msg.get("path") if isinstance(msg.get("path"), dict) else {}
+    model = msg.get("model") if isinstance(msg.get("model"), dict) else {}
+    return {
+        "id": msg.get("id"), "role": msg.get("role"),
+        "created": t.get("created"), "completed": t.get("completed"),
+        "finish": msg.get("finish"), "error": msg.get("error"),
+        "cwd": path.get("cwd"),
+        "model": msg.get("modelID") or model.get("modelID") or model.get("id"),
+        "provider": msg.get("providerID") or model.get("providerID"),
+        "agent": msg.get("agent"),
+    }
+
+
+def _oc_v1_part_fragments(store: Store, ref: SessionRef, msg: dict[str, Any],
+                          parts: list[tuple[dict[str, Any], dict[str, Any]]],
+                          max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    info = _oc_v1_message_info(msg)
+    role = info["role"]
+    mid = info["id"]
+    base_ts = info["created"]
+    last_tool = -1
+    for i, (part, _ploc) in enumerate(parts):
+        if part.get("type") == "tool":
+            last_tool = i
+    seq = 0
+    for i, (part, ploc) in enumerate(parts):
+        ptype = part.get("type")
+        pts = ((part.get("time") or {}).get("start") if isinstance(part.get("time"), dict) else None) or base_ts
+        if ptype == "text":
+            text = part.get("text")
+            if role == "user":
+                if part.get("synthetic"):
+                    seq += 1
+                    yield frag("opencode", store.name, ref.session_id, seq, "context",
+                               "part.text", ploc, text=text, ts=pts, authorship="system",
+                               visible=False, basis="synthetic text part", cwd=ref.cwd,
+                               max_chars=max_chars)
+                elif part.get("ignored"):
+                    seq += 1
+                    yield frag("opencode", store.name, ref.session_id, seq, "context",
+                               "part.text", ploc, text=text, ts=pts, authorship="system",
+                               visible=False, basis="ignored text part", cwd=ref.cwd,
+                               max_chars=max_chars)
+                else:
+                    origin, origin_basis, authorship = _oc_prompt_origin(text)
+                    seq += 1
+                    yield frag("opencode", store.name, ref.session_id, seq, "prompt",
+                               "part.text", ploc, text=text, ts=pts, authorship=authorship,
+                               visible=True, basis="user text part", cwd=ref.cwd,
+                               model=info["model"], provider=info["provider"],
+                               origin=origin, origin_basis=origin_basis, max_chars=max_chars)
+            elif role == "assistant":
+                completed = info["completed"] is not None
+                seq += 1
+                yield frag("opencode", store.name, ref.session_id, seq, "assistant",
+                           "part.text", ploc, text=text, ts=pts, authorship="agent",
+                           visible=True, basis="assistant text part", cwd=ref.cwd,
+                           model=info["model"], provider=info["provider"],
+                           native={"message_id": mid, "finish": info["finish"],
+                                   "completed": completed, "part_index": i,
+                                   "after_last_tool": last_tool < 0 or i > last_tool},
+                           max_chars=max_chars)
+            else:
+                seq += 1
+                yield frag("opencode", store.name, ref.session_id, seq, "context",
+                           "part.text", ploc, text=text, ts=pts, authorship="unknown",
+                           visible=False, basis=f"text part in {role} message", cwd=ref.cwd,
+                           max_chars=max_chars)
+        elif ptype == "reasoning":
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "reasoning",
+                       "part.reasoning", ploc, text=part.get("text"), ts=pts,
+                       authorship="agent", visible=False, basis="reasoning part",
+                       cwd=ref.cwd, model=info["model"], provider=info["provider"],
+                       max_chars=max_chars)
+        elif ptype == "tool":
+            state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            status = state.get("status")
+            rel = {"call_id": part.get("callID") or part.get("id"), "tool": part.get("tool")}
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "tool_call",
+                       "part.tool", ploc,
+                       text={"tool": part.get("tool"), "input": state.get("input"), "status": status},
+                       ts=pts, authorship="agent", visible=False, rel=rel, max_chars=max_chars)
+            output = state.get("output") or state.get("error")
+            if output is not None:
+                seq += 1
+                yield frag("opencode", store.name, ref.session_id, seq, "tool_result",
+                           "part.tool", ploc, text=output, ts=pts, authorship="system",
+                           visible=False, rel=rel, error=(status == "error"), max_chars=max_chars)
+        elif ptype == "step-start":
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "boundary",
+                       "part.step-start", ploc, ts=pts, authorship="system",
+                       visible=False, basis="step-start", cwd=ref.cwd, max_chars=max_chars)
+        elif ptype == "step-finish":
+            usage = None
+            tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else None
+            if tokens:
+                usage = {"input_tokens": tokens.get("input"), "output_tokens": tokens.get("output"),
+                         "total_tokens": tokens.get("total")}
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "boundary",
+                       "part.step-finish", ploc, ts=pts, authorship="system",
+                       visible=False, basis="step-finish", status=part.get("reason"),
+                       usage=usage, cwd=ref.cwd, max_chars=max_chars)
+        elif ptype == "subtask":
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "prompt",
+                       "part.subtask", ploc, text=part.get("prompt"), ts=pts,
+                       authorship="agent", visible=True, basis="subtask part",
+                       origin="delegated", origin_basis="subtask part", cwd=ref.cwd,
+                       rel={"agent": part.get("agent"), "description": part.get("description")},
+                       max_chars=max_chars)
+        elif ptype == "file":
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "context",
+                       "part.file", ploc,
+                       text={"mime": part.get("mime"), "filename": part.get("filename"),
+                             "url": part.get("url")},
+                       ts=pts, authorship="system", visible=False, basis="file part",
+                       cwd=ref.cwd, max_chars=max_chars)
+        elif ptype == "agent":
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "context",
+                       "part.agent", ploc, text=part.get("name"), ts=pts,
+                       authorship="system", visible=False, basis="agent part",
+                       cwd=ref.cwd, max_chars=max_chars)
+        elif ptype == "compaction":
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "compaction",
+                       "part.compaction", ploc, ts=pts, authorship="system",
+                       visible=False, basis="compaction part", cwd=ref.cwd, max_chars=max_chars)
+        elif ptype == "retry":
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "metadata",
+                       "part.retry", ploc, text=part.get("error"), ts=pts,
+                       authorship="system", visible=False, error=True,
+                       basis="retry part", cwd=ref.cwd, max_chars=max_chars)
+        elif ptype == "patch":
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "context",
+                       "part.patch", ploc, text={"hash": part.get("hash"), "files": part.get("files")},
+                       ts=pts, authorship="system", visible=False, basis="patch part",
+                       cwd=ref.cwd, max_chars=max_chars)
+        else:
+            seq += 1
+            yield frag("opencode", store.name, ref.session_id, seq, "metadata",
+                       f"part.{ptype or 'unknown'}", ploc, text=part, ts=pts,
+                       authorship="system", visible=False,
+                       basis="unrecognized part", cwd=ref.cwd, max_chars=max_chars)
+
+
+def _oc_v1_file_messages(storage: Path, sid: str,
+                               stats: dict[str, int]) -> Iterator[tuple[dict[str, Any], dict[str, Any], list[tuple[dict[str, Any], dict[str, Any]]]]]:
+    msg_dir = storage / "message" / sid
+    if not msg_dir.is_dir():
+        return
+    loaded = []
+    for mf in sorted(msg_dir.glob("*.json")):
+        msg = read_json(mf)
+        if not isinstance(msg, dict):
+            stats["malformed"] = stats.get("malformed", 0) + 1
+            continue
+        loaded.append((msg, mf))
+    # V1 ids are opaque; time.created is the reliable order.
+    loaded.sort(key=lambda t: (((t[0].get("time") or {}).get("created")) or 0,
+                               str(t[0].get("id") or t[1].stem)))
+    for msg, mf in loaded:
+        mid = msg.get("id") or mf.stem
+        parts = []
+        pdir = storage / "part" / mid
+        if pdir.is_dir():
+            for pf in sorted(pdir.glob("*.json")):
+                part = read_json(pf)
+                if isinstance(part, dict):
+                    parts.append((part, {"file": str(pf)}))
+                else:
+                    stats["malformed"] = stats.get("malformed", 0) + 1
+        # Part ids are creation-ordered (verified against the store); boundary
+        # parts carry no time field, so id is the reliable sort key.
+        parts.sort(key=lambda t: str(t[0].get("id") or ""))
+        yield msg, {"file": str(mf)}, parts
+
+
+def _oc_v1_db_messages(conn: sqlite3.Connection, sid: str, db: Path,
+                             stats: dict[str, int]) -> Iterator[tuple[dict[str, Any], dict[str, Any], list[tuple[dict[str, Any], dict[str, Any]]]]]:
+    rows = conn.execute(
+        "SELECT id, data FROM message WHERE session_id=? ORDER BY time_created, id", (sid,)).fetchall()
+    part_rows = conn.execute(
+        "SELECT message_id, id, data FROM part WHERE session_id=? ORDER BY message_id, time_created, id",
+        (sid,)).fetchall()
+    parts_by_msg: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+    for msg_id, part_id, raw in part_rows:
+        try:
+            part = json.loads(raw)
+            if not isinstance(part, dict):
+                raise ValueError("part is not an object")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            stats["malformed"] = stats.get("malformed", 0) + 1
+            continue
+        part.setdefault("id", part_id)
+        ploc = {"db": str(db), "table": "part", "key": part_id}
+        parts_by_msg.setdefault(msg_id, []).append((part, ploc))
+    for mid, raw in rows:
+        try:
+            msg = json.loads(raw)
+            if not isinstance(msg, dict):
+                raise ValueError("message is not an object")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            stats["malformed"] = stats.get("malformed", 0) + 1
+            continue
+        msg.setdefault("id", mid)
+        mloc = {"db": str(db), "table": "message", "key": mid}
+        # parts_by_msg lists already follow the query's time_created,id order.
+        yield msg, mloc, parts_by_msg.get(mid, [])
+
+
+def _oc_v1_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    if ref.extra.get("oc_source") == "legacy":
+        try:
+            conn = open_sqlite_ro(store.path)
+        except sqlite3.Error as exc:
+            store.status, store.error = "unavailable", str(exc)
+            stats["unreadable"] = stats.get("unreadable", 0) + 1
+            return
+        try:
+            for msg, mloc, parts in _oc_v1_db_messages(conn, ref.session_id, store.path, stats):
+                yield from _oc_v1_part_fragments(store, ref, msg, parts, max_chars, stats)
+        finally:
+            conn.close()
+        return
+    storage = store.path
+    if not (storage / "session").is_dir() and (storage / "storage" / "session").is_dir():
+        storage = storage / "storage"
+    for msg, mloc, parts in _oc_v1_file_messages(storage, ref.session_id, stats):
+        yield from _oc_v1_part_fragments(store, ref, msg, parts, max_chars, stats)
+
+
+def _oc_v1_file_sessions(store: Store) -> Iterator[SessionRef]:
+    storage = store.path
+    session_root = storage / "session"
+    if not session_root.is_dir() and (storage / "storage" / "session").is_dir():
+        storage = storage / "storage"
+        session_root = storage / "session"
+    if not session_root.is_dir():
+        store.status, store.error = "empty", "no V1 session directory"
+        return
+    claimed = _oc_db_claimed_ids(storage.parent)
+    for path in sorted(_walk(session_root, "*.json", store.walk_stats)):
+        data = read_json(path)
+        if not isinstance(data, dict):
+            continue
+        sid = str(data.get("id") or path.stem)
+        if sid in claimed:
+            continue
+        t = data.get("time") if isinstance(data.get("time"), dict) else {}
+        parent_id = data.get("parentID")
+        model_info = data.get("model") if isinstance(data.get("model"), dict) else {}
+        model = data.get("modelID") or model_info.get("modelID") or model_info.get("id")
+        first_prompt = _oc_v1_first_prompt(storage, sid)
+        session_class, class_basis = _oc_session_class(parent_id, first_prompt)
+        edges = []
+        if parent_id:
+            edges.append({"type": "subagent", "target_harness": "opencode", "target_id": parent_id,
+                          "unresolved": None, "basis": "parentID",
+                          "locator": {"file": str(path)}})
+        native_status = {}
+        if t.get("archived") is not None:
+            native_status["time_archived"] = t.get("archived")
+        yield SessionRef("opencode", store.name, sid,
+            locator={"file": str(path)},
+            title=data.get("title"), cwd=data.get("directory"),
+            created=t.get("created"), updated=t.get("updated"),
+            parent=parent_id, models=[model] if model else [],
+            extra={
+                "oc_source": "file", "version": data.get("version"),
+                "native_id": sid, "surface": "cli",
+                "session_class": session_class, "class_basis": class_basis,
+                "edges": edges, "native_status": native_status,
+                "sources": [
+                    {"path": str(path), "role": "metadata"},
+                    {"path": str(storage / "message" / sid), "role": "content"},
+                    {"path": str(storage / "part"), "role": "content"},
+                ],
+            })
+
+
+def _oc_v1_first_prompt(storage: Path, sid: str) -> str | None:
+    """First genuine user text of a file-storage session (bounded head read:
+    at most 8 message files and the first user message's parts)."""
+    msg_dir = storage / "message" / sid
+    if not msg_dir.is_dir():
+        return None
+    for mf in sorted(msg_dir.glob("*.json"))[:8]:
+        msg = read_json(mf)
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        mid = msg.get("id") or mf.stem
+        pdir = storage / "part" / mid
+        if not pdir.is_dir():
+            return None
+        for pf in sorted(pdir.glob("*.json"))[:16]:
+            part = read_json(pf)
+            if (isinstance(part, dict) and part.get("type") == "text"
+                    and not part.get("synthetic") and not part.get("ignored")):
+                text = part.get("text")
+                return text if isinstance(text, str) else None
+        return None
+    return None
+
+
+def _oc_v1_first_prompt_db(conn: sqlite3.Connection, sid: str) -> str | None:
+    """First genuine user text part of a legacy-table session (lazy probe)."""
+    try:
+        rows = conn.execute(
+            "SELECT id, data FROM message WHERE session_id=? "
+            "AND json_extract(data,'$.role')='user' ORDER BY time_created, id LIMIT 1",
+            (sid,)).fetchall()
+    except sqlite3.Error:
+        return None
+    if not rows:
+        return None
+    mid, _raw = rows[0]
+    try:
+        cursor = conn.execute(
+            "SELECT data FROM part WHERE message_id=? ORDER BY time_created, id", (mid,))
+    except sqlite3.Error:
+        return None
+    for (raw_part,) in cursor:  # lazy: stops at the first genuine text part
+        try:
+            part = json.loads(raw_part)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (isinstance(part, dict) and part.get("type") == "text"
+                and not part.get("synthetic") and not part.get("ignored")):
+            text = part.get("text")
+            if isinstance(text, str):
+                return text
+            return None
+    return None
+
+
+def _oc_db_claimed_ids(base: Path) -> set[str]:
+    """Session ids covered by sibling OpenCode DBs (session_v2 + legacy)."""
+    configured = os.environ.get("OPENCODE_DB")
+    if configured == ":memory:":
+        paths = []
+    elif configured is not None:
+        paths = [Path(os.path.abspath(base / configured))]
+    else:
+        paths = [base / "opencode.db", *sorted(base.glob("opencode-*.db"))]
+    claimed: set[str] = set()
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            conn = open_sqlite_ro(path)
+        except sqlite3.Error:
+            continue
+        try:
+            if table_exists(conn, "session_v2"):
+                claimed.update(r[0] for r in conn.execute("SELECT id FROM session_v2"))
+            if table_exists(conn, "session"):
+                claimed.update(r[0] for r in conn.execute("SELECT id FROM session"))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return claimed
+
+
+def _oc_legacy_db_sessions(conn: sqlite3.Connection, store: Store,
+                           v2_ids: set[str]) -> Iterator[SessionRef]:
+    cols = table_columns(conn, "session")
+    want = [c for c in ("id", "parent_id", "slug", "directory", "title", "version",
+                        "agent", "model", "time_created", "time_updated", "time_archived")
+            if c in cols]
+    if "id" not in want:
+        return
+    rows = conn.execute(f"SELECT {', '.join(want)} FROM session").fetchall()
+    colidx = {c: i for i, c in enumerate(want)}
+    for row in rows:
+        rec = {c: row[i] for c, i in colidx.items()}
+        sid = rec["id"]
+        if sid in v2_ids:
+            continue
+        parent_id = rec.get("parent_id")
+        model_raw = rec.get("model")
+        try:
+            model = json.loads(model_raw).get("id") if model_raw else None
+        except (json.JSONDecodeError, AttributeError):
+            model = model_raw
+        session_class, class_basis = _oc_session_class(parent_id, _oc_v1_first_prompt_db(conn, sid))
+        edges = []
+        if parent_id:
+            edges.append({"type": "subagent", "target_harness": "opencode", "target_id": parent_id,
+                          "unresolved": None, "basis": "parent_id",
+                          "locator": {"db": str(store.path), "table": "session", "key": parent_id}})
+        native_status = {}
+        if rec.get("time_archived") is not None:
+            native_status["time_archived"] = rec["time_archived"]
+        yield SessionRef("opencode", store.name, sid,
+            locator={"db": str(store.path), "table": "session", "key": sid},
+            title=rec.get("title"), cwd=rec.get("directory"),
+            created=rec.get("time_created"), updated=rec.get("time_updated"),
+            parent=parent_id, models=[model] if model else [],
+            extra={
+                "oc_source": "legacy", "agent": rec.get("agent"), "version": rec.get("version"),
+                "native_id": sid, "surface": "cli",
+                "session_class": session_class, "class_basis": class_basis,
+                "edges": edges, "native_status": native_status,
+                "sources": [
+                    {"db": str(store.path), "table": "session", "key": sid, "role": "metadata"},
+                    {"db": str(store.path), "table": "message", "key": sid, "role": "content"},
+                    {"db": str(store.path), "table": "part", "key": sid, "role": "content"},
+                ],
+            })
 
 
 def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
@@ -1551,42 +2136,198 @@ def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats:
         model, provider = model_info.get("id"), model_info.get("providerID")
         fragments = []
         if row_type == "user":
-            fragments.append(("prompt", data.get("text"), "human", None))
+            origin, origin_basis, authorship = _oc_prompt_origin(data.get("text"))
+            fragments.append({"kind": "prompt", "text": data.get("text"), "authorship": authorship,
+                              "origin": origin, "origin_basis": origin_basis})
         elif row_type == "assistant":
             # V2 may store parts in rows, inline, or both after a downgrade.
             # OpenCode reads stored rows first and appends inline parts.
-            for part in parts_by_message.get(row_id, []) + (data.get("content") or []):
+            combined = parts_by_message.get(row_id, []) + (data.get("content") or [])
+            last_tool = -1
+            for pi, part in enumerate(combined):
+                if isinstance(part, dict) and part.get("type") == "tool":
+                    last_tool = pi
+            msg_time = data.get("time") if isinstance(data.get("time"), dict) else {}
+            completed = msg_time.get("completed") is not None
+            finish = data.get("finish")
+            for pi, part in enumerate(combined):
                 if not isinstance(part, dict):
                     stats["malformed"] = stats.get("malformed", 0) + 1
                     continue
                 kind = part.get("type")
                 if kind in ("text", "reasoning"):
-                    fragments.append(("assistant" if kind == "text" else "reasoning", part.get("text"), "agent", None))
+                    entry = {"kind": "assistant" if kind == "text" else "reasoning",
+                             "text": part.get("text"), "authorship": "agent"}
+                    if kind == "text":
+                        entry["native"] = {"message_id": row_id, "finish": finish,
+                                           "completed": completed, "part_index": pi,
+                                           "after_last_tool": last_tool < 0 or pi > last_tool}
+                    fragments.append(entry)
                 elif kind == "tool":
                     state = part.get("state") if isinstance(part.get("state"), dict) else {}
                     rel = {"call_id": part.get("id"), "tool": part.get("name")}
-                    fragments.append(("tool_call", {"tool": part.get("name"), "input": state.get("input"), "status": state.get("status")}, "agent", rel))
+                    fragments.append({"kind": "tool_call",
+                                      "text": {"tool": part.get("name"), "input": state.get("input"),
+                                               "status": state.get("status")},
+                                      "authorship": "agent", "rel": rel})
                     output = state.get("content") or state.get("output") or state.get("error")
                     if output is not None:
-                        fragments.append(("tool_result", output, "system", rel))
+                        fragments.append({"kind": "tool_result", "text": output,
+                                          "authorship": "system", "rel": rel})
         elif row_type == "shell":
-            fragments.append(("tool_call", data.get("command"), "human", {"tool": "shell", "call_id": data.get("shellID")}))
+            fragments.append({"kind": "tool_call", "text": data.get("command"), "authorship": "human",
+                              "rel": {"tool": "shell", "call_id": data.get("shellID")}})
             output = data.get("output")
             if isinstance(output, dict):
                 output = output.get("output")
             if output is not None:
-                fragments.append(("tool_result", output, "system", {"tool": "shell", "call_id": data.get("shellID")}))
+                fragments.append({"kind": "tool_result", "text": output, "authorship": "system",
+                                  "rel": {"tool": "shell", "call_id": data.get("shellID")}})
+        elif row_type in ("synthetic", "system", "skill"):
+            fragments.append({"kind": "context", "text": data.get("text") or data,
+                              "authorship": "system", "visible": False,
+                              "basis": f"session_message.{row_type}"})
         else:
-            fragments.append(("metadata", data, "system", None))
-        for kind, text_value, authorship, rel in fragments:
+            fragments.append({"kind": "metadata", "text": data, "authorship": "system"})
+        for entry in fragments:
             seq += 1
-            yield frag("opencode", store.name, ref.session_id, seq, kind, f"session_message.{row_type}", locator,
-                       text=text_value, ts=timestamp, authorship=authorship, model=model, provider=provider,
-                       cwd=ref.cwd, visible=kind in KINDS_CONVO, rel=rel, max_chars=max_chars)
+            yield frag("opencode", store.name, ref.session_id, seq, entry["kind"],
+                       f"session_message.{row_type}", locator,
+                       text=entry.get("text"), ts=timestamp,
+                       authorship=entry.get("authorship", "unknown"),
+                       visible=entry.get("visible", entry["kind"] in KINDS_CONVO),
+                       basis=entry.get("basis"), model=model, provider=provider,
+                       cwd=ref.cwd, rel=entry.get("rel"), native=entry.get("native"),
+                       origin=entry.get("origin"), origin_basis=entry.get("origin_basis") or "",
+                       max_chars=max_chars)
 
 
 def opencode_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    source = ref.extra.get("oc_source")
+    if source in ("file", "legacy") or (source is None and store.kind != "sqlite"):
+        yield from _oc_v1_fragments(store, ref, max_chars, stats)
+        return
     yield from _opencode_v2_fragments(store, ref, max_chars, stats)
+
+
+def opencode_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """OpenCode turns (v1 file/legacy + v2 share one rule).
+
+    v2: the turn's last completed assistant message (time.completed, finish in
+    stop/length/content-filter); final = its text segment after the last tool
+    part. v1: text parts of the last step whose step-finish reason is stop or
+    length. open = last turn unanswered while the session may still be live.
+    """
+    is_v1 = ref.extra.get("oc_source") in ("file", "legacy") or any(
+        f.get("native_type") in ("part.step-start", "part.step-finish") for f in fragments)
+    # Split into turns on genuine prompts.
+    turns: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for f in fragments:
+        if f.get("kind") == "prompt" and f.get("origin", "unknown") != "injected":
+            if current is not None:
+                turns.append(current)
+            current = {"prompts": [f], "frags": [f],
+                       "ts_start": f.get("ts"), "ts_end": f.get("ts")}
+        elif current is not None:
+            current["frags"].append(f)
+            current["ts_end"] = f.get("ts") or current["ts_end"]
+    if current is not None:
+        turns.append(current)
+
+    def _join(frags: list[dict[str, Any]]) -> dict[str, Any] | None:
+        texts = [f for f in frags if isinstance(f.get("text"), str) and f["text"].strip()]
+        if not texts:
+            return None
+        if len(texts) == 1:
+            return texts[0]
+        merged = dict(texts[-1])
+        merged["text"] = "\n\n".join(t["text"] for t in texts)
+        return merged
+
+    out = []
+    last_i = len(turns) - 1
+    for i, turn in enumerate(turns):
+        final, final_basis = None, "none"
+        if is_v1:
+            # Steps bracketed by step-start/step-finish boundary fragments.
+            step_texts: list[dict[str, Any]] = []
+            in_step = False
+            last_reason = None
+            for f in turn["frags"]:
+                nt = f.get("native_type")
+                if nt == "part.step-start":
+                    step_texts, in_step = [], True
+                elif nt == "part.step-finish":
+                    in_step = False
+                    if f.get("status") in ("stop", "length"):
+                        last_reason = f.get("status")
+                        final = _join(step_texts)
+                    step_texts = []
+                elif in_step and f.get("kind") == "assistant":
+                    step_texts.append(f)
+            if final is not None:
+                final_basis = f"native:step-finish={last_reason}"
+        else:
+            # Group assistant fragments by message_id; last completed message
+            # with a final finish reason wins; final = post-last-tool texts.
+            by_msg: dict[str, list[dict[str, Any]]] = {}
+            order: list[str] = []
+            for f in turn["frags"]:
+                if f.get("kind") != "assistant":
+                    continue
+                mid = (f.get("native") or {}).get("message_id")
+                key = str(mid) if mid is not None else f"seq{f.get('seq')}"
+                if key not in by_msg:
+                    by_msg[key] = []
+                    order.append(key)
+                by_msg[key].append(f)
+            last_msg_state = None
+            for key in order:
+                group = by_msg[key]
+                native = group[0].get("native") or {}
+                finish = native.get("finish")
+                if native.get("completed") and finish in _OPENCODE_V2_FINAL_FINISH:
+                    texts = [f for f in group
+                             if (f.get("native") or {}).get("after_last_tool")]
+                    candidate = _join(texts)
+                    if candidate is not None:
+                        final = candidate
+                        final_basis = f"native:finish={finish}"
+                last_msg_state = (native.get("completed"), finish)
+            session_live = (last_msg_state is None
+                            or last_msg_state[0] is not True
+                            or last_msg_state[1] in (None, "tool-calls"))
+        # open: last turn, prompts seen, no final, session possibly live.
+        open_ = False
+        if i == last_i and final is None and turn["prompts"]:
+            if is_v1:
+                # Live when the fragment stream ends inside an unclosed step or
+                # the last assistant message is incomplete / tool-call bound.
+                live = False
+                in_step = False
+                last_state = None
+                for f in fragments:
+                    nt = f.get("native_type")
+                    if nt == "part.step-start":
+                        in_step = True
+                    elif nt == "part.step-finish":
+                        in_step = False
+                    if f.get("kind") == "assistant":
+                        n = f.get("native") or {}
+                        last_state = (n.get("completed"), n.get("finish"))
+                live = in_step or last_state is None or last_state[0] is not True \
+                    or last_state[1] in (None, "tool-calls")
+                open_ = live
+            else:
+                open_ = session_live
+        out.append({"prompts": turn["prompts"], "final": final,
+                    "final_basis": final_basis, "open": open_,
+                    "ts_start": turn["ts_start"], "ts_end": turn["ts_end"]})
+    return out
+
+
+TURN_RULES["opencode"] = opencode_turns
 
 
 # ---------------------------------------------------------------------------
@@ -2821,6 +3562,401 @@ def hermes_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: 
 
 
 # ---------------------------------------------------------------------------
+# agy — Google Antigravity CLI (~/.gemini/antigravity-cli)
+#
+# Content lives in brain/<cid>/.system_generated/logs/transcript_full.jsonl;
+# conversation_metadata.json (cache/) lists summaries for both CLI and IDE
+# rows. conversations/<cid>.db and the shared summaries DB are NEVER opened:
+# read-only SQLite opens create -wal/-shm sidecars in the user's store.
+# ---------------------------------------------------------------------------
+
+_AGY_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>(.*?)</USER_REQUEST>", re.DOTALL)
+_AGY_SENDER_RE = re.compile(r"\[Message\][^\n]*?sender=(\S+)")
+_AGY_MSG_CONTENT_RE = re.compile(r"\[Message\][^\n]*?content=(.*?)</SYSTEM_MESSAGE>", re.DOTALL)
+_AGY_TITLE_RE = re.compile(r'title:"((?:[^"\\]|\\.)*)"')
+_AGY_STALE_SECONDS = 60
+
+
+def _agy_metadata(store: Store) -> dict[str, Any]:
+    data = read_json(store.path / "cache" / "conversation_metadata.json")
+    convs = data.get("conversations") if isinstance(data, dict) else None
+    return convs if isinstance(convs, dict) else {}
+
+
+def _agy_annotation_title(store: Store, cid: str) -> str | None:
+    try:
+        text = (store.path / "annotations" / f"{cid}.pbtxt").read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    m = _AGY_TITLE_RE.search(text)
+    if not m:
+        return None
+    raw = m.group(1)
+    try:
+        return json.loads(f'"{raw}"')
+    except json.JSONDecodeError:
+        return raw
+
+
+def _agy_transcript_path(store: Store, cid: str) -> Path | None:
+    logs = store.path / "brain" / cid / ".system_generated" / "logs"
+    for name in ("transcript_full.jsonl", "transcript.jsonl"):
+        path = logs / name
+        if path.is_file():
+            return path
+    return None
+
+
+def _agy_subagent_parents(store: Store) -> dict[str, tuple[str, Path, dict[str, Any]]]:
+    """child conversation id -> (parent cid, descriptor path, descriptor)."""
+    brain = store.path / "brain"
+    out: dict[str, tuple[str, Path, dict[str, Any]]] = {}
+    if not brain.is_dir():
+        return out
+    for desc in _walk(brain, "*/.system_generated/subagents/*.json", store.walk_stats):
+        rel = desc.relative_to(brain)
+        if len(rel.parts) < 4:
+            continue
+        data = read_json(desc)
+        data = data if isinstance(data, dict) else {}
+        child = data.get("conversationId") or desc.stem
+        out[str(child)] = (rel.parts[0], desc, data)
+    return out
+
+
+def _agy_head(store: Store, path: Path, max_lines: int = 8) -> list[dict[str, Any]]:
+    stats: dict[str, int] = {}
+    return [rec for _ln, rec in iter_jsonl(path, stats, max_lines=max_lines)]
+
+
+def _agy_sender_parent(content: Any) -> str | None:
+    """Parent conversation id from a '[Message] ... sender=<parent>[/task-N]' envelope."""
+    if not isinstance(content, str):
+        return None
+    m = _AGY_SENDER_RE.search(content)
+    if not m:
+        return None
+    return m.group(1).split("/", 1)[0] or None
+
+
+def _agy_prompt_origin(text: str) -> tuple[str, str]:
+    if is_delegated_brief(text):
+        return "delegated", "executor-prefix"
+    return "human", "USER_REQUEST"
+
+
+def agy_iter_sessions(store: Store) -> Iterator[SessionRef]:
+    meta = _agy_metadata(store)
+    brain = store.path / "brain"
+    conv_dir = store.path / "conversations"
+    brain_ids = {p.name for p in brain.iterdir() if p.is_dir()} if brain.is_dir() else set()
+    db_ids = {p.name[:-3] for p in conv_dir.glob("*.db")} if conv_dir.is_dir() else set()
+    parents = _agy_subagent_parents(store)
+    for cid in sorted(set(meta) | brain_ids | db_ids):
+        entry = meta.get(cid)
+        entry = entry if isinstance(entry, dict) else {}
+        summary = entry.get("summary") if isinstance(entry.get("summary"), dict) else {}
+        transcript = _agy_transcript_path(store, cid)
+        head = _agy_head(store, transcript) if transcript else []
+        first_created = next((r.get("created_at") for r in head if r.get("created_at")), None)
+        # Class evidence: subagent edge > IDE row > delegated brief > user prompt.
+        parent_edge = parents.get(cid)
+        sender_parent = None
+        delegated_marker = None
+        has_user_input = False
+        for rec in head:
+            if rec.get("source") == "SYSTEM" and rec.get("type") == "SYSTEM_MESSAGE":
+                sender_parent = sender_parent or _agy_sender_parent(rec.get("content"))
+            if (rec.get("source") == "USER_EXPLICIT" and rec.get("type") == "USER_INPUT"
+                    and not has_user_input):
+                has_user_input = True
+                content = rec.get("content")
+                m = _AGY_USER_REQUEST_RE.search(content) if isinstance(content, str) else None
+                prompt_text = (m.group(1) if m else content) or ""
+                if is_delegated_brief(prompt_text):
+                    delegated_marker = "executor-prefix"
+        preview = summary.get("Preview") or ""
+        if delegated_marker is None and is_delegated_brief(preview):
+            delegated_marker = "executor-prefix"
+        ide_row = summary.get("AppDataDir") == "antigravity"
+        edge_parent, edge_path, edge_data = parent_edge if parent_edge else (None, None, {})
+        if edge_parent is None and sender_parent:
+            edge_parent, edge_path = sender_parent, transcript
+        edges = []
+        if edge_parent:
+            basis = "subagent descriptor" if parent_edge else "SYSTEM_MESSAGE sender"
+            edges.append({
+                "type": "subagent", "target_harness": "agy", "target_id": edge_parent,
+                "unresolved": None, "basis": basis,
+                "locator": {"file": str(edge_path)} if edge_path else {},
+            })
+        if edge_parent:
+            session_class, class_basis = "subagent", edges[0]["basis"]
+        elif ide_row:
+            session_class, class_basis = "interactive", "AppDataDir=antigravity"
+        elif delegated_marker:
+            session_class, class_basis = "headless", delegated_marker
+        elif has_user_input or preview:
+            session_class = "interactive"
+            class_basis = "transcript USER_INPUT" if has_user_input else "conversation_metadata"
+        else:
+            session_class, class_basis = "unknown", "no class evidence"
+        # Status facts: content availability and staleness vs conversation
+        # metadata. Discovery stays cheap (stat + metadata only): the
+        # NumSteps-vs-transcript check runs post-read via agy_content_stale.
+        native_status: dict[str, Any] = {}
+        num_steps = summary.get("NumSteps")
+        if isinstance(num_steps, int):
+            native_status["NumSteps"] = num_steps
+        updated_raw = summary.get("UpdatedAt") or entry.get("last_modified_time")
+        stale = False
+        if transcript is None or ide_row:
+            # IDE rows are metadata-only by contract: content is never read.
+            native_status["content_unavailable"] = True
+        else:
+            try:
+                mtime = transcript.stat().st_mtime
+            except OSError:
+                mtime = None
+            updated_epoch = ts_epoch(updated_raw)
+            if mtime is not None and updated_epoch is not None and mtime < updated_epoch - _AGY_STALE_SECONDS:
+                stale = True
+            if stale:
+                native_status["content_stale"] = True
+        title = _agy_annotation_title(store, cid) or summary.get("Title") or None
+        uris = summary.get("WorkspaceURIs")
+        cwd = next((p for p in (_folder_uri_to_path(u) for u in (uris or []) if isinstance(u, str)) if p), None)
+        sources = []
+        meta_path = store.path / "cache" / "conversation_metadata.json"
+        if cid in meta:
+            sources.append({"path": str(meta_path), "role": "metadata"})
+        ann = store.path / "annotations" / f"{cid}.pbtxt"
+        if ann.is_file():
+            sources.append({"path": str(ann), "role": "metadata"})
+        if transcript is not None:
+            sources.append({"path": str(transcript), "role": "content"})
+        if parent_edge:
+            sources.append({"path": str(parent_edge[1]), "role": "lineage"})
+        descriptor = edge_data.get("subagentDescriptor") if isinstance(edge_data.get("subagentDescriptor"), dict) else {}
+        agent = descriptor.get("typeName") or descriptor.get("role")
+        yield SessionRef(
+            "agy", store.name, cid,
+            locator={"file": str(transcript)} if transcript else {"file": str(meta_path)},
+            title=title, cwd=cwd,
+            created=first_created,
+            updated=updated_raw or (transcript.stat().st_mtime if transcript else None),
+            parent=edge_parent, agent=agent,
+            extra={
+                "native_id": cid, "surface": "ide" if ide_row else "cli",
+                "session_class": session_class, "class_basis": class_basis,
+                "edges": edges, "native_status": native_status, "sources": sources,
+            })
+
+
+def agy_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    path = _agy_transcript_path(store, ref.session_id)
+    meta_path = store.path / "cache" / "conversation_metadata.json"
+    if ref.extra.get("surface") == "ide" or path is None:
+        # IDE rows are metadata-only by contract; CLI rows without a transcript
+        # still surface their metadata as one context fragment.
+        yield frag("agy", store.name, ref.session_id, 1, "metadata",
+                   "conversation_metadata" if path is None else "ide_row",
+                   {"file": str(meta_path)},
+                   text={"title": ref.title, "cwd": ref.cwd,
+                         "native_status": ref.extra.get("native_status")},
+                   ts=ref.updated, authorship="system", visible=False,
+                   basis="IDE metadata row" if ref.extra.get("surface") == "ide"
+                   else "known conversation without transcript",
+                   max_chars=max_chars)
+        return
+    seq = 0
+    for line_no, rec in iter_jsonl(path, stats):
+        source, rtype = rec.get("source"), rec.get("type")
+        status, ts = rec.get("status"), rec.get("created_at")
+        content = rec.get("content")
+        loc = {"file": str(path), "line": line_no}
+        native_type = f"{source}.{rtype}"
+        step_idx = rec.get("step_index")
+        step_native = {"step": step_idx} if isinstance(step_idx, int) else None
+
+        def emit(kind: str, ntype: str, *, native: dict[str, Any] | None = None,
+                 **kw: Any) -> dict[str, Any]:
+            merged = dict(step_native or {})
+            if native:
+                merged.update(native)
+            return frag("agy", store.name, ref.session_id, seq, kind, ntype, loc,
+                        native=merged or None, **kw)
+
+        if source == "USER_EXPLICIT" and rtype == "USER_INPUT":
+            text = content if isinstance(content, str) else ""
+            m = _AGY_USER_REQUEST_RE.search(text)
+            prompt_text = (m.group(1).strip() if m else text.strip())
+            origin, origin_basis = _agy_prompt_origin(prompt_text)
+            seq += 1
+            yield emit("prompt", native_type,
+                       text=prompt_text, ts=ts,
+                       authorship="agent" if origin == "delegated" else "human",
+                       visible=True, basis="USER_EXPLICIT/USER_INPUT",
+                       origin=origin, origin_basis=origin_basis,
+                       status=status, cwd=ref.cwd, max_chars=max_chars)
+            rest = ((text[:m.start()] + text[m.end():]) if m else "").strip()
+            if rest:
+                seq += 1
+                yield emit("context", native_type + ".metadata",
+                           text=rest, ts=ts, authorship="system", visible=False,
+                           basis="USER_INPUT non-request blocks",
+                           status=status, cwd=ref.cwd, max_chars=max_chars)
+        elif source == "SYSTEM" and rtype == "SYSTEM_MESSAGE":
+            sender = _agy_sender_parent(content)
+            if sender:
+                inner = _AGY_MSG_CONTENT_RE.search(content) if isinstance(content, str) else None
+                brief = inner.group(1).strip() if inner else (content or "")
+                seq += 1
+                yield emit("prompt", native_type,
+                           text=brief, ts=ts, authorship="system", visible=True,
+                           basis="SYSTEM_MESSAGE [Message] envelope",
+                           origin="delegated", origin_basis="system-envelope sender",
+                           rel={"sender": sender}, status=status, cwd=ref.cwd,
+                           max_chars=max_chars)
+            else:
+                seq += 1
+                yield emit("context", native_type,
+                           text=content, ts=ts, authorship="system", visible=False,
+                           basis="SYSTEM_MESSAGE", status=status, cwd=ref.cwd,
+                           max_chars=max_chars)
+        elif source == "SYSTEM" and rtype == "ERROR_MESSAGE":
+            seq += 1
+            yield emit("context", native_type,
+                       text=content if content is not None else rec.get("error"), ts=ts,
+                       authorship="system", visible=False, error=True,
+                       basis="ERROR_MESSAGE", status=status, cwd=ref.cwd,
+                       max_chars=max_chars)
+        elif source == "SYSTEM" and rtype == "CHECKPOINT":
+            seq += 1
+            yield emit("compaction", native_type,
+                       text=content, ts=ts, authorship="system", visible=False,
+                       basis="CHECKPOINT", status=status, cwd=ref.cwd, max_chars=max_chars)
+        elif source == "SYSTEM":
+            seq += 1
+            yield emit("context", native_type,
+                       text=content, ts=ts, authorship="system", visible=False,
+                       basis=rtype or native_type, status=status, cwd=ref.cwd,
+                       max_chars=max_chars)
+        elif source == "MODEL" and rtype == "PLANNER_RESPONSE":
+            model = rec.get("model")
+            usage = {k: rec[k] for k in ("input_tokens", "output_tokens", "cache_read_tokens")
+                     if isinstance(rec.get(k), (int, float))}
+            tool_calls = [tc for tc in (rec.get("tool_calls") or []) if isinstance(tc, dict)]
+            native = {"status": status, "has_tool_calls": bool(tool_calls)}
+            if rec.get("thinking"):
+                seq += 1
+                yield emit("reasoning", native_type + ".thinking",
+                           text=rec.get("thinking"), ts=ts,
+                           authorship="agent", visible=False, model=model,
+                           basis="thinking", status=status, cwd=ref.cwd,
+                           max_chars=max_chars)
+            seq += 1
+            yield emit("assistant", native_type,
+                       text=rec.get("content"), ts=ts, authorship="agent", visible=True,
+                       model=model, native=native, usage=usage or None,
+                       basis="PLANNER_RESPONSE", status=status, cwd=ref.cwd,
+                       max_chars=max_chars)
+            for tc in tool_calls:
+                seq += 1
+                yield emit("tool_call", native_type + ".tool_call",
+                           text={"name": tc.get("name"), "input": tc.get("args")}, ts=ts,
+                           authorship="agent", visible=False, model=model,
+                           rel={"tool": tc.get("name")},
+                           status=status, cwd=ref.cwd, max_chars=max_chars)
+        elif source == "MODEL" and rtype == "GENERIC":
+            seq += 1
+            yield emit("tool_result", native_type,
+                       text=content, ts=ts, authorship="system", visible=False,
+                       error=(status == "ERROR" or bool(rec.get("error"))),
+                       basis="GENERIC tool result",
+                       rel={"step": step_idx},
+                       status=status, cwd=ref.cwd, max_chars=max_chars)
+        elif source == "MODEL":
+            seq += 1
+            yield emit("metadata", native_type,
+                       text=rec, ts=ts, authorship="system", visible=False,
+                       basis=rtype or native_type, status=status, cwd=ref.cwd,
+                       max_chars=max_chars)
+        elif source == "USER_EXPLICIT":
+            seq += 1
+            yield emit("context", native_type,
+                       text=content, ts=ts, authorship="human", visible=False,
+                       basis=rtype or native_type, status=status, cwd=ref.cwd,
+                       max_chars=max_chars)
+        else:
+            seq += 1
+            yield emit("metadata", native_type,
+                       text=rec, ts=ts, authorship="unknown", visible=False,
+                       basis="unrecognized record", status=status, cwd=ref.cwd,
+                       max_chars=max_chars)
+
+
+def agy_content_stale(ref: SessionRef, fragments: list[dict[str, Any]]) -> bool:
+    """True when the transcript's distinct step records are fewer than the
+    NumSteps the conversation metadata claims — i.e. content was truncated or
+    the transcript lags the index. Runs post-read; discovery only stores
+    NumSteps in native_status."""
+    num = (ref.extra.get("native_status") or {}).get("NumSteps")
+    if not isinstance(num, int) or num <= 0:
+        return False
+    steps = set()
+    for f in fragments:
+        native = f.get("native")
+        if isinstance(native, dict) and isinstance(native.get("step"), int):
+            steps.add(native["step"])
+    return bool(steps) and len(steps) < num
+
+
+def agy_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """agy turns: a turn's final answer is its LAST assistant fragment, and
+    only when that PLANNER_RESPONSE has non-empty content, no tool_calls and
+    status DONE. Anything else at the tail (tool_calls pending, thinking-only
+    or empty response, trailing USER_INPUT) leaves the last turn open — EOF
+    of a live transcript is not a final."""
+    turns: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for f in fragments:
+        if f.get("kind") == "prompt" and f.get("origin", "unknown") != "injected":
+            if current is not None:
+                turns.append(current)
+            current = {"prompts": [f], "frags": [f],
+                       "ts_start": f.get("ts"), "ts_end": f.get("ts")}
+        elif current is not None:
+            current["frags"].append(f)
+            current["ts_end"] = f.get("ts") or current["ts_end"]
+    if current is not None:
+        turns.append(current)
+    out = []
+    last_i = len(turns) - 1
+    for i, turn in enumerate(turns):
+        final = None
+        last_assistant = next((f for f in reversed(turn["frags"])
+                               if f.get("kind") == "assistant"), None)
+        if last_assistant is not None:
+            native = last_assistant.get("native") or {}
+            if (native.get("has_tool_calls") is False
+                    and native.get("status") == "DONE"
+                    and str(last_assistant.get("text") or "").strip()):
+                final = last_assistant
+        out.append({
+            "prompts": turn["prompts"], "final": final,
+            "final_basis": "native:PLANNER_RESPONSE" if final is not None else "none",
+            "open": i == last_i and final is None,
+            "ts_start": turn["ts_start"], "ts_end": turn["ts_end"],
+        })
+    return out
+
+
+TURN_RULES["agy"] = agy_turns
+
+
+# ---------------------------------------------------------------------------
 # dispatch tables
 # ---------------------------------------------------------------------------
 
@@ -2850,6 +3986,7 @@ READERS = {
     "omp": (omp_iter_sessions, omp_iter_fragments),
     "porch": (porch_iter_sessions, porch_iter_fragments),
     "hermes": (hermes_iter_sessions, hermes_iter_fragments),
+    "agy": (agy_iter_sessions, agy_iter_fragments),
 }
 
 
@@ -3415,6 +4552,11 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
                               cwd=info.get("cwd"), title=summary.get("generated_title"))
     elif store.harness == "opencode":
         return next((ref for ref in opencode_iter_sessions(store) if ref.session_id == query_id), None)
+    elif store.harness == "agy":
+        if ((p / "brain" / query_id).is_dir()
+                or (p / "conversations" / f"{query_id}.db").is_file()
+                or query_id in _agy_metadata(store)):
+            return next((ref for ref in agy_iter_sessions(store) if ref.session_id == query_id), None)
     elif store.harness == "devin":
         if store.name == "sessions.db":
             try:

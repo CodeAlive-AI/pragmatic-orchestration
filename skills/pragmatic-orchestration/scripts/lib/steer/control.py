@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .delivery import record_delivery
 from .mailbox import Mailbox, MailboxError
 from .registry import Registry, RegistryError, TERMINAL_STATUSES
 from .util import preview_text, progress, utc_now_iso
@@ -273,6 +274,14 @@ def _duration_seconds(meta: Dict[str, Any], *, include_running: bool = False) ->
         return None
 
 
+def _record_delivery(reg: Registry, run_id: str, via: str, fmt: str) -> None:
+    """Best-effort delivery record; a failure warns but never changes the result."""
+    try:
+        record_delivery(reg.run_path(run_id), via, fmt)
+    except (OSError, RegistryError) as e:
+        sys.stderr.write(f"porch: warning: could not record delivery for {run_id}: {e}\n")
+
+
 def cmd_wait(args: argparse.Namespace) -> int:
     reg = Registry(Path(args.registry_root) if args.registry_root else None)
     try:
@@ -378,6 +387,11 @@ def cmd_wait(args: argparse.Namespace) -> int:
             "final_text": text,
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
+        sys.stdout.flush()
+        # found is None still prints a structured "no answer" payload; that is
+        # not a delivery of final text and records nothing.
+        if text is not None:
+            _record_delivery(reg, args.run_id, "wait", "json")
         return code
 
     # Byte-identical to what a foreground delegate prints on stdout.
@@ -386,6 +400,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
         if not text.endswith("\n"):
             sys.stdout.write("\n")
         sys.stdout.flush()
+        _record_delivery(reg, args.run_id, "wait", "text")
     return code
 
 

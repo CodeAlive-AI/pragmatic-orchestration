@@ -597,6 +597,125 @@ class OrchestrationTests(unittest.TestCase):
             self.assertIsNone(data["final_text"])
             self.assertIsNone(data["final_path"])
 
+    def deliveries(self, rid):
+        path = self.reg.run_path(rid) / "deliveries.jsonl"
+        if not path.is_file():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def completed_with_answer(self, text="THE_ANSWER", **extra):
+        rid = self.run_record("completed", **extra)
+        atomic_write_text(self.reg.run_path(rid) / "final.txt", text)
+        return rid
+
+    def test_wait_plain_records_one_text_delivery(self):
+        rid = self.completed_with_answer()
+        p = self.cli("wait", rid)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, "THE_ANSWER\n")
+        records = self.deliveries(rid)
+        self.assertEqual(len(records), 1)
+        rec = records[0]
+        self.assertEqual(rec["via"], "wait")
+        self.assertEqual(rec["format"], "text")
+        self.assertEqual(rec["stdout"], "pipe")
+        self.assertRegex(rec["ts"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+        self.assertIn("collector", rec)
+
+    def test_wait_json_records_one_json_delivery(self):
+        rid = self.completed_with_answer()
+        p = self.cli("wait", rid, "--json")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout)["final_text"], "THE_ANSWER")
+        records = self.deliveries(rid)
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]["via"], records[0]["format"]), ("wait", "json"))
+
+    def test_wait_quiet_records_nothing(self):
+        rid = self.completed_with_answer()
+        p = self.cli("wait", rid, "--quiet")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, "")
+        self.assertEqual(self.deliveries(rid), [])
+
+    def test_wait_without_final_text_records_nothing(self):
+        rid = self.run_record("completed")
+        p = self.cli("wait", rid, "--json")
+        self.assertEqual(p.returncode, 74, p.stderr)
+        self.assertFalse(json.loads(p.stdout)["final_available"])
+        self.assertEqual(self.deliveries(rid), [])
+
+    def test_two_waits_record_two_lines(self):
+        rid = self.completed_with_answer()
+        for _ in range(2):
+            p = self.cli("wait", rid)
+            self.assertEqual(p.returncode, 0, p.stderr)
+        records = self.deliveries(rid)
+        self.assertEqual(len(records), 2)
+        self.assertTrue(all(r["via"] == "wait" and r["format"] == "text" for r in records))
+
+    def test_foreground_delegate_records_delivery(self):
+        env = dict(self.env)
+        for key in ("PORCH_LAUNCHER", "PORCH_LAUNCHER_RUN_ID", "CODEX_THREAD_ID", "CLAUDECODE"):
+            env.pop(key, None)
+        env["CLAUDE_CODE_SESSION_ID"] = "fake-foreground-caller"
+        p = self.cli("-a", "codex", "FOREGROUND_TASK", env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("FAKE_CODEX", p.stdout)
+        rid = extract_run_id(p.stderr)
+        records = self.deliveries(rid)
+        self.assertEqual(len(records), 1)
+        rec = records[0]
+        self.assertEqual((rec["via"], rec["format"]), ("foreground", "text"))
+        self.assertEqual(rec["stdout"], "pipe")
+        # The supervisor rewrites PORCH_LAUNCHER* before printing; the
+        # collector must still be the launch-time caller, not the run itself.
+        self.assertEqual(rec["collector"], launcher_metadata(env)["launcher_instance"])
+        self.assertEqual(rec["collector"], self.reg.load_meta(rid).get("launcher_instance"))
+
+    def test_detached_run_records_only_on_wait(self):
+        p = self.cli("-a", "codex", "--detach", "DETACHED_TASK")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        rid = p.stdout.strip()
+        # Reaching terminal through --quiet prints nothing and is not a
+        # delivery; the detached supervisor's stdout is its private log.
+        q = self.cli("wait", rid, "--quiet")
+        self.assertEqual(q.returncode, 0, q.stderr)
+        self.assertEqual(q.stdout, "")
+        self.assertEqual(self.deliveries(rid), [])
+        w = self.cli("wait", rid)
+        self.assertEqual(w.returncode, 0, w.stderr)
+        self.assertIn("FAKE_CODEX", w.stdout)
+        records = self.deliveries(rid)
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]["via"], records[0]["format"]), ("wait", "text"))
+
+    def test_delivery_records_launcher_instance_not_session_id(self):
+        rid = self.completed_with_answer()
+        env = dict(self.env)
+        for key in ("PORCH_LAUNCHER", "PORCH_LAUNCHER_RUN_ID", "CODEX_THREAD_ID", "CLAUDECODE"):
+            env.pop(key, None)
+        env["CLAUDE_CODE_SESSION_ID"] = "fake-caller-session"
+        p = self.cli("wait", rid, env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        records = self.deliveries(rid)
+        self.assertEqual(len(records), 1)
+        expected = launcher_metadata(env)["launcher_instance"]
+        self.assertTrue(expected)
+        self.assertEqual(records[0]["collector"], expected)
+        raw = (self.reg.run_path(rid) / "deliveries.jsonl").read_text()
+        self.assertNotIn("fake-caller-session", raw)
+
+    def test_unwritable_delivery_path_keeps_stdout_and_exit(self):
+        rid = self.completed_with_answer()
+        # A directory where the JSONL file belongs fails the append with
+        # EISDIR; the run dir itself stays healthy, like a corrupted entry.
+        (self.reg.run_path(rid) / "deliveries.jsonl").mkdir()
+        p = self.cli("wait", rid)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, "THE_ANSWER\n")
+        self.assertIn(f"porch: warning: could not record delivery for {rid}:", p.stderr)
+
     def test_backend_startup_failure_does_not_discard_healthy_peer(self):
         pending = []
         try:

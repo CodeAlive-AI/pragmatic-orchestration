@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Set
 
 from .adapters import make_adapter
 from .config_loader import agent_settings
+from .delivery import record_delivery
 from .launcher import BACKEND_LAUNCHERS, launcher_metadata
 from .mailbox import Mailbox, MailboxError
 from .registry import Registry, RegistryError, TERMINAL_STATUSES
@@ -893,6 +894,27 @@ class Supervisor:
             if not text.endswith("\n"):
                 sys.stdout.write("\n")
             sys.stdout.flush()
+            # A detached run's stdout is its private log file, not a caller —
+            # only a foreground print is a delivery.
+            if not self.log_file:
+                self._record_delivery()
+
+    def _record_delivery(self) -> None:
+        """Best-effort delivery record; never changes the run's outcome."""
+        assert self.run_id
+        try:
+            # The supervisor rewrote PORCH_LAUNCHER* for nested launches, so
+            # the caller's identity is the launch-time meta value, not env.
+            record_delivery(
+                self.registry.run_path(self.run_id),
+                "foreground",
+                "text",
+                collector=self._registry_meta.get("launcher_instance"),
+            )
+        except (OSError, RegistryError) as e:
+            sys.stderr.write(
+                f"porch: warning: could not record delivery for {self.run_id}: {e}\n"
+            )
 
     def _ensure_registry(self, operation: str) -> bool:
         """Keep a live delegate running when its service registry disappears."""

@@ -34,6 +34,16 @@ snapshot. Omitting it preserves unbounded waiting. Exit 124 with `timed_out: tru
 means work is still active; it neither cancels nor restarts any worker. `wait`
 without `--json` reports a timeout on stderr; `--quiet` suppresses the payload.
 
+Every printed final answer also leaves a delivery record: porch appends one
+line to `deliveries.jsonl` in the run's registry directory when `wait` prints
+the answer (plain or `--json`) and when a foreground `delegate` prints its
+own. Each record carries the UTC timestamp, the delivery path (`wait` or
+`foreground`), the format (`text` or `json`), the stdout kind (`tty`, `pipe`,
+`file`, or `other`), and the caller's opaque `launcher_instance` — never a
+raw session id. `--quiet`, timeouts, runs without final text, and a detached
+supervisor's log write record nothing; a failed append only warns on stderr
+and never changes the command's result.
+
 `wait-any` always emits JSON with `ready` run ids and `runs` snapshots. Exit 0
 means at least one target is terminal, including failures; inspect each run's
 `status`, `exit_code`, and `error`. Every supplied id must exist. Timeout snapshots

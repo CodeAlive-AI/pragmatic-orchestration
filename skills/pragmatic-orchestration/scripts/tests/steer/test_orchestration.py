@@ -85,6 +85,13 @@ class OrchestrationTests(unittest.TestCase):
         rid = p.stdout.strip()
         w = self.cli("wait", rid)
         self.assertEqual(w.returncode, 0, w.stderr)
+        # `wait` returns at the terminal status; the detached supervisor still
+        # finishes its cleanup in the run directory. Removing the temporary
+        # tree before that raced with its last writes.
+        deadline = time.monotonic() + 10
+        while self.reg.load_meta(rid).get("cleanup_status") != "completed" and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(self.reg.load_meta(rid).get("cleanup_status"), "completed")
         self.assertEqual(self.turn_texts(), [CONTRACT + task])
 
     def test_one_shot_prompt_is_prefixed_with_executor_contract(self):

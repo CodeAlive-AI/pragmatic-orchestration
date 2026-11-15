@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tracemalloc
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -50,6 +51,23 @@ class FixtureMixin:
 
 
 class JsonlStreamingTests(FixtureMixin, unittest.TestCase):
+    def test_large_record_does_not_retain_decoded_chunks_during_parse(self):
+        size = 8 * 1024 * 1024
+        path = self.root/'large.jsonl'
+        with path.open('wb') as out:
+            out.write(b'{"text":"')
+            for _ in range(size // 65536):
+                out.write(b'x' * 65536)
+            out.write(b'"}\n')
+        tracemalloc.start()
+        try:
+            rows = list(sessions.iter_jsonl(path, {}))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(len(rows[0][1]['text']), size)
+        self.assertLess(peak, size * 2.7)
+
     @staticmethod
     def old_reader(path):
         """Small fixture oracle for the former read/split behavior."""
@@ -102,10 +120,36 @@ class JsonlStreamingTests(FixtureMixin, unittest.TestCase):
                     with path.open("ab") as writer:
                         writer.write(b'{"appended":true}\n')
 
+        stats = {}
         with patch.object(sessions, "_bounded_chunks", append_after_first_chunk):
-            actual = list(sessions.iter_jsonl(path, {}))
+            actual = list(sessions.iter_jsonl(path, stats))
+        self.assertEqual(stats.get("changed_during_read"), 1)
         self.assertEqual(len(actual), 4)
         self.assertTrue(all("appended" not in row for _, row in actual))
+
+    def test_compressed_reader_detects_growth(self):
+        try:
+            from compression import zstd
+        except ImportError:
+            self.skipTest("stdlib Zstandard is unavailable")
+        path = self.root / "growing.jsonl.zst"
+        path.write_bytes(zstd.compress(b'{"value":"initial"}\n'))
+        original = sessions._LimitedFile.readinto
+        changed = False
+        def append_after_read(view, target):
+            nonlocal changed
+            count = original(view, target)
+            if count and not changed:
+                changed = True
+                with path.open('ab') as out:
+                    out.write(zstd.compress(b'{"value":"later"}\n'))
+            return count
+        stats = {}
+        with patch.object(sessions._LimitedFile, 'readinto', append_after_read):
+            result = list(sessions.iter_jsonl(path, stats))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0][1]['value'], 'initial')
+        self.assertEqual(stats.get('changed_during_read'), 1)
 
     def test_compressed_jsonl_stream_matches_read_split_when_available(self):
         try:
@@ -347,6 +391,24 @@ class HermesTests(FixtureMixin, unittest.TestCase):
 
 
 class CodexTests(FixtureMixin, unittest.TestCase):
+    def test_suffixed_uuid_rollout_groups_and_remains_readable(self):
+        home = self.root / 'codex_home'
+        sid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        suffix = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        path = home / 'sessions' / f'rollout-2026-01-01T00-00-00-{sid}_{suffix}.jsonl'
+        write_jsonl(path, [{'type':'session_meta','payload':{'id':sid, 'forked_from_id':'parent'}},
+                           {'type':'event_msg','payload':{'type':'user_message','message':'fixture prompt'}}])
+        store = sessions.Store('codex','sessions',home/'sessions','jsonl_dir')
+        with patch.dict(os.environ, {'CODEX_HOME':str(home)}):
+            sessions.reset_discovery_caches()
+            ref = next(sessions.codex_iter_sessions(store))
+            self.assertEqual(ref.session_id, sid)
+            self.assertEqual(ref.extra['selected_rollout'], str(path))
+            self.assertEqual(sessions._find_codex_rollout(sid), path)
+            self.assertEqual(sessions._codex_rollout_for(ref), str(path))
+            self.assertTrue(any(f.get('text') == 'fixture prompt' for f in sessions.codex_iter_fragments(store, ref, 0, {})))
+            self.assertIn(('fork','parent'), {(e['type'],e['target_id']) for e in ref.extra['edges']})
+
     def test_discovery_reads_only_bounded_heads(self):
         home = self.root / "codex_home"
         sid = "bounded-thread"
@@ -2209,6 +2271,49 @@ class CliTests(FixtureMixin, unittest.TestCase):
         seqs2 = [r["seq"] for r in rows if "seq" in r]
         self.assertIn(target, seqs2)
 
+    def test_index_find_and_show_at_cli(self):
+        root = self.root / 'codex_home' / 'sessions'
+        sid = 'fixture-thread'
+        write_jsonl(root / f'rollout-2026-01-01T00-00-00-{sid}.jsonl', [
+            {'type':'session_meta','payload':{'id':sid}},
+            {'type':'event_msg','payload':{'type':'user_message','message':'unique fixture needle'}},
+        ])
+        env = {'PORCH_HISTORY_ROOT_CODEX':str(root), 'CODEX_HOME':str(root.parent),
+               'PORCH_SESSIONS_INDEX_DIR':str(self.root/'index')}
+        result = self.run_cli('find','needle','fixture|absent','-a','codex',env_extra=env)
+        self.assertEqual(result.returncode,0,result.stderr)
+        rows = self.lines(result)
+        self.assertEqual(rows[0]['native_id'],sid)
+        self.assertEqual(rows[-1]['matched_sessions'],1)
+        self.assertEqual(rows[-1]['alternatives'][1][1]['sessions'],0)
+        locator = rows[0]['evidence']['needle']['locator']
+        shown = self.run_cli('show','--at',locator,env_extra=env)
+        self.assertEqual(shown.returncode,0,shown.stderr)
+        self.assertTrue(any(r.get('text') == 'unique fixture needle' for r in self.lines(shown)))
+        invalid = self.run_cli('find','needle|','-a','codex',env_extra=env)
+        self.assertNotEqual(invalid.returncode,0)
+        self.assertIn('empty alternative',invalid.stderr)
+
+    def test_codex_uuid_suffix_list_grep_and_show(self):
+        home = self.root / 'codex_home'
+        root = home / 'sessions'
+        sid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        suffix = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        write_jsonl(root / f'rollout-2026-01-01T00-00-00-{sid}_{suffix}.jsonl', [
+            {'type':'session_meta','payload':{'id':sid}},
+            {'type':'event_msg','payload':{'type':'user_message','message':'fixture needle'}},
+        ])
+        env = {'PORCH_HISTORY_ROOT_CODEX':str(root), 'CODEX_HOME':str(home)}
+        listed = self.run_cli('list','-a','codex',env_extra=env)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual([r['session_id'] for r in self.lines(listed) if not r.get('_summary')], [sid])
+        grep = self.run_cli('grep','-a','codex','needle',env_extra=env)
+        self.assertEqual(grep.returncode, 0, grep.stderr)
+        self.assertEqual([r['session_id'] for r in self.lines(grep) if not r.get('_summary')], [sid])
+        shown = self.run_cli('show','codex:'+sid,env_extra=env)
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertTrue(any(r.get('text') == 'fixture needle' for r in self.lines(shown)))
+
     def test_missing_store_reports_not_crash(self):
         proc = self.run_cli("list", "-a", "qwen-code",
                             env_extra={"PORCH_HISTORY_ROOT_QWEN_CODE": str(self.root / "nope")})
@@ -3445,6 +3550,87 @@ class OpenCodeV2ContractTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(turns[-1]["final"]["text"], "the answer")
         self.assertEqual(turns[-1]["final_basis"], "native:finish=stop")
         self.assertFalse(turns[-1]["open"])
+
+
+class PerSourceTests(FixtureMixin, unittest.TestCase):
+    def test_file_sources_and_builders(self):
+        cc = sessions.Store('claude-code', 'projects', self.root / 'cc', 'jsonl_dir')
+        path = write_jsonl(cc.path / 'project' / 'thread.jsonl', [{'type':'user','message':{'role':'user','content':'hello'}}])
+        before = list(sessions.SOURCES['claude-code'](cc))
+        self.assertEqual([(x.key, x.role, x.session_id) for x in before], [((str(path),), 'content', 'thread')])
+        listed = next(sessions.claude_iter_sessions(cc)); built = sessions.claude_ref_for_file(cc, path)
+        self.assertEqual(listed.as_dict(), built.as_dict())
+        self.assertEqual(list(sessions.claude_iter_fragments(cc, listed, 0, {})), list(sessions.claude_iter_fragments(cc, built, 0, {})))
+        with path.open('a') as f: f.write('\n')
+        appended = next(sessions.SOURCES['claude-code'](cc))
+        self.assertNotEqual(before[0].stat, appended.stat)
+        path.write_text('rewritten')
+        self.assertNotEqual(appended.stat, next(sessions.SOURCES['claude-code'](cc)).stat)
+        codex = sessions.Store('codex', 'sessions', self.root / 'cx', 'jsonl_dir')
+        rollout = write_jsonl(codex.path / 'rollout-2026-01-01T00-00-00-abc.jsonl', [{'type':'session_meta','timestamp':'2026-01-01T00:00:00Z','payload':{'id':'abc'}}])
+        source = next(sessions.SOURCES['codex'](codex))
+        self.assertEqual((source.key, source.role, source.session_id), ((str(rollout),), 'content', 'abc'))
+        listed = next(sessions.codex_iter_sessions(codex)); built = sessions.codex_ref_for_rollout(codex, rollout, sessions.codex_rollout_shared(codex))
+        self.assertEqual(listed.as_dict(), built.as_dict())
+        self.assertEqual(list(sessions.codex_iter_fragments(codex, listed, 0, {})), list(sessions.codex_iter_fragments(codex, built, 0, {})))
+        desktop = sessions.Store('claude-desktop', 'code-sessions', self.root / 'desktop', 'json_dir')
+        manifest = write_json(desktop.path / 'local_123.json', {'sessionId':'local_123','cliSessionId':'abc','title':'a'})
+        source = next(sessions.SOURCES['claude-desktop'](desktop))
+        self.assertEqual((source.role, source.session_id), ('metadata', None))
+        listed = next(sessions.claude_desktop_iter_sessions(desktop)); built = sessions.claude_desktop_ref_for_file(desktop, manifest)
+        self.assertEqual(listed.as_dict(), built.as_dict())
+        self.assertEqual(list(sessions.claude_desktop_iter_fragments(desktop, listed, 0, {})), list(sessions.claude_desktop_iter_fragments(desktop, built, 0, {})))
+        run = sessions.Store('porch', 'runs', self.root / 'runs', 'run_registry')
+        directory = run.path / 'run1'; write_json(directory / 'meta.json', {'run_id':'run1','task':'task'}); (directory / 'final.txt').write_text('done')
+        listed = next(sessions.porch_iter_sessions(run)); built = sessions.porch_ref_for_run(run, directory)
+        self.assertEqual(listed.as_dict(), built.as_dict())
+        self.assertEqual(list(sessions.porch_iter_fragments(run, listed, 0, {})), list(sessions.porch_iter_fragments(run, built, 0, {})))
+        self.assertEqual({(x.role, x.session_id) for x in sessions.SOURCES['porch'](run)}, {('metadata','run1'),('content','run1')})
+        agy = sessions.Store('agy','cli',self.root / 'agy','agy_root')
+        write_json(agy.path / 'cache' / 'conversation_metadata.json', {'conversations':{'c1':{'summary':{'Title':'a'}}}})
+        listed = next(sessions.agy_iter_sessions(agy)); built = sessions.agy_ref_for_conversation(agy,'c1',sessions.agy_shared(agy))
+        self.assertEqual(listed.as_dict(), built.as_dict())
+        self.assertEqual(list(sessions.agy_iter_fragments(agy, listed, 0, {})), list(sessions.agy_iter_fragments(agy, built, 0, {})))
+        self.assertEqual(next(sessions.SOURCES['agy'](agy)).role, 'metadata')
+        storage = self.root / 'oc' / 'storage'; path = write_json(storage / 'session' / 'p' / 's.json', {'id':'s','title':'test'})
+        oc = sessions.Store('opencode','storage',storage,'json_dir')
+        listed = next(sessions.opencode_iter_sessions(oc)); built = sessions.opencode_file_ref(oc,path,set())
+        self.assertEqual(listed.as_dict(), built.as_dict())
+        self.assertEqual(list(sessions.opencode_iter_fragments(oc, listed, 0, {})), list(sessions.opencode_iter_fragments(oc, built, 0, {})))
+        self.assertEqual(next(sessions.SOURCES['opencode'](oc)).session_id, 's')
+
+    def test_sqlite_builders_and_fingerprints(self):
+        db = self.root / 'devin.db'; conn = sqlite3.connect(db)
+        conn.executescript('''CREATE TABLE sessions(id TEXT, working_directory TEXT, model TEXT, agent_mode TEXT, created_at TEXT, last_activity_at TEXT, title TEXT, hidden INTEGER, main_chain_id INTEGER);
+        CREATE TABLE message_nodes(row_id INTEGER PRIMARY KEY, session_id TEXT, node_id INTEGER, parent_node_id INTEGER, chat_message TEXT, created_at TEXT, metadata TEXT);
+        INSERT INTO sessions VALUES('s',NULL,NULL,NULL,NULL,'1','title',0,NULL);''')
+        conn.commit(); store = sessions.Store('devin','sessions.db',db,'sqlite')
+        first = sessions.session_fingerprints(store,conn); conn.execute("INSERT INTO message_nodes VALUES(1,'s',1,NULL,'{}',NULL,NULL)")
+        second = sessions.session_fingerprints(store,conn); self.assertNotEqual(first,second)
+        conn.execute('DELETE FROM message_nodes'); self.assertEqual(first,sessions.session_fingerprints(store,conn)); conn.commit()
+        self.assertEqual({(x.key[1], x.session_id, x.role) for x in sessions.sqlite_session_sources(store,conn)}, {('sessions','s','metadata'),('message_nodes','s','content')})
+        listed = next(sessions.devin_iter_sessions(store)); built = sessions.devin_ref_for_session(store,conn,'s')
+        self.assertEqual(listed.as_dict(),built.as_dict())
+        self.assertEqual(list(sessions.devin_iter_fragments(store,listed,0,{})),list(sessions.devin_iter_fragments(store,built,0,{},conn)))
+        self.assertEqual(conn.execute('SELECT count(*) FROM sessions').fetchone()[0],1); conn.close()
+        db = self.root / 'opencode.db'; conn = sqlite3.connect(db)
+        conn.executescript('''CREATE TABLE session_v2(id TEXT, title TEXT, time_updated INTEGER, time_busy INTEGER, time_idle INTEGER);
+        CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+        CREATE TABLE session_part(message_id TEXT, session_id TEXT, ordinal INTEGER, type TEXT, time_updated INTEGER, data TEXT);
+        CREATE TABLE session(id TEXT, title TEXT); CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, data TEXT); CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+        INSERT INTO session_v2 VALUES('v','title',1,NULL,NULL); INSERT INTO session VALUES('l','legacy');''')
+        conn.commit(); store = sessions.Store('opencode','db',db,'sqlite')
+        first=sessions.session_fingerprints(store,conn); conn.execute("INSERT INTO session_message VALUES('m','v','user',1,1,1,'{\"text\":\"hi\"}')")
+        second=sessions.session_fingerprints(store,conn); self.assertNotEqual(first,second)
+        conn.execute("INSERT INTO session_part VALUES('m','v',1,'text',2,'{}')"); third=sessions.session_fingerprints(store,conn); self.assertNotEqual(second,third)
+        conn.execute('DELETE FROM session_part'); self.assertEqual(second,sessions.session_fingerprints(store,conn))
+        conn.execute('DELETE FROM session_message'); self.assertEqual(first,sessions.session_fingerprints(store,conn)); conn.commit()
+        self.assertEqual({(x.key[1],x.session_id) for x in sessions.sqlite_session_sources(store,conn)}, {('session_v2','v'),('session_message','v'),('session_part','v'),('session','l'),('message','l'),('part','l')})
+        listed={r.session_id:r for r in sessions.opencode_iter_sessions(store)}
+        for sid,build in [('v',sessions.opencode_v2_ref),('l',sessions.opencode_legacy_ref)]:
+            ref=build(store,conn,sid); self.assertEqual(ref.as_dict(),listed[sid].as_dict())
+            self.assertEqual(list(sessions.opencode_iter_fragments(store,listed[sid],0,{})),list(sessions.opencode_iter_fragments(store,ref,0,{},conn)))
+        self.assertIsNone(sessions.opencode_legacy_ref(store,conn,'v')); conn.close()
 
 
 if __name__ == "__main__":

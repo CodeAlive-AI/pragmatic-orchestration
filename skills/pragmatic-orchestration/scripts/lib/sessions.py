@@ -18,6 +18,7 @@ import argparse
 import codecs
 import ctypes
 import fnmatch
+import io
 import json
 import os
 import re
@@ -284,8 +285,9 @@ def _jsonl_lines(chunks: Iterable[bytes], max_lines: int | None = None) -> Itera
                     pending.append(text[start:])
                 break
             pending.append(text[start:newline])
-            yield "".join(pending), True
+            line = "".join(pending)
             pending.clear()
+            yield line, True
             lines += 1
             if max_lines is not None and lines >= max_lines:
                 return
@@ -294,7 +296,9 @@ def _jsonl_lines(chunks: Iterable[bytes], max_lines: int | None = None) -> Itera
     if tail:
         pending.append(tail)
     if pending and (max_lines is None or lines < max_lines):
-        yield "".join(pending), False
+        line = "".join(pending)
+        pending.clear()
+        yield line, False
 
 
 def _bounded_chunks(fh, size: int, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
@@ -306,6 +310,23 @@ def _bounded_chunks(fh, size: int, chunk_size: int = 64 * 1024) -> Iterator[byte
             break
         remaining -= len(chunk)
         yield chunk
+
+
+class _LimitedFile(io.RawIOBase):
+    """A non-owning, non-seekable view bounded to an already opened file size."""
+    def __init__(self, fh, size: int):
+        super().__init__()
+        self.fh = fh
+        self.remaining = size
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, target) -> int:
+        data = self.fh.read(min(len(target), self.remaining))
+        target[:len(data)] = data
+        self.remaining -= len(data)
+        return len(data)
 
 
 def iter_jsonl(path: Path, stats: dict[str, int], max_lines: int | None = None) -> Iterator[tuple[int, dict[str, Any]]]:
@@ -324,26 +345,31 @@ def iter_jsonl(path: Path, stats: dict[str, int], max_lines: int | None = None) 
             # older runtimes or treat a corrupt stream as a complete scan.
             from compression import zstd
             try:
-                # The old implementation fully decompressed before yielding
-                # any record. Validate first so a corrupt tail cannot turn a
-                # failed archive into apparently successful partial output.
-                with zstd.open(path, "rb") as check:
-                    while check.read(64 * 1024):
-                        pass
-                with zstd.open(path, "rb") as fh:
-                    chunks = iter(lambda: fh.read(64 * 1024), b"")
-                    for line, terminated in _jsonl_lines(chunks, max_lines):
-                        line_no += 1
-                        if not terminated and max_lines is None and line.strip():
-                            stats["truncated_tail"] = stats.get("truncated_tail", 0) + 1
-                        record = _parse_jsonl_line(line, stats)
-                        if record is not None:
-                            yield line_no, record
+                with path.open("rb") as raw:
+                    before = os.fstat(raw.fileno())
+                    with zstd.open(io.BufferedReader(_LimitedFile(raw, before.st_size)), "rb") as check:
+                        while check.read(64 * 1024):
+                            pass
+                    raw.seek(0)
+                    with zstd.open(io.BufferedReader(_LimitedFile(raw, before.st_size)), "rb") as fh:
+                        chunks = iter(lambda: fh.read(64 * 1024), b"")
+                        for line, terminated in _jsonl_lines(chunks, max_lines):
+                            line_no += 1
+                            if not terminated and max_lines is None and line.strip():
+                                stats["truncated_tail"] = stats.get("truncated_tail", 0) + 1
+                            record = _parse_jsonl_line(line, stats)
+                            if record is not None:
+                                yield line_no, record
+                    after = os.fstat(raw.fileno())
+                    fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns')
+                    if any(getattr(before, field) != getattr(after, field) for field in fields):
+                        stats['changed_during_read'] = stats.get('changed_during_read', 0) + 1
             except zstd.ZstdError as exc:
                 raise ValueError(str(exc)) from exc
         else:
             with path.open("rb") as fh:
-                size = os.fstat(fh.fileno()).st_size
+                before = os.fstat(fh.fileno())
+                size = before.st_size
                 for line, terminated in _jsonl_lines(_bounded_chunks(fh, size), max_lines):
                     line_no += 1
                     if not terminated and max_lines is None and line.strip():
@@ -351,6 +377,10 @@ def iter_jsonl(path: Path, stats: dict[str, int], max_lines: int | None = None) 
                     record = _parse_jsonl_line(line, stats)
                     if record is not None:
                         yield line_no, record
+                after = os.fstat(fh.fileno())
+                fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns')
+                if any(getattr(before, field) != getattr(after, field) for field in fields):
+                    stats['changed_during_read'] = stats.get('changed_during_read', 0) + 1
     except (OSError, ImportError, EOFError, ValueError) as exc:
         stats["unreadable"] = stats.get("unreadable", 0) + 1
         if compressed:
@@ -472,7 +502,7 @@ def _steer_root() -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "pragmatic-orchestration" / "steer"
 
 
-def _walk(root: Path, pattern: str, stats: dict[str, int] | None = None) -> Iterator[Path]:
+def _walk(root: Path, pattern: str, stats: dict[str, int] | None = None, *, include_dirs: bool = True) -> Iterator[Path]:
     """root.rglob(pattern) that follows directory symlinks, each real dir once.
 
     Path.rglob does not descend into symlinked directories; several history
@@ -529,7 +559,8 @@ def _walk(root: Path, pattern: str, stats: dict[str, int] | None = None) -> Iter
 
     for dirpath, dirnames, filenames in os.walk(froot, followlinks=True, onerror=_onerror):
         dirnames.sort()
-        rel = Path(dirpath).relative_to(root).parts
+        relative = os.path.relpath(dirpath, froot)
+        rel = () if relative == os.curdir else tuple(relative.split(os.sep))
         # Entries are matched before pruning so a deduplicated link still
         # yields its own path, exactly as rglob lists it without descending.
         dir_matches = [name for name in dirnames if _tail_match(rel + (name,))]
@@ -547,10 +578,15 @@ def _walk(root: Path, pattern: str, stats: dict[str, int] | None = None) -> Iter
             kept.append(name)
         dirnames[:] = kept
         for name in filenames:
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full) and not os.path.exists(full) and stats is not None:
+                stats['unreadable_dirs'] = stats.get('unreadable_dirs', 0) + 1
+                stats['broken_symlinks'] = stats.get('broken_symlinks', 0) + 1
             if _tail_match(rel + (name,)):
+                yield Path(full)
+        if include_dirs:
+            for name in dir_matches:
                 yield Path(dirpath) / name
-        for name in dir_matches:
-            yield Path(dirpath) / name
 
 
 class Store:
@@ -714,6 +750,136 @@ ALL_HARNESSES = [
     "claude-desktop", "cursor", "qwen-code", "kimi-code", "omp", "porch", "hermes",
     "agy",
 ]
+
+
+# A source describes a physical revision without reading any session content.
+class Source:
+    def __init__(self, key: tuple, role: str, stat: tuple | None,
+                 session_id: str | None = None, wal_stat: tuple | None = None,
+                 error: str | None = None):
+        self.key, self.role, self.stat = key, role, stat
+        self.session_id, self.wal_stat, self.error = session_id, wal_stat, error
+
+
+def _source_stat(path: Path, errors: list[str] | None = None) -> tuple | None:
+    try:
+        st = path.stat()
+        return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if errors is not None:
+            errors.append(f"{path}: {exc}")
+        return None
+
+
+def _file_source(path: Path, role: str, sid: str | None = None) -> Source:
+    errors: list[str] = []
+    stat = _source_stat(path, errors)
+    return Source((str(path),), role, stat, sid, error="; ".join(errors) or None)
+
+
+def _store_sources(store: Store) -> Iterator[Source]:
+    """Enumerate physical sources only; shared DB rows are discovered by fingerprints."""
+    root, h = store.path, store.harness
+    if store.kind == "sqlite":
+        errors: list[str] = []
+        db_stat = _source_stat(root, errors)
+        wal_stat = _source_stat(Path(str(root) + "-wal"), errors)
+        if db_stat is not None or errors:
+            yield Source((str(root),), "content", db_stat, wal_stat=wal_stat, error="; ".join(errors) or None)
+        return
+    if root.is_file():
+        yield _file_source(root, "content")
+        return
+    if not root.is_dir():
+        return
+    # One traversal per store retains _walk's symlink and error semantics.
+    for path in _walk(root, "*", store.walk_stats, include_dirs=False):
+        rel = path.relative_to(root).parts if h in ('opencode', 'agy', 'porch') else ()
+        role, sid = None, None
+        if h == "claude-code" and path.suffix == ".jsonl":
+            role, sid = "content", path.stem
+        elif h == "codex" and re.match(r"rollout-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-.+\.jsonl(?:\.zst)?$", path.name):
+            role = "content"
+            sid = _codex_filename_id(path.name)
+        elif h == "claude-desktop":
+            if path.name.startswith("local_") and path.suffix == ".json":
+                role = "metadata"
+            elif path.name == "audit.jsonl":
+                role, sid = "content", path.parent.name
+        elif h == "opencode" and path.suffix == ".json" and rel[0] in ("session", "message", "part"):
+            role = "metadata" if rel[0] == "session" else "content"
+            sid = path.stem if rel[0] == "session" else rel[1] if rel[0] == "message" and len(rel) > 2 else None
+        elif h == "devin" and path.suffix == ".json":
+            role, sid = "content", path.stem
+        elif h == "agy":
+            if rel == ("cache", "conversation_metadata.json"):
+                role = "metadata"
+            elif len(rel) == 2 and rel[0] == "annotations" and path.suffix == ".pbtxt":
+                role, sid = "metadata", path.stem
+            elif len(rel) >= 5 and rel[0] == "brain" and rel[-1] in ("transcript.jsonl", "transcript_full.jsonl"):
+                role, sid = "content", rel[1]
+            elif len(rel) >= 5 and rel[0] == "brain" and "subagents" in rel and path.suffix == ".json":
+                role, sid = "lineage", path.stem
+            elif len(rel) == 2 and rel[0] == "conversations" and path.suffix == ".db":
+                role, sid = "metadata", path.stem
+        elif h == "porch" and len(rel) >= 2:
+            sid = rel[0]
+            if len(rel) == 2 and path.name == "meta.json": role = "metadata"
+            elif len(rel) == 2 and path.name == "final.txt": role = "content"
+            elif len(rel) == 3 and rel[1] == "normalized" and path.suffix == ".jsonl": role = "content"
+        elif h not in ("claude-code", "codex", "claude-desktop", "opencode", "devin", "agy", "porch"):
+            role = "content"
+        if role:
+            source = _file_source(path, role, sid)
+            if source.error:
+                store.walk_stats["unreadable_dirs"] = store.walk_stats.get("unreadable_dirs", 0) + 1
+            yield source
+
+
+SOURCES = {harness: _store_sources for harness in ALL_HARNESSES}
+
+
+def session_fingerprints(store: Store, conn: sqlite3.Connection) -> dict[str, tuple]:
+    """Return session revisions using the caller's SQLite read transaction."""
+    if store.harness == "devin":
+        rows = conn.execute("SELECT s.id,s.last_activity_at,count(m.row_id),max(m.row_id),s.main_chain_id "
+                            "FROM sessions s LEFT JOIN message_nodes m ON m.session_id=s.id GROUP BY s.id")
+        return {row[0]: tuple(row[1:]) for row in rows}
+    if store.harness == "opencode":
+        rows = conn.execute("SELECT s.*,m.n,m.seq,m.updated,p.updated FROM session_v2 s "
+                            "LEFT JOIN (SELECT session_id,count(*) n,max(seq) seq,max(time_updated) updated "
+                            "FROM session_message GROUP BY session_id) m ON m.session_id=s.id "
+                            "LEFT JOIN (SELECT session_id,max(time_updated) updated FROM session_part GROUP BY session_id) p ON p.session_id=s.id")
+        columns = [d[0] for d in rows.description]
+        idx = columns.index("id")
+        return {row[idx]: tuple(row[:idx]) + tuple(row[idx + 1:]) for row in rows}
+    raise ValueError("session fingerprints are supported for Devin and OpenCode only")
+
+
+def sqlite_session_sources(store: Store, conn: sqlite3.Connection) -> Iterator[Source]:
+    """Expand a changed DB into per-session sources inside the caller's read transaction."""
+    errors: list[str] = []
+    db_stat = _source_stat(store.path, errors)
+    wal_stat = _source_stat(Path(str(store.path) + "-wal"), errors)
+    def emit(sid: str, tables: tuple) -> Iterator[Source]:
+        for table, role in tables:
+            if table_exists(conn, table):
+                yield Source((str(store.path), table, sid), role, db_stat, sid, wal_stat, "; ".join(errors) or None)
+    if store.harness == "devin":
+        for sid in session_fingerprints(store, conn):
+            yield from emit(sid, (("sessions", "metadata"), ("message_nodes", "content")))
+    elif store.harness == "opencode":
+        v2_ids = {row[0] for row in conn.execute("SELECT id FROM session_v2")} if table_exists(conn, "session_v2") else set()
+        for sid in v2_ids:
+            yield from emit(sid, (("session_v2", "metadata"), ("session_message", "content"), ("session_part", "content")))
+        if table_exists(conn, "session"):
+            for (sid,) in conn.execute("SELECT id FROM session"):
+                if sid not in v2_ids:
+                    yield from emit(sid, (("session", "metadata"), ("message", "content"), ("part", "content")))
+    else:
+        raise ValueError("per-session SQLite sources are supported for Devin and OpenCode only")
 
 
 class SessionRef:
@@ -1133,7 +1299,7 @@ def porch_workers(root: Path | None = None) -> set[tuple[str, str]]:
 
 def claude_iter_sessions(store: Store) -> Iterator[SessionRef]:
     for path in sorted(_walk(store.path, "*.jsonl", store.walk_stats)):
-        yield _claude_session_ref(store, path)
+        yield claude_ref_for_file(store, path)
 
 
 def _claude_session_ref(store: Store, path: Path, *, light: bool = False) -> SessionRef:
@@ -1199,6 +1365,10 @@ def _claude_session_ref(store: Store, path: Path, *, light: bool = False) -> Ses
     )
     ref.light = light
     return ref
+
+
+def claude_ref_for_file(store: Store, path: Path) -> SessionRef:
+    return _claude_session_ref(store, path)
 
 
 def _claude_head_cwd(path: Path) -> str | None:
@@ -1406,6 +1576,17 @@ def _codex_resolve_stored_path(stored: str | None) -> Path | None:
 
 _CODEX_HOME_CACHE: dict[tuple[Path, tuple[Path, ...]], tuple[dict[str, tuple[Path, list[str], str | None]], dict[str, tuple[str, Path]], dict[str, Path], dict[Path, list[Path]]]] = {}
 _CODEX_ROLLOUT_NAME = re.compile(r"^rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(.+)\.jsonl(?:\.zst)?$")
+_CODEX_UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+
+
+def _codex_filename_id(name: str) -> str | None:
+    match = _CODEX_ROLLOUT_NAME.match(name)
+    if not match:
+        return None
+    identifier = match.group(5)
+    # Some rollout filenames append a second UUID after an underscore.
+    variant = re.fullmatch(rf"({_CODEX_UUID})_{_CODEX_UUID}", identifier)
+    return variant.group(1) if variant else identifier
 
 
 def _codex_revision_choices(roots: list[Path], state_paths: dict[str, str], stats: dict[str, int] | None = None,
@@ -1424,7 +1605,7 @@ def _codex_revision_choices(roots: list[Path], state_paths: dict[str, str], stat
                     paths_by_root.setdefault(root, []).append(path)
                 discovered.add(path)
                 match = _CODEX_ROLLOUT_NAME.match(path.name)
-                sid = match.group(5) if match else None
+                sid = _codex_filename_id(path.name) if match else None
                 if sid is None:
                     for _, rec in iter_jsonl(path, {}, max_lines=300):
                         if rec.get("type") == "session_meta":
@@ -1535,71 +1716,89 @@ def codex_iter_sessions(store: Store) -> Iterator[SessionRef]:
         store.status, store.error = "unavailable", str(exc)
         return
     paths = paths_by_root.get(store.path, [])
+    shared = (choices, state_edges, state_sources)
     for path in paths:
-        if path.name.endswith(".zst") and path.with_suffix("").exists():
-            continue  # the uncompressed rollout is the canonical copy
-        # Cheap listing: session identity + dates come from the filename
-        # (rollout-YYYY-MM-DDTHH-MM-SS-<id>.jsonl) and mtime; session_meta is
-        # the first record, so a bounded head read suffices for cwd/lineage.
-        # --since/--until filtering then skips full parses entirely.
-        name_m = re.match(r"rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(.+)\.jsonl(?:\.zst)?$", path.name)
-        created_name = f"{name_m.group(1)}T{name_m.group(2)}:{name_m.group(3)}:{name_m.group(4)}Z" if name_m else None
-        try:
-            updated = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-        except OSError:
-            updated = None
-        stats: dict[str, int] = {}
-        meta = None
-        first_ts = None
-        models: list[str] = []
-        delegated = False
-        for line_no, rec in iter_jsonl(path, stats, max_lines=300):
-            if first_ts is None:
-                first_ts = rec.get("timestamp")
-            t = rec.get("type")
-            payload = rec.get("payload") or {}
-            if t == "session_meta" and meta is None:
-                meta = payload
-            elif t == "turn_context" and payload.get("model"):
-                if payload["model"] not in models:
-                    models.append(payload["model"])
-            if t == "event_msg" and payload.get("type") == "user_message":
-                delegated |= is_delegated_brief(payload.get("message") or "")
-            elif t == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
-                delegated |= is_delegated_brief(_codex_message_text(payload))
-            if meta is not None and first_ts is not None and models:
-                break
-        if stats.get("unreadable"):
-            store.status, store.error = "unavailable", f"cannot read session: {path}"
-            continue
-        meta = meta or {}
-        source_kind, source_parent, _, _ = _codex_source_kind(meta.get("source"))
-        lineage = {"parent_thread_id": source_parent} if source_kind == "subagent" else None
-        parent = meta.get("parent_thread_id") or meta.get("forked_from_id") or (lineage or {}).get("parent_thread_id")
-        sid = str(meta.get("id") or meta.get("session_id") or (name_m.group(5) if name_m else path.stem))
-        choice = choices.get(sid)
-        ref = SessionRef(
-            "codex", store.name, sid,
-            locator={"file": str(path)},
-            cwd=meta.get("cwd"), created=first_ts or created_name or meta.get("timestamp"),
-            updated=updated,
-            models=models or ([meta["model_provider"]] if meta.get("model_provider") else []),
-            parent=parent,
-            agent=meta.get("agent_nickname") or meta.get("agent_path"),
-            extra={k: meta[k] for k in ("originator", "cli_version") if meta.get(k)},
-        )
-        state_edge = state_edges.get(sid)
-        _codex_enrich_ref(ref, path, alternatives=choice[1] if choice else [], revision=choice[2] if choice else None,
-                          state_parent=state_edge[0] if state_edge else None, state_db=state_edge[1] if state_edge else None,
-                          meta=meta, delegated=delegated)
-        if choice:
-            ref.extra["selected_rollout"] = str(choice[0])
-            ref.extra["sources"] = [{"path": str(choice[0]), "role": "content"}] + [
-                {"path": p, "role": "content"} for p in choice[1]
-            ] + [s for s in ref.extra["sources"] if s.get("db")]
-        if sid in state_sources:
-            ref.extra["sources"].append({"db": str(state_sources[sid]), "table": "threads", "key": sid, "role": "metadata"})
-        yield ref
+        ref = codex_ref_for_rollout(store, path, shared)
+        if ref is not None:
+            yield ref
+
+
+def codex_rollout_shared(store: Store, *, state_snapshot: tuple | None = None) -> tuple:
+    home = store.path.parent if store.path.name in ("sessions", "archived_sessions") else store.path
+    roots = [home / "sessions", home / "archived_sessions"] if store.path.name in ("sessions", "archived_sessions") else [store.path]
+    if state_snapshot is not None:
+        state_paths, edges, sources = state_snapshot
+        return _codex_revision_choices(roots, state_paths, store.walk_stats), edges, sources
+    choices, edges, sources, _ = _codex_home_data(home, roots, store.walk_stats)
+    return choices, edges, sources
+
+
+def codex_ref_for_rollout(store: Store, path: Path, shared: tuple) -> SessionRef | None:
+    choices, state_edges, state_sources = shared
+    if path.name.endswith(".zst") and path.with_suffix("").exists():
+        return None  # the uncompressed rollout is the canonical copy
+    # Cheap listing: session identity + dates come from the filename
+    # (rollout-YYYY-MM-DDTHH-MM-SS-<id>.jsonl) and mtime; session_meta is
+    # the first record, so a bounded head read suffices for cwd/lineage.
+    # --since/--until filtering then skips full parses entirely.
+    name_m = re.match(r"rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(.+)\.jsonl(?:\.zst)?$", path.name)
+    created_name = f"{name_m.group(1)}T{name_m.group(2)}:{name_m.group(3)}:{name_m.group(4)}Z" if name_m else None
+    try:
+        updated = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    except OSError:
+        updated = None
+    stats: dict[str, int] = {}
+    meta = None
+    first_ts = None
+    models: list[str] = []
+    delegated = False
+    for line_no, rec in iter_jsonl(path, stats, max_lines=300):
+        if first_ts is None:
+            first_ts = rec.get("timestamp")
+        t = rec.get("type")
+        payload = rec.get("payload") or {}
+        if t == "session_meta" and meta is None:
+            meta = payload
+        elif t == "turn_context" and payload.get("model"):
+            if payload["model"] not in models:
+                models.append(payload["model"])
+        if t == "event_msg" and payload.get("type") == "user_message":
+            delegated |= is_delegated_brief(payload.get("message") or "")
+        elif t == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+            delegated |= is_delegated_brief(_codex_message_text(payload))
+        if meta is not None and first_ts is not None and models:
+            break
+    if stats.get("unreadable"):
+        store.status, store.error = "unavailable", f"cannot read session: {path}"
+        return None
+    meta = meta or {}
+    source_kind, source_parent, _, _ = _codex_source_kind(meta.get("source"))
+    lineage = {"parent_thread_id": source_parent} if source_kind == "subagent" else None
+    parent = meta.get("parent_thread_id") or meta.get("forked_from_id") or (lineage or {}).get("parent_thread_id")
+    sid = str(meta.get("id") or meta.get("session_id") or _codex_filename_id(path.name) or path.stem)
+    choice = choices.get(sid)
+    ref = SessionRef(
+        "codex", store.name, sid,
+        locator={"file": str(path)},
+        cwd=meta.get("cwd"), created=first_ts or created_name or meta.get("timestamp"),
+        updated=updated,
+        models=models or ([meta["model_provider"]] if meta.get("model_provider") else []),
+        parent=parent,
+        agent=meta.get("agent_nickname") or meta.get("agent_path"),
+        extra={k: meta[k] for k in ("originator", "cli_version") if meta.get(k)},
+    )
+    state_edge = state_edges.get(sid)
+    _codex_enrich_ref(ref, path, alternatives=choice[1] if choice else [], revision=choice[2] if choice else None,
+                      state_parent=state_edge[0] if state_edge else None, state_db=state_edge[1] if state_edge else None,
+                      meta=meta, delegated=delegated)
+    if choice:
+        ref.extra["selected_rollout"] = str(choice[0])
+        ref.extra["sources"] = [{"path": str(choice[0]), "role": "content"}] + [
+            {"path": p, "role": "content"} for p in choice[1]
+        ] + [s for s in ref.extra["sources"] if s.get("db")]
+    if sid in state_sources:
+        ref.extra["sources"].append({"db": str(state_sources[sid]), "table": "threads", "key": sid, "role": "metadata"})
+    return ref
 
 
 def _codex_source_kind(src: Any) -> tuple[str, str | None, str | None, str | None]:
@@ -1776,6 +1975,9 @@ def _rollout_index(codex_home: Path) -> list[tuple[dict[str, Path], dict[str, Pa
                         for pos, char in enumerate(core):
                             if char == "-":
                                 index.setdefault(core[pos + 1:], path)
+                        sid = _codex_filename_id(path.name)
+                        if sid:
+                            index.setdefault(sid, path)
             bases.append((plain, packed))
         _ROLLOUT_INDEX[codex_home] = bases
     return _ROLLOUT_INDEX[codex_home]
@@ -2171,27 +2373,7 @@ def _opencode_db_sessions(store: Store) -> Iterator[SessionRef]:
                 rec = {c: row[i] for c, i in colidx.items()}
                 sid = rec["id"]
                 v2_ids.add(sid)
-                model_raw = rec.get("model")
-                try:
-                    model = json.loads(model_raw).get("id") if model_raw else None
-                except (json.JSONDecodeError, AttributeError):
-                    model = model_raw
-                parent_id, fork_id = rec.get("parent_id"), rec.get("fork_session_id")
-                session_class, class_basis = _oc_session_class(parent_id, first_user.get(sid), sid)
-                yield SessionRef("opencode", store.name, sid,
-                    locator={"table": "session_v2", "key": sid, "db": str(store.path)},
-                    title=rec.get("title"), cwd=rec.get("directory"),
-                    created=rec.get("time_created"), updated=rec.get("time_updated"),
-                    parent=parent_id, models=[model] if model else [],
-                    extra={
-                        "agent": rec.get("agent"), "version": rec.get("version"),
-                        "oc_source": "v2",
-                        "native_id": sid, "surface": "cli",
-                        "session_class": session_class, "class_basis": class_basis,
-                        "edges": _oc_edges_v2(parent_id, fork_id, store.path),
-                        "native_status": _oc_native_status_v2(rec),
-                        "sources": _oc_v2_sources(store.path, sid, has_parts),
-                    })
+                yield _oc_v2_ref_from_record(store, rec, first_user.get(sid), has_parts)
         if has_v1:
             for ref in _oc_legacy_db_sessions(conn, store, v2_ids):
                 yield ref
@@ -2199,6 +2381,44 @@ def _opencode_db_sessions(store: Store) -> Iterator[SessionRef]:
         store.status, store.error = "unavailable", str(exc)
     finally:
         conn.close()
+
+
+def _oc_v2_ref_from_record(store: Store, rec: dict, first_prompt: str | None, has_parts: bool) -> SessionRef:
+    sid = rec["id"]
+    model_raw = rec.get("model")
+    try:
+        model = json.loads(model_raw).get("id") if model_raw else None
+    except (json.JSONDecodeError, AttributeError):
+        model = model_raw
+    parent_id, fork_id = rec.get("parent_id"), rec.get("fork_session_id")
+    session_class, class_basis = _oc_session_class(parent_id, first_prompt, sid)
+    return SessionRef("opencode", store.name, sid,
+        locator={"table": "session_v2", "key": sid, "db": str(store.path)},
+        title=rec.get("title"), cwd=rec.get("directory"),
+        created=rec.get("time_created"), updated=rec.get("time_updated"),
+        parent=parent_id, models=[model] if model else [],
+        extra={
+            "agent": rec.get("agent"), "version": rec.get("version"),
+            "oc_source": "v2",
+            "native_id": sid, "surface": "cli",
+            "session_class": session_class, "class_basis": class_basis,
+            "edges": _oc_edges_v2(parent_id, fork_id, store.path),
+            "native_status": _oc_native_status_v2(rec),
+            "sources": _oc_v2_sources(store.path, sid, has_parts),
+        })
+
+
+def opencode_v2_ref(store: Store, conn: sqlite3.Connection, sid: str) -> SessionRef | None:
+    cols = table_columns(conn, "session_v2")
+    want = [c for c in ("id", "directory", "title", "time_created", "time_updated", "parent_id", "fork_session_id", "agent", "model", "version", "time_idle", "idle_outcome", "time_busy", "time_archived") if c in cols]
+    if "id" not in want:
+        return None
+    row = conn.execute(f"SELECT {', '.join(want)} FROM session_v2 WHERE id=?", (sid,)).fetchone()
+    if not row:
+        return None
+    first_row = conn.execute("SELECT json_extract(data,'$.text') FROM session_message WHERE session_id=? AND type='user' ORDER BY seq LIMIT 1", (sid,)).fetchone()
+    first_prompt = first_row[0] if first_row and isinstance(first_row[0], str) else None
+    return _oc_v2_ref_from_record(store, dict(zip(want, row)), first_prompt, table_exists(conn, "session_part"))
 
 
 def opencode_iter_sessions(store: Store) -> Iterator[SessionRef]:
@@ -2430,10 +2650,12 @@ def _oc_v1_db_messages(conn: sqlite3.Connection, sid: str, db: Path,
         yield msg, mloc, parts_by_msg.get(mid, [])
 
 
-def _oc_v1_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+def _oc_v1_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int], conn: sqlite3.Connection | None = None) -> Iterator[dict[str, Any]]:
     if ref.extra.get("oc_source") == "legacy":
+        owned = conn is None
         try:
-            conn = open_sqlite_ro(store.path)
+            if owned:
+                conn = open_sqlite_ro(store.path)
         except sqlite3.Error as exc:
             store.status, store.error = "unavailable", str(exc)
             stats["unreadable"] = stats.get("unreadable", 0) + 1
@@ -2442,7 +2664,8 @@ def _oc_v1_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[
             for msg, mloc, parts in _oc_v1_db_messages(conn, ref.session_id, store.path, stats):
                 yield from _oc_v1_part_fragments(store, ref, msg, parts, max_chars, stats)
         finally:
-            conn.close()
+            if owned:
+                conn.close()
         return
     storage = store.path
     if not (storage / "session").is_dir() and (storage / "storage" / "session").is_dir():
@@ -2462,42 +2685,51 @@ def _oc_v1_file_sessions(store: Store) -> Iterator[SessionRef]:
         return
     claimed = _oc_db_claimed_ids(storage.parent)
     for path in sorted(_walk(session_root, "*.json", store.walk_stats)):
-        data = read_json(path)
-        if not isinstance(data, dict):
-            continue
-        sid = str(data.get("id") or path.stem)
-        if sid in claimed:
-            continue
-        t = data.get("time") if isinstance(data.get("time"), dict) else {}
-        parent_id = data.get("parentID")
-        model_info = data.get("model") if isinstance(data.get("model"), dict) else {}
-        model = data.get("modelID") or model_info.get("modelID") or model_info.get("id")
-        first_prompt = _oc_v1_first_prompt(storage, sid)
-        session_class, class_basis = _oc_session_class(parent_id, first_prompt, sid)
-        edges = []
-        if parent_id:
-            edges.append({"type": "subagent", "target_harness": "opencode", "target_id": parent_id,
-                          "unresolved": None, "basis": "parentID",
-                          "locator": {"file": str(path)}})
-        native_status = {}
-        if t.get("archived") is not None:
-            native_status["time_archived"] = t.get("archived")
-        yield SessionRef("opencode", store.name, sid,
-            locator={"file": str(path)},
-            title=data.get("title"), cwd=data.get("directory"),
-            created=t.get("created"), updated=t.get("updated"),
-            parent=parent_id, models=[model] if model else [],
-            extra={
-                "oc_source": "file", "version": data.get("version"),
-                "native_id": sid, "surface": "cli",
-                "session_class": session_class, "class_basis": class_basis,
-                "edges": edges, "native_status": native_status,
-                "sources": [
-                    {"path": str(path), "role": "metadata"},
-                    {"path": str(storage / "message" / sid), "role": "content"},
-                    {"path": str(storage / "part"), "role": "content"},
-                ],
-            })
+        ref = opencode_file_ref(store, path, claimed)
+        if ref is not None:
+            yield ref
+
+
+def opencode_file_ref(store: Store, path: Path, claimed: set[str] | None = None) -> SessionRef | None:
+    storage = store.path if (store.path / "session").is_dir() else store.path / "storage"
+    if claimed is None:
+        claimed = _oc_db_claimed_ids(storage.parent)
+    data = read_json(path)
+    if not isinstance(data, dict):
+        return None
+    sid = str(data.get("id") or path.stem)
+    if sid in claimed:
+        return None
+    t = data.get("time") if isinstance(data.get("time"), dict) else {}
+    parent_id = data.get("parentID")
+    model_info = data.get("model") if isinstance(data.get("model"), dict) else {}
+    model = data.get("modelID") or model_info.get("modelID") or model_info.get("id")
+    first_prompt = _oc_v1_first_prompt(storage, sid)
+    session_class, class_basis = _oc_session_class(parent_id, first_prompt, sid)
+    edges = []
+    if parent_id:
+        edges.append({"type": "subagent", "target_harness": "opencode", "target_id": parent_id,
+                      "unresolved": None, "basis": "parentID",
+                      "locator": {"file": str(path)}})
+    native_status = {}
+    if t.get("archived") is not None:
+        native_status["time_archived"] = t.get("archived")
+    return SessionRef("opencode", store.name, sid,
+        locator={"file": str(path)},
+        title=data.get("title"), cwd=data.get("directory"),
+        created=t.get("created"), updated=t.get("updated"),
+        parent=parent_id, models=[model] if model else [],
+        extra={
+            "oc_source": "file", "version": data.get("version"),
+            "native_id": sid, "surface": "cli",
+            "session_class": session_class, "class_basis": class_basis,
+            "edges": edges, "native_status": native_status,
+            "sources": [
+                {"path": str(path), "role": "metadata"},
+                {"path": str(storage / "message" / sid), "role": "content"},
+                {"path": str(storage / "part"), "role": "content"},
+            ],
+        })
 
 
 def _oc_v1_first_prompt(storage: Path, sid: str) -> str | None:
@@ -2599,41 +2831,60 @@ def _oc_legacy_db_sessions(conn: sqlite3.Connection, store: Store,
         sid = rec["id"]
         if sid in v2_ids:
             continue
-        parent_id = rec.get("parent_id")
-        model_raw = rec.get("model")
-        try:
-            model = json.loads(model_raw).get("id") if model_raw else None
-        except (json.JSONDecodeError, AttributeError):
-            model = model_raw
-        session_class, class_basis = _oc_session_class(parent_id, _oc_v1_first_prompt_db(conn, sid), sid)
-        edges = []
-        if parent_id:
-            edges.append({"type": "subagent", "target_harness": "opencode", "target_id": parent_id,
-                          "unresolved": None, "basis": "parent_id",
-                          "locator": {"db": str(store.path), "table": "session", "key": parent_id}})
-        native_status = {}
-        if rec.get("time_archived") is not None:
-            native_status["time_archived"] = rec["time_archived"]
-        yield SessionRef("opencode", store.name, sid,
-            locator={"db": str(store.path), "table": "session", "key": sid},
-            title=rec.get("title"), cwd=rec.get("directory"),
-            created=rec.get("time_created"), updated=rec.get("time_updated"),
-            parent=parent_id, models=[model] if model else [],
-            extra={
-                "oc_source": "legacy", "agent": rec.get("agent"), "version": rec.get("version"),
-                "native_id": sid, "surface": "cli",
-                "session_class": session_class, "class_basis": class_basis,
-                "edges": edges, "native_status": native_status,
-                "sources": [
-                    {"db": str(store.path), "table": "session", "key": sid, "role": "metadata"},
-                    {"db": str(store.path), "table": "message", "key": sid, "role": "content"},
-                    {"db": str(store.path), "table": "part", "key": sid, "role": "content"},
-                ],
-            })
+        yield _oc_legacy_ref_from_record(conn, store, rec)
 
 
-def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
-    conn = open_sqlite_ro(store.path)
+def _oc_legacy_ref_from_record(conn: sqlite3.Connection, store: Store, rec: dict) -> SessionRef:
+    sid = rec["id"]
+    parent_id = rec.get("parent_id")
+    model_raw = rec.get("model")
+    try:
+        model = json.loads(model_raw).get("id") if model_raw else None
+    except (json.JSONDecodeError, AttributeError):
+        model = model_raw
+    session_class, class_basis = _oc_session_class(parent_id, _oc_v1_first_prompt_db(conn, sid), sid)
+    edges = []
+    if parent_id:
+        edges.append({"type": "subagent", "target_harness": "opencode", "target_id": parent_id,
+                      "unresolved": None, "basis": "parent_id",
+                      "locator": {"db": str(store.path), "table": "session", "key": parent_id}})
+    native_status = {}
+    if rec.get("time_archived") is not None:
+        native_status["time_archived"] = rec["time_archived"]
+    return SessionRef("opencode", store.name, sid,
+        locator={"db": str(store.path), "table": "session", "key": sid},
+        title=rec.get("title"), cwd=rec.get("directory"),
+        created=rec.get("time_created"), updated=rec.get("time_updated"),
+        parent=parent_id, models=[model] if model else [],
+        extra={
+            "oc_source": "legacy", "agent": rec.get("agent"), "version": rec.get("version"),
+            "native_id": sid, "surface": "cli",
+            "session_class": session_class, "class_basis": class_basis,
+            "edges": edges, "native_status": native_status,
+            "sources": [
+                {"db": str(store.path), "table": "session", "key": sid, "role": "metadata"},
+                {"db": str(store.path), "table": "message", "key": sid, "role": "content"},
+                {"db": str(store.path), "table": "part", "key": sid, "role": "content"},
+            ],
+        })
+
+
+
+def opencode_legacy_ref(store: Store, conn: sqlite3.Connection, sid: str) -> SessionRef | None:
+    if table_exists(conn, "session_v2") and conn.execute("SELECT 1 FROM session_v2 WHERE id=?", (sid,)).fetchone():
+        return None
+    cols = table_columns(conn, "session")
+    want = [c for c in ("id", "parent_id", "slug", "directory", "title", "version", "agent", "model", "time_created", "time_updated", "time_archived") if c in cols]
+    if "id" not in want:
+        return None
+    row = conn.execute(f"SELECT {', '.join(want)} FROM session WHERE id=?", (sid,)).fetchone()
+    return _oc_legacy_ref_from_record(conn, store, dict(zip(want, row))) if row else None
+
+
+def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int], conn: sqlite3.Connection | None = None) -> Iterator[dict[str, Any]]:
+    owned = conn is None
+    if owned:
+        conn = open_sqlite_ro(store.path)
     try:
         rows = conn.execute("SELECT id, type, time_created, data FROM session_message WHERE session_id=? ORDER BY seq", (ref.session_id,)).fetchall()
         part_rows = conn.execute(
@@ -2641,7 +2892,8 @@ def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats:
             (ref.session_id,),
         ).fetchall() if table_exists(conn, "session_part") else []
     finally:
-        conn.close()
+        if owned:
+            conn.close()
     parts_by_message: dict[str, list[dict[str, Any]]] = {}
     for message_id, part_type, raw_part in part_rows:
         try:
@@ -2732,12 +2984,12 @@ def _opencode_v2_fragments(store: Store, ref: SessionRef, max_chars: int, stats:
                        max_chars=max_chars)
 
 
-def opencode_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+def opencode_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int], conn: sqlite3.Connection | None = None) -> Iterator[dict[str, Any]]:
     source = ref.extra.get("oc_source")
     if source in ("file", "legacy") or (source is None and store.kind != "sqlite"):
-        yield from _oc_v1_fragments(store, ref, max_chars, stats)
+        yield from _oc_v1_fragments(store, ref, max_chars, stats, conn)
         return
-    yield from _opencode_v2_fragments(store, ref, max_chars, stats)
+    yield from _opencode_v2_fragments(store, ref, max_chars, stats, conn)
 
 
 def opencode_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2970,28 +3222,37 @@ def devin_iter_sessions(store: Store) -> Iterator[SessionRef]:
         for row in conn.execute(
             "SELECT id, working_directory, model, agent_mode, created_at, last_activity_at, title, hidden, main_chain_id FROM sessions"
         ):
-            worker = ("devin", row[0]) in workers
-            # subagent_heads are chains within this session; /fork exposes no parent field.
-            yield SessionRef(
-                "devin", "sessions.db", row[0],
-                locator={"table": "sessions", "key": row[0], "db": str(store.path)},
-                title=row[6], cwd=row[1], created=row[4], updated=row[5],
-                models=[row[2]] if row[2] else [],
-                hidden=bool(row[7]),
-                extra={"agent_mode": row[3], "main_chain_id": row[8], "native_id": row[0], "surface": "cli",
-                       "session_class": "headless" if worker else "unknown",
-                       "class_basis": "porch registry" if worker else "no discovery evidence", "edges": [],
-                       "native_status": {"hidden": bool(row[7]), "agent_mode": row[3]},
-                       "sources": [{"db": str(store.path), "table": "sessions", "key": row[0], "role": "metadata"},
-                                   {"db": str(store.path), "table": "message_nodes", "key": row[0], "role": "content"}]},
-            )
+            yield _devin_ref_from_row(store, row, workers)
     except sqlite3.Error as e:
         store.status, store.error = "unavailable", str(e)
     finally:
         conn.close()
 
 
-def devin_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+def _devin_ref_from_row(store: Store, row: tuple, workers: set) -> SessionRef:
+    worker = ("devin", row[0]) in workers
+    # subagent_heads are chains within this session; /fork exposes no parent field.
+    return SessionRef(
+        "devin", "sessions.db", row[0],
+        locator={"table": "sessions", "key": row[0], "db": str(store.path)},
+        title=row[6], cwd=row[1], created=row[4], updated=row[5],
+        models=[row[2]] if row[2] else [],
+        hidden=bool(row[7]),
+        extra={"agent_mode": row[3], "main_chain_id": row[8], "native_id": row[0], "surface": "cli",
+               "session_class": "headless" if worker else "unknown",
+               "class_basis": "porch registry" if worker else "no discovery evidence", "edges": [],
+               "native_status": {"hidden": bool(row[7]), "agent_mode": row[3]},
+               "sources": [{"db": str(store.path), "table": "sessions", "key": row[0], "role": "metadata"},
+                           {"db": str(store.path), "table": "message_nodes", "key": row[0], "role": "content"}]},
+    )
+
+
+def devin_ref_for_session(store: Store, conn: sqlite3.Connection, sid: str) -> SessionRef | None:
+    row = conn.execute("SELECT id, working_directory, model, agent_mode, created_at, last_activity_at, title, hidden, main_chain_id FROM sessions WHERE id=?", (sid,)).fetchone()
+    return _devin_ref_from_row(store, row, porch_workers()) if row else None
+
+
+def devin_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int], conn: sqlite3.Connection | None = None) -> Iterator[dict[str, Any]]:
     if store.name == "transcripts":
         path = Path(ref.locator["file"])
         data = read_json(path) or {}
@@ -3006,22 +3267,33 @@ def devin_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
                        authorship={"user": "unknown", "agent": "agent", "tool": "system", "system": "system"}.get(str(source), "unknown"),
                        visible=kind in ("prompt", "assistant"), max_chars=max_chars)
         return
-    conn = open_sqlite_ro(store.path)
+    owned = conn is None
+    if owned:
+        conn = open_sqlite_ro(store.path)
+        try:
+            conn.execute('BEGIN')
+        except BaseException:
+            conn.close()
+            raise
     try:
-        node_metadata = "metadata" if "metadata" in table_columns(conn, "message_nodes") else "NULL"
-        rows = conn.execute(
-            f"SELECT row_id, node_id, parent_node_id, chat_message, created_at, {node_metadata} FROM message_nodes WHERE session_id=? ORDER BY node_id",
-            (ref.session_id,),
-        ).fetchall()
-        heads: list[tuple] = []
-        if table_exists(conn, "subagent_heads"):
-            try:
-                heads = conn.execute("SELECT * FROM subagent_heads WHERE session_id=?", (ref.session_id,)).fetchall()
-            except sqlite3.Error:
-                heads = []
+        yield from _devin_db_fragments(store, ref, max_chars, stats, conn)
     finally:
-        conn.close()
-    nodes = {row[1]: row for row in rows}
+        if owned:
+            conn.close()
+
+
+def _devin_db_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int],
+                        conn: sqlite3.Connection) -> Iterator[dict[str, Any]]:
+    """Keep chain metadata in memory and stream message bodies from one snapshot."""
+    node_metadata = "metadata" if "metadata" in table_columns(conn, "message_nodes") else "NULL"
+    nodes = {row[0]: row for row in conn.execute(
+        f"SELECT node_id, parent_node_id, {node_metadata} FROM message_nodes WHERE session_id=? ORDER BY node_id", (ref.session_id,))}
+    heads: list[tuple] = []
+    if table_exists(conn, "subagent_heads"):
+        try:
+            heads = conn.execute("SELECT * FROM subagent_heads WHERE session_id=?", (ref.session_id,)).fetchall()
+        except sqlite3.Error:
+            heads = []
     canonical: set[Any] = set()
     tip = ref.extra.get("main_chain_id")
     has_chain = tip in nodes
@@ -3033,15 +3305,17 @@ def devin_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
         canonical.add(node_id)
         row = nodes[node_id]
         try:
-            metadata = json.loads(row[5] or "{}") or {}
+            metadata = json.loads(row[2] or "{}") or {}
         except (ValueError, TypeError):
             metadata = {}
         if not isinstance(metadata, dict):
             metadata = {}
-        pending.extend((row[2], metadata.get("summarized_from")))
+        pending.extend((row[1], metadata.get("summarized_from")))
         pending.extend((metadata.get("extensions") or {}).get("compact/prior_node_ids") or [])
     seq = 0
-    for row_id, node_id, parent_id, blob, created, _node_metadata in rows:
+    rows = conn.execute("SELECT row_id, node_id, parent_node_id, chat_message, created_at FROM message_nodes WHERE session_id=? ORDER BY node_id",
+                        (ref.session_id,))
+    for row_id, node_id, parent_id, blob, created in rows:
         seq += 1
         loc = {"db": str(store.path), "table": "message_nodes", "row_id": row_id, "node_id": node_id}
         try:
@@ -3049,6 +3323,8 @@ def devin_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
         except json.JSONDecodeError:
             stats["malformed"] = stats.get("malformed", 0) + 1
             continue
+        finally:
+            blob = None
         role = msg.get("role")
         metadata = msg.get("metadata") or {}
         created = metadata.get("created_at") or created
@@ -3223,10 +3499,14 @@ def claude_desktop_iter_sessions(store: Store) -> Iterator[SessionRef]:
         store.status = "missing"
         return
     for meta_path in sorted(_walk(store.path, "local_*.json", store.walk_stats)):
-        data = read_json(meta_path)
-        if not isinstance(data, dict):
-            continue
-        yield _claude_desktop_manifest(store, meta_path, data)
+        ref = claude_desktop_ref_for_file(store, meta_path)
+        if ref is not None:
+            yield ref
+
+
+def claude_desktop_ref_for_file(store: Store, path: Path) -> SessionRef | None:
+    data = read_json(path)
+    return _claude_desktop_manifest(store, path, data) if isinstance(data, dict) else None
 
 
 def _claude_desktop_head(store: Store, ref: SessionRef, max_chars: int) -> tuple[list[dict[str, Any]], dict[str, Any], int]:
@@ -3983,48 +4263,54 @@ def porch_iter_sessions(store: Store) -> Iterator[SessionRef]:
         store.status = "missing"
         return
     for run_dir in sorted(store.path.iterdir()):
-        meta = read_json(run_dir / "meta.json")
-        if not isinstance(meta, dict):
-            continue
-        handle = meta.get("session_handle") or {}
-        edges = []
-        locator = {"file": str(run_dir / "meta.json")}
-        def edge(kind: str, harness: str | None, target: str | None, unresolved: str | None, basis: str) -> None:
-            edges.append({"type": kind, "target_harness": harness, "target_id": target,
-                          "unresolved": unresolved, "basis": basis, "locator": locator})
-        launcher = meta.get("launcher_instance")
-        if launcher:
-            edge("caller_run", None, None, launcher, "launcher_instance")
-            if launcher.startswith("run:"):
-                edge("parent_run", "porch", launcher[4:], None, "launcher_instance")
-        worker = meta.get("native_session_id") or handle.get("thread_id")
-        harness = BACKEND_HARNESS.get(meta.get("backend"))
-        if worker and harness:
-            edge("worker_session", harness, worker, None, "native_session_id" if meta.get("native_session_id") else "session_handle.thread_id")
-        if meta.get("continued_from"):
-            edge("continuation", "porch", meta["continued_from"], None, "continued_from")
-        yield SessionRef(
-            "porch", "runs", str(meta.get("run_id") or run_dir.name),
-            locator={"dir": str(run_dir)},
-            title=(meta.get("task") or "")[:120] or None,
-            cwd=meta.get("cwd"), created=meta.get("launched_at") or meta.get("started_at"),
-            updated=meta.get("finished_at") or meta.get("last_event_at"),
-            models=[meta["model"]] if meta.get("model") else [],
-            extra={
-                "agent_id": meta.get("agent_id"), "backend": meta.get("backend"),
-                "effort": meta.get("effort"), "status": meta.get("status"),
-                "native_session": meta.get("native_session_id") or handle.get("thread_id"),
-                "launcher": meta.get("launcher"),
-                "launcher_instance": meta.get("launcher_instance"),
-                "continued_from": meta.get("continued_from"),
-                "exit_code": meta.get("exit_code"),
-                "finished_at": meta.get("finished_at"),
-                "native_id": str(meta.get("run_id") or run_dir.name),
-                "session_class": "headless", "class_basis": "porch run",
-                "native_status": {k: meta[k] for k in ("status", "exit_code", "finished_at") if k in meta},
-                "edges": edges, "sources": [{"path": str(run_dir / "meta.json"), "role": "metadata"}],
-            },
-        )
+        ref = porch_ref_for_run(store, run_dir)
+        if ref is not None:
+            yield ref
+
+
+def porch_ref_for_run(store: Store, run_dir: Path) -> SessionRef | None:
+    meta = read_json(run_dir / "meta.json")
+    if not isinstance(meta, dict):
+        return None
+    handle = meta.get("session_handle") or {}
+    edges = []
+    locator = {"file": str(run_dir / "meta.json")}
+    def edge(kind: str, harness: str | None, target: str | None, unresolved: str | None, basis: str) -> None:
+        edges.append({"type": kind, "target_harness": harness, "target_id": target,
+                      "unresolved": unresolved, "basis": basis, "locator": locator})
+    launcher = meta.get("launcher_instance")
+    if launcher:
+        edge("caller_run", None, None, launcher, "launcher_instance")
+        if launcher.startswith("run:"):
+            edge("parent_run", "porch", launcher[4:], None, "launcher_instance")
+    worker = meta.get("native_session_id") or handle.get("thread_id")
+    harness = BACKEND_HARNESS.get(meta.get("backend"))
+    if worker and harness:
+        edge("worker_session", harness, worker, None, "native_session_id" if meta.get("native_session_id") else "session_handle.thread_id")
+    if meta.get("continued_from"):
+        edge("continuation", "porch", meta["continued_from"], None, "continued_from")
+    return SessionRef(
+        "porch", "runs", str(meta.get("run_id") or run_dir.name),
+        locator={"dir": str(run_dir)},
+        title=(meta.get("task") or "")[:120] or None,
+        cwd=meta.get("cwd"), created=meta.get("launched_at") or meta.get("started_at"),
+        updated=meta.get("finished_at") or meta.get("last_event_at"),
+        models=[meta["model"]] if meta.get("model") else [],
+        extra={
+            "agent_id": meta.get("agent_id"), "backend": meta.get("backend"),
+            "effort": meta.get("effort"), "status": meta.get("status"),
+            "native_session": meta.get("native_session_id") or handle.get("thread_id"),
+            "launcher": meta.get("launcher"),
+            "launcher_instance": meta.get("launcher_instance"),
+            "continued_from": meta.get("continued_from"),
+            "exit_code": meta.get("exit_code"),
+            "finished_at": meta.get("finished_at"),
+            "native_id": str(meta.get("run_id") or run_dir.name),
+            "session_class": "headless", "class_basis": "porch run",
+            "native_status": {k: meta[k] for k in ("status", "exit_code", "finished_at") if k in meta},
+            "edges": edges, "sources": [{"path": str(run_dir / "meta.json"), "role": "metadata"}],
+        },
+    )
 
 
 def porch_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
@@ -4256,111 +4542,119 @@ def _agy_prompt_origin(text: str) -> tuple[str, str]:
 
 
 def agy_iter_sessions(store: Store) -> Iterator[SessionRef]:
-    meta = _agy_metadata(store)
+    meta, parents = agy_shared(store)
     brain = store.path / "brain"
     conv_dir = store.path / "conversations"
     brain_ids = {p.name for p in brain.iterdir() if p.is_dir()} if brain.is_dir() else set()
     db_ids = {p.name[:-3] for p in conv_dir.glob("*.db")} if conv_dir.is_dir() else set()
-    parents = _agy_subagent_parents(store)
     for cid in sorted(set(meta) | brain_ids | db_ids):
-        entry = meta.get(cid)
-        entry = entry if isinstance(entry, dict) else {}
-        summary = entry.get("summary") if isinstance(entry.get("summary"), dict) else {}
-        transcript = _agy_transcript_path(store, cid)
-        head = _agy_head(store, transcript) if transcript else []
-        first_created = next((r.get("created_at") for r in head if r.get("created_at")), None)
-        # Class evidence: subagent edge > IDE row > delegated brief > user prompt.
-        parent_edge = parents.get(cid)
-        sender_parent = None
-        delegated_marker = None
-        has_user_input = False
-        for rec in head:
-            if rec.get("source") == "SYSTEM" and rec.get("type") == "SYSTEM_MESSAGE":
-                sender_parent = sender_parent or _agy_sender_parent(rec.get("content"))
-            if (rec.get("source") == "USER_EXPLICIT" and rec.get("type") == "USER_INPUT"
-                    and not has_user_input):
-                has_user_input = True
-                content = rec.get("content")
-                m = _AGY_USER_REQUEST_RE.search(content) if isinstance(content, str) else None
-                prompt_text = (m.group(1) if m else content) or ""
-                if is_delegated_brief(prompt_text):
-                    delegated_marker = "executor-prefix"
-        preview = summary.get("Preview") or ""
-        ide_row = summary.get("AppDataDir") == "antigravity"
-        edge_parent, edge_path, edge_data = parent_edge if parent_edge else (None, None, {})
-        if edge_parent is None and sender_parent:
-            edge_parent, edge_path = sender_parent, transcript
-        edges = []
-        if edge_parent:
-            basis = "subagent descriptor" if parent_edge else "SYSTEM_MESSAGE sender"
-            edges.append({
-                "type": "subagent", "target_harness": "agy", "target_id": edge_parent,
-                "unresolved": None, "basis": basis,
-                "locator": {"file": str(edge_path)} if edge_path else {},
-            })
-        if edge_parent:
-            session_class, class_basis = "subagent", edges[0]["basis"]
-        elif ("agy", cid) in porch_workers():
-            session_class, class_basis = "headless", "porch registry"
-        elif ide_row:
-            session_class, class_basis = "interactive", "AppDataDir=antigravity"
-        elif delegated_marker:
-            session_class, class_basis = "headless", delegated_marker
-        elif has_user_input:
-            session_class = "interactive"
-            class_basis = "transcript USER_INPUT"
-        else:
-            session_class, class_basis = "unknown", "no class evidence"
-        # Status facts: content availability and staleness vs conversation
-        # metadata. Discovery stays cheap (stat + metadata only): the
-        # NumSteps-vs-transcript check runs post-read via agy_content_stale.
-        native_status: dict[str, Any] = {}
-        num_steps = summary.get("NumSteps")
-        if isinstance(num_steps, int):
-            native_status["NumSteps"] = num_steps
-        updated_raw = summary.get("UpdatedAt") or entry.get("last_modified_time")
-        stale = False
-        if transcript is None or ide_row:
-            # IDE rows are metadata-only by contract: content is never read.
-            native_status["content_unavailable"] = True
-        else:
-            try:
-                mtime = transcript.stat().st_mtime
-            except OSError:
-                mtime = None
-            updated_epoch = ts_epoch(updated_raw)
-            if mtime is not None and updated_epoch is not None and mtime < updated_epoch - _AGY_STALE_SECONDS:
-                stale = True
-            if stale:
-                native_status["content_stale"] = True
-        title = _agy_annotation_title(store, cid) or summary.get("Title") or None
-        uris = summary.get("WorkspaceURIs")
-        cwd = next((p for p in (_folder_uri_to_path(u) for u in (uris or []) if isinstance(u, str)) if p), None)
-        sources = []
-        meta_path = store.path / "cache" / "conversation_metadata.json"
-        if cid in meta:
-            sources.append({"path": str(meta_path), "role": "metadata"})
-        ann = store.path / "annotations" / f"{cid}.pbtxt"
-        if ann.is_file():
-            sources.append({"path": str(ann), "role": "metadata"})
-        if transcript is not None:
-            sources.append({"path": str(transcript), "role": "content"})
-        if parent_edge:
-            sources.append({"path": str(parent_edge[1]), "role": "lineage"})
-        descriptor = edge_data.get("subagentDescriptor") if isinstance(edge_data.get("subagentDescriptor"), dict) else {}
-        agent = descriptor.get("typeName") or descriptor.get("role")
-        yield SessionRef(
-            "agy", store.name, cid,
-            locator={"file": str(transcript)} if transcript else {"file": str(meta_path)},
-            title=title, cwd=cwd,
-            created=first_created,
-            updated=updated_raw or (transcript.stat().st_mtime if transcript else None),
-            parent=edge_parent, agent=agent,
-            extra={
-                "native_id": cid, "surface": "ide" if ide_row else "cli",
-                "session_class": session_class, "class_basis": class_basis,
-                "edges": edges, "native_status": native_status, "sources": sources,
-            })
+        yield agy_ref_for_conversation(store, cid, (meta, parents))
+
+
+def agy_shared(store: Store) -> tuple:
+    return _agy_metadata(store), _agy_subagent_parents(store)
+
+
+def agy_ref_for_conversation(store: Store, cid: str, shared: tuple) -> SessionRef:
+    meta, parents = shared
+    entry = meta.get(cid)
+    entry = entry if isinstance(entry, dict) else {}
+    summary = entry.get("summary") if isinstance(entry.get("summary"), dict) else {}
+    transcript = _agy_transcript_path(store, cid)
+    head = _agy_head(store, transcript) if transcript else []
+    first_created = next((r.get("created_at") for r in head if r.get("created_at")), None)
+    # Class evidence: subagent edge > IDE row > delegated brief > user prompt.
+    parent_edge = parents.get(cid)
+    sender_parent = None
+    delegated_marker = None
+    has_user_input = False
+    for rec in head:
+        if rec.get("source") == "SYSTEM" and rec.get("type") == "SYSTEM_MESSAGE":
+            sender_parent = sender_parent or _agy_sender_parent(rec.get("content"))
+        if (rec.get("source") == "USER_EXPLICIT" and rec.get("type") == "USER_INPUT"
+                and not has_user_input):
+            has_user_input = True
+            content = rec.get("content")
+            m = _AGY_USER_REQUEST_RE.search(content) if isinstance(content, str) else None
+            prompt_text = (m.group(1) if m else content) or ""
+            if is_delegated_brief(prompt_text):
+                delegated_marker = "executor-prefix"
+    preview = summary.get("Preview") or ""
+    ide_row = summary.get("AppDataDir") == "antigravity"
+    edge_parent, edge_path, edge_data = parent_edge if parent_edge else (None, None, {})
+    if edge_parent is None and sender_parent:
+        edge_parent, edge_path = sender_parent, transcript
+    edges = []
+    if edge_parent:
+        basis = "subagent descriptor" if parent_edge else "SYSTEM_MESSAGE sender"
+        edges.append({
+            "type": "subagent", "target_harness": "agy", "target_id": edge_parent,
+            "unresolved": None, "basis": basis,
+            "locator": {"file": str(edge_path)} if edge_path else {},
+        })
+    if edge_parent:
+        session_class, class_basis = "subagent", edges[0]["basis"]
+    elif ("agy", cid) in porch_workers():
+        session_class, class_basis = "headless", "porch registry"
+    elif ide_row:
+        session_class, class_basis = "interactive", "AppDataDir=antigravity"
+    elif delegated_marker:
+        session_class, class_basis = "headless", delegated_marker
+    elif has_user_input:
+        session_class = "interactive"
+        class_basis = "transcript USER_INPUT"
+    else:
+        session_class, class_basis = "unknown", "no class evidence"
+    # Status facts: content availability and staleness vs conversation
+    # metadata. Discovery stays cheap (stat + metadata only): the
+    # NumSteps-vs-transcript check runs post-read via agy_content_stale.
+    native_status: dict[str, Any] = {}
+    num_steps = summary.get("NumSteps")
+    if isinstance(num_steps, int):
+        native_status["NumSteps"] = num_steps
+    updated_raw = summary.get("UpdatedAt") or entry.get("last_modified_time")
+    stale = False
+    if transcript is None or ide_row:
+        # IDE rows are metadata-only by contract: content is never read.
+        native_status["content_unavailable"] = True
+    else:
+        try:
+            mtime = transcript.stat().st_mtime
+        except OSError:
+            mtime = None
+        updated_epoch = ts_epoch(updated_raw)
+        if mtime is not None and updated_epoch is not None and mtime < updated_epoch - _AGY_STALE_SECONDS:
+            stale = True
+        if stale:
+            native_status["content_stale"] = True
+    title = _agy_annotation_title(store, cid) or summary.get("Title") or None
+    uris = summary.get("WorkspaceURIs")
+    cwd = next((p for p in (_folder_uri_to_path(u) for u in (uris or []) if isinstance(u, str)) if p), None)
+    sources = []
+    meta_path = store.path / "cache" / "conversation_metadata.json"
+    if cid in meta:
+        sources.append({"path": str(meta_path), "role": "metadata"})
+    ann = store.path / "annotations" / f"{cid}.pbtxt"
+    if ann.is_file():
+        sources.append({"path": str(ann), "role": "metadata"})
+    if transcript is not None:
+        sources.append({"path": str(transcript), "role": "content"})
+    if parent_edge:
+        sources.append({"path": str(parent_edge[1]), "role": "lineage"})
+    descriptor = edge_data.get("subagentDescriptor") if isinstance(edge_data.get("subagentDescriptor"), dict) else {}
+    agent = descriptor.get("typeName") or descriptor.get("role")
+    return SessionRef(
+        "agy", store.name, cid,
+        locator={"file": str(transcript)} if transcript else {"file": str(meta_path)},
+        title=title, cwd=cwd,
+        created=first_created,
+        updated=updated_raw or (transcript.stat().st_mtime if transcript else None),
+        parent=edge_parent, agent=agent,
+        extra={
+            "native_id": cid, "surface": "ide" if ide_row else "cli",
+            "session_class": session_class, "class_basis": class_basis,
+            "edges": edges, "native_status": native_status, "sources": sources,
+        })
 
 
 def agy_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
@@ -5272,6 +5566,9 @@ def _resolve_session(harnesses: list[str], query: str, store_filter: str | None 
 
 
 def cmd_show(args: argparse.Namespace) -> int:
+    if getattr(args, 'at', None):
+        import sessions_index
+        return sessions_index.cmd_show_at(args)
     harnesses = resolve_harnesses(args.agent)
     stats: dict[str, int] = {}
     since, until = parse_time_bound(args.since), parse_time_bound(args.until)
@@ -5482,10 +5779,13 @@ def _memory_limit_monitor(command: str, limit_mb: int) -> tuple[threading.Event,
 
 def _memory_limit_exit(command: str, current: int, limit_mb: int) -> None:
     reached = current / (1024 * 1024)
+    guidance = (f"Completed sessions remain indexed; retry or raise {MEMORY_ENV} for this call."
+                if command == "index build" else
+                "Narrow the query with --file, --limit, or --since, use one session instead of a group, "
+                f"or raise {MEMORY_ENV} for this call; output above is incomplete.")
     print(
         f"porch sessions {command}: memory budget exceeded ({reached:.0f} MiB footprint; limit {limit_mb} MiB). "
-        "Narrow the query with --file, --limit, or --since, use one session instead of a group, "
-        f"or raise {MEMORY_ENV} for this call; output above is incomplete.",
+        + guidance,
         file=sys.stderr,
         flush=True,
     )
@@ -5667,6 +5967,29 @@ def main() -> int:
     p.add_argument("--cwd-exact", action="store_true", help="match --cwd exactly")
     p.add_argument("--title", help="case-insensitive substring of the session title")
 
+    p = sub.add_parser("find", help="search the session index by literal fragments",
+                       description="Find literal fragments: porch sessions find 'задач' 'найти|нашел|поиск'. "
+                                   "Groups are ANDed across a session; | separates alternatives, \\| is a literal bar.")
+    p.add_argument('groups', nargs='+', metavar='GROUP')
+    p.add_argument('-a', '--agent', help='comma-separated harness slugs')
+    p.add_argument('--kind', choices=('title','prompt','answer'))
+    p.add_argument('--origin', choices=('human','delegated','unknown'))
+    p.add_argument('--class', dest='session_class', choices=('interactive','headless','subagent','unknown'))
+    p.add_argument('--cwd')
+    p.add_argument('--since')
+    p.add_argument('--until')
+    p.add_argument('--limit', type=int, default=20)
+    p.add_argument('--deadline', type=float, default=20, metavar='SECONDS')
+
+    p = sub.add_parser('index', help='inspect, build or drop the disposable find index',
+                       description='Maintain the private index used by sessions find. Status does not sync; '
+                                   'build refreshes it; drop removes it without touching session stores.')
+    index_sub = p.add_subparsers(dest='index_command', required=True)
+    index_sub.add_parser('status', help='show the committed index and last sync coverage')
+    build = index_sub.add_parser('build', help='sync all indexed stores without a deadline')
+    build.add_argument('--full', action='store_true', help='re-read all sessions, ignoring fingerprints')
+    index_sub.add_parser('drop', help='remove the index and keep its lock file')
+
     p = sub.add_parser("grep", help="literal/regex search over decoded fragment text")
     _add_common(p)
     p.add_argument("--cwd-exact", action="store_true", help="match --cwd exactly")
@@ -5679,6 +6002,7 @@ def main() -> int:
     _add_common(p)
     p.add_argument("session", nargs="?", help="harness:session-id or unique id substring")
     p.add_argument("--file", help="read a single session file/db directly (harness auto-detected)")
+    p.add_argument("--at", help="show the source record addressed by an indexed locator")
     p.add_argument("--around", type=int, metavar="SEQ", help="emit a window around the fragment with this seq")
     p.add_argument("--context", type=int, default=10, help="fragments on each side of --around (default 10)")
 
@@ -5708,11 +6032,16 @@ def main() -> int:
     if getattr(args, "limit", 200) == 0:
         args.limit = 0
     handlers = {"roots": cmd_roots, "list": cmd_list, "grep": cmd_grep, "show": cmd_show}
+    if args.command in ('find', 'index'):
+        import sessions_index
+        handlers['find'] = sessions_index.cmd_find
+        handlers['index'] = sessions_index.cmd_index
     if args.command in ("turns", "flags", "stats"):
         import analyze  # noqa: E402 — local lib, lazy to keep this file standalone
         handlers.update({"turns": analyze.cmd_turns, "flags": analyze.cmd_flags,
                          "stats": analyze.cmd_stats})
-    monitor = _memory_limit_monitor(args.command, memory_limit_mb)
+    monitor_command = 'index build' if args.command == 'index' and args.index_command == 'build' else args.command
+    monitor = _memory_limit_monitor(monitor_command, memory_limit_mb)
     try:
         if args.command == "roots":
             unavailable = []
@@ -5723,7 +6052,7 @@ def main() -> int:
             if unavailable:
                 print(f"porch sessions safeguards unavailable: {', '.join(unavailable)} on this platform", file=sys.stderr)
         global _ACTIVE_SLOT
-        if args.command != "roots":
+        if args.command not in ("roots", "find") and not (args.command == 'index' and args.index_command != 'build'):
             _ACTIVE_SLOT = _acquire_scan_slot(max_parallel, queue_timeout_s)
         result = handlers[args.command](args)
         if monitor:
@@ -5731,7 +6060,7 @@ def main() -> int:
             monitor[1].join()
             current = _memory_usage_bytes()
             if current is not None and memory_limit_mb and current > memory_limit_mb * 1024 * 1024:
-                _memory_limit_exit(args.command, current, memory_limit_mb)
+                _memory_limit_exit(monitor_command, current, memory_limit_mb)
         return result
     except BrokenPipeError:
         # Prevent Python's shutdown flush from retrying the closed pipe.

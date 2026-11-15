@@ -1,10 +1,9 @@
 # Session history search and navigation
 
-Read-only access to local coding-agent session histories. The reader streams
-decoded records from the stores the harnesses already write — it creates no
-index, no database, and no cache. Every emitted record carries a native locator
-(file + line, or db + table + key) so any conclusion can be traced back to the
-raw source.
+Read-only access to local coding-agent session histories. `list`, `grep`, `show`,
+`turns`, `flags` and `stats` scan the stores directly; `find` uses the disposable
+index below. A planned indexed `trace` is not yet a command. Raw records carry
+native locators (file + line, or db + table + key).
 
 Claude Code prompt fragments may include `origin` and `origin_basis` describing
 the record's authorship evidence. Assistant fragments may include `native`
@@ -28,6 +27,55 @@ Supported harnesses: `claude-code`, `codex` (CLI + Desktop), `opencode`,
 `grok`, `devin` (CLI/Desktop), `gemini`, `cursor`, `claude-desktop`,
 `qwen-code`, `kimi-code`, `omp`, `hermes`, plus `porch` for this skill's own
 delegate/review runs.
+
+## Fast search: find and the index
+
+The index contains titles, genuine prompts with their `human`, `delegated` or
+`unknown` origin, and every completed answer. It does not index tool output,
+reasoning, arbitrary intermediate assistant text, or unfinished answers. Indexed
+harnesses are Claude Code, Claude Desktop/Cowork, Codex, Devin, OpenCode, agy and
+porch. Use raw `grep` for the other harnesses or omitted record types.
+
+```bash
+porch sessions find 'задач' 'найти|нашел|поиск'
+porch sessions find 'error' 'build|test' -a codex,claude-code --kind answer --since 2026-01-01
+porch sessions find 'review' --origin human --class interactive --cwd my-project
+porch sessions show --at '<locator from evidence>'
+porch sessions index status
+porch sessions index build [--full]
+porch sessions index drop
+```
+
+Each group is a literal normalized text fragment; groups are ANDed across the
+session, while `|` separates alternatives (`\|` is a literal bar). Put groups
+that begin with `-` after `--` (`porch sessions find -a codex -- '--continue-run'`). Filters also
+include `--until`, `--limit` and `--deadline`; see `find --help`. Evidence includes
+an exact `show --at` command. A changed source can be relocated by message ID;
+without a stable anchor, search again.
+
+Every `find` first does a stat-first sync and reports freshness and errors in its
+`_summary` coverage. Devin in-place edits of old messages that change no
+fingerprint field are not detected; `porch sessions index build --full` re-reads
+everything. `status` reports the last committed sync without syncing; `build`
+has no deadline and shares the raw-scan queue and memory budget; `drop` removes
+only the index. Indexes created before sync coverage was recorded show no last
+sync time or coverage until the next sync. If incomplete, coverage names the
+next command.
+
+On an empty index, the first `find` builds until its deadline (20 seconds by
+default) and answers from the partial index with coverage saying so. Run
+`porch sessions index build` once before relying on find; a local build took
+about 7 minutes for roughly 46 GB of history.
+
+The private, disposable accelerator defaults to
+`~/Library/Caches/pragmatic-orchestration/sessions-index/index-v1.sqlite` on
+macOS, `$XDG_CACHE_HOME/pragmatic-orchestration/sessions-index/index-v1.sqlite`
+on Linux (`~/.cache` when unset), and
+`%LOCALAPPDATA%\pragmatic-orchestration\sessions-index\index-v1.sqlite` on
+Windows. `PORCH_SESSIONS_INDEX_DIR` overrides its directory; `PORCH_STEER_DIR`
+also changes the default to a sibling `sessions-index`. On Unix its directory is
+mode 0700 and database mode 0600. A measured local index was about 1.4% of its
+source volume; size varies with the stores.
 
 ## Command surface
 

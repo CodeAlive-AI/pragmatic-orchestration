@@ -1547,6 +1547,21 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# Session index (find/index build/drop), synthetic fixtures in temp dirs.
+echo "=== Session index (offline) ==="
+set +e
+SIDX_OUT=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$TESTS_DIR/sessions_index_test.py" 2>&1)
+SIDX_RC=$?
+set -e
+printf '%s\n' "$SIDX_OUT" | tail -5
+sidx_count=$(printf '%s\n' "$SIDX_OUT" | sed -n 's/^Ran \([0-9][0-9]*\) tests.*/\1/p' | tail -1)
+sidx_count=${sidx_count:-0}
+if [[ $SIDX_RC -eq 0 && $sidx_count -gt 0 ]]; then
+  PASS=$((PASS + sidx_count))
+else
+  FAIL=$((FAIL + 1))
+fi
+
 echo "=== Desktop app sessions (offline) ==="
 set +e
 DESK_OUT=$(PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/desktop_test.py" 2>&1)

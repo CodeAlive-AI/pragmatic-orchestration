@@ -59,6 +59,8 @@ Usage:
   porch ui [--desktop] [--port PORT] [--registry-root PATH]
   porch sessions roots [-a harness[,harness...]] [--store SUBSTR]
   porch sessions list [-a ...] [--store S] [--cwd S] [--since T] [--until T] [--limit N]
+  porch sessions find GROUP [GROUP ...] [-a ...] [--kind title|prompt|answer]
+  porch sessions index status|build|drop
   porch sessions grep [-a ...] [--scope SCOPE] [-i] [--regex] [--limit N] PATTERN
   porch sessions show <harness:session-id|--file PATH> [--around SEQ] [--context N]
                           [--scope SCOPE] [--max-chars N]
@@ -128,11 +130,12 @@ quota
 sessions
   Read-only search and navigation over local coding-agent session histories
   (claude-code, codex, opencode, grok, devin, gemini, cursor, qwen-code,
-  kimi-code, omp, claude-desktop, plus porch's own runs). No index or
-  database is created — every command streams decoded JSONL records with
-  native locators (file:line / db table:key) and a coverage summary.
+  kimi-code, omp, claude-desktop, plus porch's own runs). Raw commands stream
+  decoded records with native locators; find uses a private disposable index.
     roots  detected stores, availability, evidence level
     list   session ids with title, cwd, dates, models
+    find   fast literal search of titles, prompts and completed answers
+    index  status, build [--full], or drop the find index
     grep   text search; each hit carries kind (prompt/assistant/reasoning/
            tool_call/tool_result/context/permission/metadata/…), authorship,
            model, ts, seq, rel ids

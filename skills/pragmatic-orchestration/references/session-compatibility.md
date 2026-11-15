@@ -18,6 +18,9 @@ not imply that every storage variant has been verified on a live installation.
 | Claude Code; Claude Desktop/Cowork; Grok; Devin; Gemini; Porch | Native stores described in [session history](session-history.md) | Existing adapters previously verified locally; the classification and source-layer caveats there apply. |
 | Qwen Code; Kimi Code; OMP | Native stores described in [session history](session-history.md) | Fixture/spec evidence; live version coverage is not established. |
 
+The `find` index covers Claude Code, Claude Desktop/Cowork, Codex, Devin,
+OpenCode 1.x/2.x, agy and porch; the remaining harnesses use raw search only.
+
 When updating a reader, record the source application version and date tested,
 add sanitized fixtures for schema changes and partial/corrupt inputs, and check
 that `roots`, `list`, `grep`, and `show` expose missing or unsupported data.

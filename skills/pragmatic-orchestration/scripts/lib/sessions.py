@@ -947,6 +947,9 @@ ORIGINS = ("human", "delegated", "injected", "unknown")
 SESSION_CLASSES = ("interactive", "headless", "subagent", "unknown")
 EDGE_TYPES = ("subagent", "fork", "continuation", "spawned", "caller_run",
               "worker_session", "parent_run", "alias")
+# Stored edges point from child to parent except a run's worker edge.
+EDGE_DIRECTION = {kind: ('forward' if kind == 'worker_session' else 'identity' if kind == 'alias' else 'reverse')
+                  for kind in EDGE_TYPES}
 
 _EXECUTOR_PREFIX: str | None = None
 
@@ -1082,6 +1085,8 @@ def _claude_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict
             continue
         final = finals[-1] if finals else None
         segment.update(finals=finals, final=final, final_basis=basis, open=bool(segment["prompts"]) and (interrupted or (index == len(segments) - 1 and final is None)))
+        if interrupted:
+            segment.update(aborted=True, abort_reason='interrupted')
         out.append(segment)
     return out
 
@@ -1167,8 +1172,11 @@ def _codex_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[
         flush()
         finals = [f for f, _ in candidates]
         basis = candidates[-1][1] if candidates else "none"
-        abort_event = next((f for f in reversed(segment) if f.get("native_type") == "event_msg.turn_aborted"), None)
-        aborted = abort_event is not None
+        terminal = next((f for f in reversed(segment) if f.get("native_type") in
+                         ("event_msg.turn_aborted", "event_msg.task_complete", "event_msg.turn_complete") or
+                         (f.get("kind") == "assistant" and (f.get("native") or {}).get("phase") == "final_answer")), None)
+        aborted = bool(terminal and terminal.get("native_type") == "event_msg.turn_aborted")
+        abort_event = terminal if aborted else None
         if not finals and not aborted and not any((f.get("native") or {}).get("phase") == "final_answer" or (f.get("native") or {}).get("layer") in ("task_complete", "turn_complete") for f in choices) and turn["prompts"]:
             final = choices[-1] if choices else None
             if final:
@@ -1671,14 +1679,17 @@ def _codex_enrich_ref(ref: SessionRef, path: Path | None = None, *, alternatives
         status["revision"] = revision
     source = meta.get("source") or ref.extra.get("source") or ref.extra.get("source_kind")
     source_kind, parent, _, _ = _codex_source_kind(source)
+    parent_basis = 'thread_spawn.parent_thread_id'
+    if not parent and source_kind == 'subagent' and meta.get('parent_thread_id'):
+        parent, parent_basis = meta['parent_thread_id'], 'session_meta.parent_thread_id'
     edge_list = []
     locator = {"file": str(path)} if path and not ref.locator.get("db") else ref.locator
     for kind, target, basis, loc in (
-        ("subagent", parent, "thread_spawn.parent_thread_id", locator),
+        ("subagent", parent, parent_basis, locator),
         ("subagent", state_parent, "thread_spawn_edges", {"db": str(state_db or ref.locator.get("db")), "table": "thread_spawn_edges", "key": ref.session_id}),
         ("fork", meta.get("forked_from_id"), "forked_from_id", locator),
     ):
-        if target:
+        if target and not any(edge['type'] == kind and edge['target_id'] == target for edge in edge_list):
             edge_list.append({"type": kind, "target_harness": "codex", "target_id": target, "unresolved": None, "basis": basis, "locator": loc})
     worker = ("codex", ref.session_id) in porch_workers()
     originator = meta.get("originator") or ref.extra.get("originator")
@@ -4307,7 +4318,8 @@ def porch_ref_for_run(store: Store, run_dir: Path) -> SessionRef | None:
             "finished_at": meta.get("finished_at"),
             "native_id": str(meta.get("run_id") or run_dir.name),
             "session_class": "headless", "class_basis": "porch run",
-            "native_status": {k: meta[k] for k in ("status", "exit_code", "finished_at") if k in meta},
+            "native_status": {**{k: meta.get(k) for k in ("status", "exit_code", "finished_at", "artifacts_dir", "backend", "continued_from", "agent_id", "model", "error", "final_available")},
+                              "started_at": meta.get("started_at") or meta.get("launched_at"), "native_session_id": meta.get("native_session_id")},
             "edges": edges, "sources": [{"path": str(run_dir / "meta.json"), "role": "metadata"}],
         },
     )
@@ -5981,6 +5993,18 @@ def main() -> int:
     p.add_argument('--limit', type=int, default=20)
     p.add_argument('--deadline', type=float, default=20, metavar='SECONDS')
 
+    p = sub.add_parser('trace', help='trace indexed session lineage',
+                       description='Trace indexed lineage and verdicts; sync first and report coverage. Use find to get a REF.')
+    p.add_argument('refs', nargs='*', metavar='REF', help='session references, aliases or run ids')
+    p.add_argument('--left-behind', action='store_true', help='without REF, find unfinished, uncollected or orphaned work')
+    p.add_argument('--since', help='left-behind lower bound: ISO time, epoch or duration (default 7d)')
+    p.add_argument('--cwd', help='left-behind working-directory substring filter')
+    p.add_argument('-a', '--agent', help='left-behind comma-separated harness filter')
+    p.add_argument('--depth', type=int, default=None, help='maximum descendant depth from roots; seeds and ancestors remain (default unlimited)')
+    p.add_argument('--max-nodes', type=int, default=200, help='maximum graph nodes; summary reports truncation (default 200)')
+    p.add_argument('--evidence', action='store_true', help='include source pointers and expanded facts for inspecting verdicts')
+    p.add_argument('--deadline', type=float, default=20, metavar='SECONDS', help='sync deadline in seconds (default 20); busy lock uses snapshot')
+
     p = sub.add_parser('index', help='inspect, build or drop the disposable find index',
                        description='Maintain the private index used by sessions find. Status does not sync; '
                                    'build refreshes it; drop removes it without touching session stores.')
@@ -6032,10 +6056,13 @@ def main() -> int:
     if getattr(args, "limit", 200) == 0:
         args.limit = 0
     handlers = {"roots": cmd_roots, "list": cmd_list, "grep": cmd_grep, "show": cmd_show}
-    if args.command in ('find', 'index'):
+    if args.command in ('find', 'index', 'trace'):
         import sessions_index
         handlers['find'] = sessions_index.cmd_find
         handlers['index'] = sessions_index.cmd_index
+        if args.command == 'trace':
+            import sessions_trace
+            handlers['trace'] = sessions_trace.cmd_trace
     if args.command in ("turns", "flags", "stats"):
         import analyze  # noqa: E402 — local lib, lazy to keep this file standalone
         handlers.update({"turns": analyze.cmd_turns, "flags": analyze.cmd_flags,
@@ -6052,7 +6079,7 @@ def main() -> int:
             if unavailable:
                 print(f"porch sessions safeguards unavailable: {', '.join(unavailable)} on this platform", file=sys.stderr)
         global _ACTIVE_SLOT
-        if args.command not in ("roots", "find") and not (args.command == 'index' and args.index_command != 'build'):
+        if args.command not in ("roots", "find", "trace") and not (args.command == 'index' and args.index_command != 'build'):
             _ACTIVE_SLOT = _acquire_scan_slot(max_parallel, queue_timeout_s)
         result = handlers[args.command](args)
         if monitor:

@@ -1,8 +1,8 @@
 # Session history search and navigation
 
 Read-only access to local coding-agent session histories. `list`, `grep`, `show`,
-`turns`, `flags` and `stats` scan the stores directly; `find` uses the disposable
-index below. A planned indexed `trace` is not yet a command. Raw records carry
+`turns`, `flags` and `stats` scan the stores directly; `find` and `trace` use the
+disposable index below. Raw records carry
 native locators (file + line, or db + table + key).
 
 Claude Code prompt fragments may include `origin` and `origin_basis` describing
@@ -77,6 +77,33 @@ also changes the default to a sibling `sessions-index`. On Unix its directory is
 mode 0700 and database mode 0600. A measured local index was about 1.4% of its
 source volume; size varies with the stores.
 
+## Trace: lineage and what was left behind
+
+Use `porch sessions find` to get a REF, then run `porch sessions trace REF [REF ...] [--depth N] [--max-nodes N] [--evidence]`. To survey recent unfinished, uncollected or orphaned work, use `porch sessions trace --left-behind [--since 7d] [--cwd DIR] [-a HARNESS]`; the default window is seven days. For example, with a session named `claude-code:fixture`:
+
+```bash
+porch sessions find 'fixture'
+porch sessions trace claude-code:fixture --evidence
+porch sessions trace --left-behind --since 7d --cwd /fixture -a claude-code
+```
+
+Trace syncs before reading, with the same 20-second default deadline, busy-lock snapshot and coverage as find. On an empty index the first trace may answer from a partial build; run `porch sessions index build` first, as above. Its single JSON document contains `nodes`, parent-to-child `edges`, `unresolved`, and `_summary` (seeds, coverage, verdict counts and, if truncated, a next command). Default nodes carry compact task and answer snippets, turn state, plan counts, run status and collection, and verdicts with short evidence descriptions. `--evidence` adds plain `show --at` commands where a source can be addressed (otherwise its locator), plus aliases, native status, artifacts, deliveries and full plan items. Use it to inspect or substantiate a verdict; a pointer may require a new search if its source changed.
+
+| Source | Lineage evidence |
+|---|---|
+| Claude Code | `subagent` from transcript paths |
+| Claude Desktop Code tab | `spawned` / `fork` / `continuation` from `spawnedFrom`, `forkedFromSessionId`, `priorCliSessionIds` |
+| Codex | `subagent` from thread-spawn metadata or state edges; `fork` from `forked_from_id` |
+| OpenCode 1.x/2.x | `subagent` from `parentID` / `parent_id`; native fork metadata where present |
+| agy | `subagent` from brain descriptors |
+| porch | `caller_run` via launcher-key aliases; `worker_session` via backend and native id; `parent_run` and `continuation` from run metadata |
+
+Aliases merge identities; they are not edges. A missing target appears in `unresolved` with its coverage-based reason; trace does not guess a link.
+
+For a run with final text, **collection** is true for a delivery record at or after finish, or an attributed, successful caller `wait` (not quiet), `result`, final.txt read or foreground result after finish. A final.txt read is a Read tool or a shell reader (`cat`, `head`, `tail`, `sed`, `less`, `more`, `bat`, `awk`, `jq`, or Python/Node with `open`/`readFile` and a literal path in the same command segment); path checks and listings only count as mentions. Output supplies run targets only from porch progress or detached-launch `run_id=` fields or, when JSON was requested (or is the command’s format), a JSON `run_id`; answer prose is not parsed as JSON evidence. Collection is false only when the resolved caller and its fork/continuation descendants have complete content and store walks, are inactive for 30 minutes, have no observations of the run other than its detached launch, and have no unattributed read or wait after finish. Otherwise it is unknown; without final text it is null. **Unfinished** marks a nonterminal, failed or cancelled run, an idle open or aborted last turn, native error/interruption flags, or incomplete plan items. An open turn active within 30 minutes is **active** instead. **Uncollected** means collection is false. **Orphaned** is true when a recorded parent/caller is absent from a completely walked store, or a positively identified delegated worker has no porch run reference and the porch registry was completely walked. A subagent whose parent was not recorded, an incomplete walk, or a run without a recorded launcher is unknown; other headless sessions have no orphan verdict. Each verdict gives its reason and evidence. Offset-less stored timestamps are interpreted as UTC for verdict comparisons.
+
+Caller-side collection observations come only from Claude Code and Codex transcripts. Delivery records exist only for deliveries made with porch 5.9.0 or later; older-run collection is heuristic, and dynamic commands without an attributable run stay unknown. Desktop `wrap_up` closes only the in-progress plan item. Status texts are not searchable with find.
+
 ## Command surface
 
 ```bash
@@ -92,8 +119,9 @@ For the sessions of the Claude Desktop app and the Codex app — with their
 app-visible titles, archive state, and actions to start, open and archive them —
 use `porch desktop` ([desktop-apps.md](desktop-apps.md)).
 
-`history` is an alias of `sessions`. All output is JSONL on stdout: session
-headers (`_session`), fragments, and a final `_summary` record. Diagnostics go
+`history` is an alias of `sessions`. Raw scan output is JSONL on stdout: session
+headers (`_session`), fragments, and a final `_summary` record; `find` is JSONL
+and `trace` emits one JSON document. Diagnostics go
 to stderr; exit codes are 0 ok / 2 partial / 3 hard failure. See the
 [compatibility matrix](session-compatibility.md) for per-format evidence.
 

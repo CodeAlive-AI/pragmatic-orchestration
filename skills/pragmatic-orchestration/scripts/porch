@@ -60,6 +60,8 @@ Usage:
   porch sessions roots [-a harness[,harness...]] [--store SUBSTR]
   porch sessions list [-a ...] [--store S] [--cwd S] [--since T] [--until T] [--limit N]
   porch sessions find GROUP [GROUP ...] [-a ...] [--kind title|prompt|answer]
+  porch sessions trace REF [REF ...] [--depth N] [--max-nodes N] [--evidence]
+  porch sessions trace --left-behind [--since T] [--cwd DIR] [-a HARNESS] [--evidence]
   porch sessions index status|build|drop
   porch sessions grep [-a ...] [--scope SCOPE] [-i] [--regex] [--limit N] PATTERN
   porch sessions show <harness:session-id|--file PATH> [--around SEQ] [--context N]
@@ -135,6 +137,7 @@ sessions
     roots  detected stores, availability, evidence level
     list   session ids with title, cwd, dates, models
     find   fast literal search of titles, prompts and completed answers
+    trace  session lineage and indexed evidence
     index  status, build [--full], or drop the find index
     grep   text search; each hit carries kind (prompt/assistant/reasoning/
            tool_call/tool_result/context/permission/metadata/…), authorship,

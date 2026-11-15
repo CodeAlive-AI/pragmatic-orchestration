@@ -5,11 +5,13 @@ The sync registry covers Claude, Codex, Devin, OpenCode, Porch and agy stores.
 from __future__ import annotations
 
 import contextlib
+import collections
 import functools
 import hashlib
 import json
 import math
 import os
+import re
 import shlex
 import sqlite3
 import stat
@@ -21,6 +23,7 @@ from pathlib import Path
 from typing import Iterator
 
 import sessions
+import sessions_facts
 
 SCHEMA_VERSION = '1'
 NORMALIZATION_VERSION = '1'
@@ -168,12 +171,18 @@ def _open_writer(directory: Path) -> sqlite3.Connection:
         else:
             version = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
             if version != (SCHEMA_VERSION,):
-                raise SessionIndexError('unsupported session index schema; rebuild the index')
+                raise SessionIndexError('unsupported session index schema; run porch sessions index drop then porch sessions index build')
             # This additive table also upgrades indexes created before error memoization.
             conn.execute('''CREATE TABLE IF NOT EXISTS unit_errors (
                 session_key TEXT PRIMARY KEY, harness TEXT NOT NULL, extractor_version TEXT NOT NULL,
                 sources_json TEXT NOT NULL, details_json TEXT NOT NULL, reason_class TEXT NOT NULL, reason TEXT NOT NULL)''')
             conn.commit()
+        conn.execute('''CREATE TABLE IF NOT EXISTS facts (
+            session_key TEXT NOT NULL REFERENCES sessions(session_key) ON DELETE CASCADE,
+            kind TEXT NOT NULL, ts TEXT, target TEXT, locator TEXT, short_text TEXT, data TEXT)''')
+        conn.execute('CREATE INDEX IF NOT EXISTS facts_session ON facts(session_key)')
+        conn.execute('CREATE INDEX IF NOT EXISTS facts_kind_target ON facts(kind,target)')
+        conn.commit()
         return conn
     except BaseException:
         conn.close()
@@ -259,11 +268,24 @@ def replace_session(conn: sqlite3.Connection, session: dict, documents: list[dic
         conn.executemany('INSERT INTO edges(session_key,type,target_key,unresolved,basis,locator_json) VALUES(?,?,?,?,?,?)',
                          [(key, item['type'], item.get('target_key'), item.get('unresolved'), item.get('basis'),
                            json.dumps(item.get('locator')) if item.get('locator') is not None else None) for item in edges])
+        conn.executemany('INSERT INTO facts(session_key,kind,ts,target,locator,short_text,data) VALUES(?,?,?,?,?,?,?)',
+                         [(key, f['kind'], f.get('ts'), f.get('target'), json.dumps(f.get('locator'), ensure_ascii=False),
+                           f.get('short_text'), json.dumps(f.get('data'), ensure_ascii=False)) for f in session.get('_facts', [])])
         conn.execute('DELETE FROM unit_errors WHERE session_key=?', (key,))
         conn.commit()
     except BaseException:
         conn.rollback()
         raise
+
+def _task_text(text):
+    """Remove the recognizable executor contract, keeping only the task."""
+    if not isinstance(text, str): return ''
+    text = text.strip()
+    if sessions.is_delegated_brief(text):
+        marker = re.search(r'(?m)^---[ \t]*\r?$', text)
+        return text[marker.end():].strip() if marker else ''
+    return text
+
 
 def session_payload(store: sessions.Store, ref: sessions.SessionRef,
                     fragments: list[dict], source_revisions: dict[str, str]) -> tuple[dict, list[dict], list[dict], list[dict]]:
@@ -275,6 +297,18 @@ def session_payload(store: sessions.Store, ref: sessions.SessionRef,
     """
     turns = sessions.interpret_session(store, ref, fragments)
     sessions.refine_class(ref, turns)
+    title_fragment = None
+    if sessions.is_delegated_brief(ref.title):
+        ref.title = None
+        for turn in turns:
+            for prompt in turn.get('prompts') or []:
+                if (prompt.get('origin') or 'unknown') not in ('human', 'delegated', 'unknown'): continue
+                text = _task_text(prompt.get('text'))
+                if text:
+                    ref.title = text.splitlines()[0][:120]
+                    title_fragment = prompt
+                    break
+            if ref.title: break
     extra = ref.extra
     native_id = str(extra.get('native_id') or ref.session_id)
     key = ref.harness + ':' + native_id
@@ -306,6 +340,18 @@ def session_payload(store: sessions.Store, ref: sessions.SessionRef,
            'surface': extra.get('surface'), 'class': extra.get('session_class', 'unknown'),
            'class_basis': extra.get('class_basis'),
            'status_json': json.dumps(status, ensure_ascii=False), 'content_state': state}
+    row['_facts'] = []
+    if turns:
+        turn = turns[-1]
+        prompt = (turn.get('prompts') or [None])[-1]
+        final = turn.get('final')
+        anchor = prompt or final or {}
+        row['_facts'].append({'kind':'last_turn', 'ts': turn.get('ts_end') or turn.get('ts_start'),
+                              'locator':anchor.get('locator'),
+                              'data':{'state':'aborted' if turn.get('aborted') else 'open' if turn.get('open') else 'closed',
+                                      'prompt_ts':prompt.get('ts') if prompt else None,
+                                      'final_ts':final.get('ts') if final else None,
+                                      'abort_reason':turn.get('abort_reason')}})
     docs = []
     def add(kind: str, fragment: dict, origin: str | None = None) -> None:
         text = fragment.get('text')
@@ -329,13 +375,13 @@ def session_payload(store: sessions.Store, ref: sessions.SessionRef,
                      'source_key': source_key(source) if source else None, 'source_rev': source_revisions.get(source), 'text': text})
     if ref.title:
         matching_titles = [f for f in fragments if f.get('text') == ref.title and f.get('locator')]
-        title_fragment = matching_titles[-1] if matching_titles else {}
+        title_fragment = title_fragment or (matching_titles[-1] if matching_titles else {})
         add('title', {**title_fragment, 'text': ref.title,
                       'locator': title_fragment.get('locator') or ref.locator, 'ts': ref.updated})
     for turn in turns:
         for prompt in turn.get('prompts') or []:
             origin = prompt.get('origin') or 'unknown'
-            if origin in ('human', 'delegated', 'unknown'):
+            if origin in ('human', 'delegated', 'unknown') and not (ref.harness == 'porch' and prompt.get('native_type') == 'meta.task'):
                 add('prompt', prompt, origin)
         for answer in turn.get('finals') or []:
             add('answer', answer)
@@ -514,7 +560,7 @@ class Unit:
 
 # Cheap per-harness discovery and SQLite snapshot state
 # Version 2 records stable native message anchors for revision-aware navigation.
-EXTRACTOR_VERSIONS = {'claude-code': '2', 'claude-desktop': '2', 'codex': '3', 'devin': '2', 'opencode': '3', 'porch': '3', 'agy': '4'}
+EXTRACTOR_VERSIONS = {'claude-code': '9', 'claude-desktop': '9', 'codex': '11', 'devin': '4', 'opencode': '5', 'porch': '8', 'agy': '6'}
 
 
 def _revision(stat: tuple) -> str:
@@ -696,6 +742,18 @@ def units_porch(store: sessions.Store, prev: dict) -> Iterator[Unit]:
                 unit.stores[directory_key] = store
                 unit.extra_directories.add(directory_key)
                 unit.newest_mtime = max(unit.newest_mtime, stat[3])
+        delivery = run_dir / 'deliveries.jsonl'
+        errors = []
+        stat = sessions._source_stat(delivery, errors)
+        if errors:
+            raise SessionIndexError('; '.join(errors))
+        if stat is None and delivery.is_symlink():
+            _porch_discovery_issue(prev, store, source_key(str(delivery)), 'offline',
+                                   'delivery source unavailable', None)
+        if stat is not None:
+            delivery_key = source_key(str(delivery))
+            unit.sources[delivery_key], unit.roles[delivery_key], unit.stores[delivery_key] = _revision(stat), 'metadata', store
+            unit.newest_mtime = max(unit.newest_mtime, stat[3])
         yield unit
 
 
@@ -1022,15 +1080,6 @@ def _select_codex_rollout(unit, snapshot, state_rows, paths, sid, stored):
     return selected
 
 
-def _codex_index_fragments(fragments):
-    """Keep turn evidence, but release text which cannot become an index document."""
-    for fragment in fragments:
-        if (fragment.get('kind') not in ('prompt', 'assistant')
-                and fragment.get('native_type') != 'event_msg.user_message'):
-            fragment.pop('text', None)
-        yield fragment
-
-
 def _codex_index_records(records):
     """Avoid serializing compaction history that cannot affect indexed turns."""
     for line, record in records:
@@ -1054,6 +1103,7 @@ def extract_codex_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[d
         if row is None or _codex_state_revision(row, edges.get(sid, [])) != unit.sources[key]:
             raise SourceChanged('Codex state changed after discovery')
         state_rows.append((store, row, edges.get(sid, [])))
+    collector = sessions_facts.FactCollector()
     with FileSnapshot() as snapshot:
         paths = []
         for key in unit.sources:
@@ -1088,7 +1138,7 @@ def extract_codex_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[d
             _register_ref_sources(unit, ref, snapshot, store)
             stats = {}
             records = _codex_index_records(sessions.iter_jsonl(path, stats))
-            fragments = list(_codex_index_fragments(sessions._codex_record_fragments(store, ref, path, records, 0)))
+            fragments = list(collector.stream(sessions._codex_record_fragments(store, ref, path, records, 0)))
             snapshot.verify()
             _check_extraction_stats(stats, store)
         else:
@@ -1097,12 +1147,15 @@ def extract_codex_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[d
             sessions._codex_enrich_ref(ref, state_parent=parent, state_db=store.path,
                                        meta={'source':row.get('source'), 'originator':row.get('originator')})
             fragments = []
-        ref.title = (row.get('title') or row.get('name') or row.get('preview') or row.get('first_user_message') or '')[:160] or ref.title
+        native_title = row.get('title') or row.get('name') or row.get('preview') or row.get('first_user_message') or ''
+        ref.title = (native_title if sessions.is_delegated_brief(native_title) else native_title[:160]) or ref.title
         ref.cwd = row.get('cwd') or ref.cwd
         ref.created = ref.created or row.get('created_at')
         ref.updated = row.get('updated_at_ms') or ref.updated
+        native_title_prefixed = sessions.is_delegated_brief(ref.title)
         result = session_payload(store, ref, fragments, snapshot.revisions())
-        if state_rows and (row.get('title') or row.get('name') or row.get('preview') or row.get('first_user_message')):
+        result[0]['_facts'].extend(collector.facts())
+        if state_rows and not native_title_prefixed and (row.get('title') or row.get('name') or row.get('preview') or row.get('first_user_message')):
             state_key = _codex_state_key(state_rows[0][0].path, sid)
             for document in result[1]:
                 if document['kind'] == 'title':
@@ -1193,8 +1246,9 @@ def extract_agy_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[dic
                 raise SourceChanged('agy lineage source appeared after discovery')
         ref.extra['sources'] = [source for source in ref.extra.get('sources', []) if source.get('path') != str(metadata)]
         _register_ref_sources(unit, ref, snapshot, store)
+        native_title_prefixed = sessions.is_delegated_brief(ref.title)
         result = extract_session(store, ref, snapshot.revisions())
-        if ref.title:
+        if ref.title and not native_title_prefixed:
             annotation = store.path / 'annotations' / (sid + '.pbtxt')
             title_source = annotation if sessions._agy_annotation_title(store, sid) else metadata
             title_revision = snapshot.revisions().get(str(title_source))
@@ -1251,6 +1305,8 @@ def extract_file_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[di
                         key = source_key(str(path))
                         unit.sources[key], unit.roles[key], unit.stores[key] = snapshot.revisions()[str(path)], 'content', store
             ref = sessions.porch_ref_for_run(store, run_dir)
+            if ref and sessions.is_delegated_brief(meta.get('task')):
+                ref.title = meta['task']
         elif unit.harness == 'opencode':
             meta_key = next((key for key in unit.sources if unit.roles[key] == 'metadata'), None)
             if meta_key is None:
@@ -1283,6 +1339,21 @@ def extract_file_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[di
         result = session_payload(store, ref, fragments, snapshot.revisions())
         if unit.harness == 'porch':
             meta_path = str(run_dir / 'meta.json')
+            task = _task_text(meta.get('task'))
+            if task:
+                result[0]['_facts'].append({'kind':'status_text','target':'task',
+                    'ts':meta.get('started_at') or meta.get('launched_at'),
+                    'locator':{'file':meta_path},'short_text':task[:160]})
+            delivery_path = run_dir / 'deliveries.jsonl'
+            status = json.loads(result[0]['status_json'])
+            status.update(deliveries_malformed=0, deliveries_count=0, deliveries_collectors_count=0)
+            if source_key(str(delivery_path)) in unit.sources:
+                facts, malformed, count, collectors = _delivery_facts(delivery_path, unit.session_key.split(':', 1)[1])
+                result[0]['_facts'].extend(facts)
+                status['deliveries_malformed'] = malformed
+                status['deliveries_count'] = count
+                status['deliveries_collectors_count'] = collectors
+            result[0]['status_json'] = json.dumps(status, ensure_ascii=False)
             for document in result[1]:
                 if document['kind'] == 'title':
                     document['locator_json'] = json.dumps({'file': meta_path}, ensure_ascii=False)
@@ -1306,8 +1377,34 @@ def extract_file_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[di
         return result
 
 
+def _delivery_facts(path, run_id):
+    facts = collections.deque(maxlen=20)
+    malformed = 0
+    count = 0
+    collectors = set()
+    with path.open('rb') as handle:
+        for line_no, line in enumerate(handle, 1):
+            try:
+                item = json.loads(line)
+                if (not isinstance(item, dict) or not {'ts','via','format','stdout','collector'} <= item.keys() or not isinstance(item.get('ts'), str) or
+                        item.get('via') not in ('wait', 'foreground') or item.get('format') not in ('text', 'json') or
+                        item.get('stdout') not in ('file', 'pipe', 'tty', 'other') or
+                        (item.get('collector') is not None and not isinstance(item['collector'], str))):
+                    raise ValueError('invalid delivery')
+                facts.append({'kind': 'delivery', 'target': run_id, 'ts': item['ts'],
+                              'locator': {'file': str(path), 'line': line_no},
+                              'data': {key:item.get(key) for key in ('via','format','stdout','collector')}})
+                count += 1
+                if item['collector'] is not None:
+                    collectors.add(item['collector'])
+            except (ValueError, TypeError):
+                malformed += 1
+    return list(facts), malformed, count, len(collectors)
+
+
 def _extract_claude_unit(unit: Unit):
     """Merge Claude transcript and Desktop manifest within one snapshot."""
+    collector = sessions_facts.FactCollector()
     with FileSnapshot() as snapshot:
         for key in unit.sources:
             if unit.sources[key] == 'missing':
@@ -1329,7 +1426,7 @@ def _extract_claude_unit(unit: Unit):
             ref = sessions.claude_ref_for_file(store, Path(json.loads(key)[0]))
             _register_ref_sources(unit, ref, snapshot, store)
             stats = {}
-            fragments = list(sessions.iter_all_fragments(store, ref, 0, stats))
+            fragments = list(collector.stream(sessions.iter_all_fragments(store, ref, 0, stats)))
             snapshot.verify()
             _check_extraction_stats(stats, store)
         else:
@@ -1365,8 +1462,10 @@ def _extract_claude_unit(unit: Unit):
                 ref.extra['native_status']['titleSource'] = desktop.extra['titleSource']
             ref.extra.setdefault('edges', []).extend(desktop.extra.get('edges', []))
             aliases.append({'alias': 'claude-desktop:' + desktop.session_id, 'kind': 'desktop'})
+        native_title_prefixed = sessions.is_delegated_brief(ref.title)
         row, docs, payload_aliases, edges = session_payload(store, ref, fragments, snapshot.revisions())
-        if title_manifest:
+        row['_facts'].extend(collector.facts())
+        if title_manifest and not native_title_prefixed:
             for document in docs:
                 if document['kind'] == 'title':
                     document['locator_json'] = json.dumps({'file': str(title_manifest)}, ensure_ascii=False)
@@ -1491,6 +1590,10 @@ def _coverage(conn: sqlite3.Connection | None, harnesses=()) -> dict:
                 entry = counts.setdefault(harness, empty())
                 entry['error'] = max(entry['error'], issue.get('error', 0))
                 entry['unsupported'] = issue.get('unsupported', 0)
+        row = conn.execute("SELECT value FROM meta WHERE key='walk_complete_by_harness'").fetchone()
+        if row:
+            for harness, complete in json.loads(row[0]).items():
+                counts.setdefault(harness, empty())['walk_complete'] = complete
     return {**counts, 'final_basis': basis, 'verified_at': verified,
             'discovery_complete': discovery_complete,
             'limits': [DEVIN_LIMIT] if 'devin' in counts else []}
@@ -1826,7 +1929,7 @@ def _process_changed_units(conn, changed, deadline, failed_sources, old, result,
                 progress(unit.harness, n, totals[unit.harness])
 
 
-def _finish_sync(conn, selected, error_counts, unsupported_counts, complete_walk, counts, result):
+def _finish_sync(conn, selected, error_counts, unsupported_counts, complete_walk, counts, result, incomplete_harnesses):
     """Publish coverage metadata and report the committed snapshot."""
     row = conn.execute("SELECT value FROM meta WHERE key='store_issues'").fetchone()
     issues = json.loads(row[0]) if row else {}
@@ -1834,6 +1937,11 @@ def _finish_sync(conn, selected, error_counts, unsupported_counts, complete_walk
         issues[harness] = {'error': error_counts.get(harness, 0), 'unsupported': unsupported_counts.get(harness, 0)}
     conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('store_issues',?)", (json.dumps(issues),))
     conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('discovery_complete',?)", ('1' if complete_walk else '0',))
+    row = conn.execute("SELECT value FROM meta WHERE key='walk_complete_by_harness'").fetchone()
+    walks = json.loads(row[0]) if row else {}
+    for harness in selected:
+        walks[harness] = harness not in incomplete_harnesses
+    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('walk_complete_by_harness',?)", (json.dumps(walks),))
     coverage = _coverage(conn, selected)
     for harness, transient in counts.items():
         coverage[harness]['extracted'] = transient['extracted']
@@ -1960,6 +2068,15 @@ def _sync(directory: Path, *, deadline: float | None = None, full: bool = False,
         previous, old, previous_details, source_states, memos = _load_previous(conn, stack, full)
         (units, complete_walk, failed_sources, errors, error_counts,
          unsupported_counts, discovered_stores, roots, complete_stores) = _discover_stores(conn, selected, previous)
+        recorded_stores = set(conn.execute('SELECT DISTINCT harness,store FROM sources'))
+        incomplete_harnesses = set()
+        for pair in recorded_stores | set(discovered_stores):
+            if pair[0] not in selected or pair in complete_stores:
+                continue
+            store = discovered_stores.get(pair)
+            if pair in recorded_stores or (store is not None and store.path.exists()):
+                incomplete_harnesses.add(_coverage_harness(*pair))
+                incomplete_harnesses.add(pair[0])
         _restore_known_sources(conn, previous_details, units, roots, failed_sources, discovered_stores)
         for key, (_, memo_sources) in memos.items():
             if (key.split(':', 1)[0] in selected and key not in units
@@ -2009,7 +2126,7 @@ def _sync(directory: Path, *, deadline: float | None = None, full: bool = False,
         for harness in _advance_gates(conn, previous, units, failed_sources, failed_units):
             result['pending'] += 1
             counts[harness]['pending'] += 1
-        return _finish_sync(conn, selected, error_counts, unsupported_counts, complete_walk, counts, result)
+        return _finish_sync(conn, selected, error_counts, unsupported_counts, complete_walk, counts, result, incomplete_harnesses)
 
 # Indexed literal search and revision-aware navigation
 
@@ -2308,14 +2425,7 @@ def cmd_find(args):
         raise SessionIndexError('no committed session index; run porch sessions index build')
     with _checked_reader(directory) as conn:
         conn.execute('BEGIN')
-        metadata = dict(conn.execute("SELECT key,value FROM meta WHERE key IN ('last_sync_coverage','last_sync_at')"))
-        snapshot_coverage = (json.loads(metadata['last_sync_coverage']) if 'last_sync_coverage' in metadata else
-                             {'synced': False, 'complete': False, 'reason': 'no recorded sync coverage',
-                              'next': 'porch sessions index build', **_coverage(conn, harnesses or ())})
-        if not coverage['synced']:
-            snapshot_coverage.update(synced=False, complete=False, reason=coverage['reason'],
-                                     stale_since=metadata.get('last_sync_at'), stat_pass=False,
-                                     next='porch sessions index build')
+        snapshot_coverage = _snapshot_coverage(conn, coverage, harnesses)
         rows, summary = find_in_snapshot(conn, args.groups, harnesses=harnesses, kind=args.kind,
                                          origin=args.origin, session_class=args.session_class,
                                          cwd=args.cwd, since=since, until=until, limit=args.limit)
@@ -2323,6 +2433,18 @@ def cmd_find(args):
         sessions.emit(row)
     sessions.emit({'_summary': True, **summary, 'coverage': snapshot_coverage})
     return sessions.EXIT_OK
+
+
+def _snapshot_coverage(conn, sync_result, harnesses=None):
+    metadata = dict(conn.execute("SELECT key,value FROM meta WHERE key IN ('last_sync_coverage','last_sync_at')"))
+    coverage = (json.loads(metadata['last_sync_coverage']) if 'last_sync_coverage' in metadata else
+                {'synced': False, 'complete': False, 'reason': 'no recorded sync coverage',
+                 'next': 'porch sessions index build', **_coverage(conn, harnesses or ())})
+    if not sync_result['synced']:
+        coverage.update(synced=False, complete=False, reason=sync_result['reason'],
+                        stale_since=metadata.get('last_sync_at'), stat_pass=False,
+                        next='porch sessions index build')
+    return coverage
 
 
 def _locator_source_revision(locator, store):
@@ -2488,8 +2610,11 @@ def cmd_show_at(args):
             loc = fragment.get('locator') or {}
             match = all(loc.get(k) == v for k, v in anchor.items() if k != 'message_anchor')
             if match and address.get('kind') == 'title' and not anchor.get('line') and title_record is None:
-                value = fragment.get('text')
-                match = isinstance(value, str) and hashlib.sha256(value.encode('utf-8')).hexdigest() == address.get('text_digest')
+                if native_anchor:
+                    match = _anchor_matches(fragment, native_anchor)
+                else:
+                    value = fragment.get('text')
+                    match = isinstance(value, str) and hashlib.sha256(value.encode('utf-8')).hexdigest() == address.get('text_digest')
         if match:
             if args.max_chars and isinstance(fragment.get('text'), str) and len(fragment['text']) > args.max_chars:
                 fragment['text'] = fragment['text'][:args.max_chars]

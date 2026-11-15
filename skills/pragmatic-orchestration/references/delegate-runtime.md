@@ -43,6 +43,7 @@ own. Each record carries the UTC timestamp, the delivery path (`wait` or
 raw session id. `--quiet`, timeouts, runs without final text, and a detached
 supervisor's log write record nothing; a failed append only warns on stderr
 and never changes the command's result.
+Use `porch sessions trace` to inspect delivery evidence alongside the run's lineage; see [session history](session-history.md).
 
 `wait-any` always emits JSON with `ready` run ids and `runs` snapshots. Exit 0
 means at least one target is terminal, including failures; inspect each run's

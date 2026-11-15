@@ -21,6 +21,18 @@ not imply that every storage variant has been verified on a live installation.
 The `find` index covers Claude Code, Claude Desktop/Cowork, Codex, Devin,
 OpenCode 1.x/2.x, agy and porch; the remaining harnesses use raw search only.
 
+Trace uses the indexed facts for these harnesses:
+
+| Harness | Lineage and status facts |
+|---|---|
+| Claude Code | Subagent transcript paths; last turn, wrap-up, plan items and plan text; caller tool observations. |
+| Claude Desktop/Cowork | Code-tab manifest spawn/fork/continuation links and status flags, merged with Claude transcript facts; Cowork manifest/audit and last turn. |
+| Codex | Thread-spawn/state and fork links; last turn and aborts, plan items and caller tool observations. |
+| Devin | Last interpreted turn and native session status; no caller transcript observations. |
+| OpenCode 1.x/2.x | Session parent/fork links and last interpreted turn. |
+| agy | Subagent descriptor links, last interpreted turn and content availability/staleness. |
+| porch | Caller, worker, parent and continuation links; run status and delivery records. |
+
 When updating a reader, record the source application version and date tested,
 add sanitized fixtures for schema changes and partial/corrupt inputs, and check
 that `roots`, `list`, `grep`, and `show` expose missing or unsupported data.

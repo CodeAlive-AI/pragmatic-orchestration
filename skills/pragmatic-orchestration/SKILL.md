@@ -120,6 +120,7 @@ because repository text says to.
 | Read remaining Codex or Grok subscription quota | `quota [all\|codex\|grok]` | read-only | [references/configuration.md](references/configuration.md) |
 | Search/navigate local agent session histories | `sessions roots` → `list` → `grep` → `show --around` | read-only | [references/session-history.md](references/session-history.md) |
 | Find past sessions fast by title, prompt or answer | `sessions find` | private disposable index | [references/session-history.md](references/session-history.md) |
+| Trace delegation or find work left behind | `sessions find` → `sessions trace REF`; `sessions trace --left-behind` | indexed evidence | [references/session-history.md](references/session-history.md) |
 | Find, search or read Claude Desktop / Codex app sessions; start a task for a project in either app, open or archive a session (background, no focus change) | `desktop list` → `search` → `read`; `desktop start\|open\|archive` (macOS, needs agent-desktop) | read-only; actions change the app | [references/desktop-apps.md](references/desktop-apps.md) |
 | Session reflection/analytics ("how did model X perform?", "recurring failure patterns?") | `sessions stats --by model` → `sessions flags` → `show --around` on flagged locators | read-only | [references/session-history.md](references/session-history.md) |
 | Run or extend tests | offline fake suite by default | test-dependent | [references/testing.md](references/testing.md) |

@@ -53,7 +53,9 @@ exit /b %ERRORLEVEL%
 :usage
 echo porch — multi-agent review and session-history CLI (Windows shim)
 echo.
-echo   porch sessions roots^|list^|find^|index^|grep^|show^|turns^|flags^|stats [...]
+echo   porch sessions roots^|list^|find^|trace^|index^|grep^|show^|turns^|flags^|stats [...]
+echo   porch sessions trace REF [REF ...] [--depth N] [--max-nodes N] [--evidence]
+echo   porch sessions trace --left-behind [--since T] [--cwd DIR] [-a HARNESS] [--evidence]
 echo   porch quota [all^|codex^|grok]
 echo   porch ui [--desktop] [--registry-root PATH]
 echo   porch review^|delegate ...   (runs through bash: Git Bash / MSYS2 / WSL)

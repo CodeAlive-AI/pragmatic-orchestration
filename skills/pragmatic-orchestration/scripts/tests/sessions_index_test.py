@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import random
+import shlex
 import argparse
 import sqlite3
 import subprocess
@@ -22,9 +23,205 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import sessions
 import sessions_index as index
+import sessions_facts
+import sessions_trace
+import sessions_verdicts
 
 
 class CapabilityTests(unittest.TestCase):
+    def test_detached_launch_output_recognizes_only_porch_owned_shapes(self):
+        for output in ('[porch] stage=delegate detached run_id=run_one',
+                       'run_id=run_one', '[porch] stage=delegate detached run_id=run_one\nrun_id=run_one'):
+            collector=sessions_facts.FactCollector()
+            rows=[{'kind':'tool_call','text':json.dumps({'name':'Bash','input':{'command':'porch delegate -a x --detach'}}),
+                   'rel':{'call_id':'c','tool':'Bash'}},
+                  {'kind':'tool_result','text':output,'rel':{'call_id':'c'}}]
+            list(collector.stream(rows))
+            calls=[f for f in collector.facts() if f['kind']=='porch_call']
+            self.assertEqual([(f['target'],f['data']['op'],f['data']['detach']) for f in calls], [('run_one','delegate',True)])
+        self.assertEqual(sessions_facts._output_targets('answer mentions run_id=run_fake',False,True),[])
+        self.assertEqual(sessions_facts._output_targets('run_id=run_one',False,False),[])
+
+    def test_porch_call_reader_targets_and_background_bounds(self):
+        collector=sessions_facts.FactCollector()
+        def pair(n,command,output='',tool='Bash',background=False):
+            args={'file_path':command} if tool=='Read' else {'command':command,'run_in_background':background}
+            return [{'kind':'tool_call','text':json.dumps({'name':tool,'input':args}),'ts':str(n),'rel':{'call_id':str(n),'tool':tool}},
+                    {'kind':'tool_result','text':output,'ts':str(n+1),'rel':{'call_id':str(n)}}]
+        rows=[]
+        for n,command in enumerate(('ls /tmp/run_a/final.txt','test -f /tmp/run_a/final.txt',
+                                    'stat /tmp/run_a/final.txt','grep -l foo */final.txt'),1):
+            rows+=pair(n*10,command)
+        for n,command in enumerate(('cat /tmp/run_a/final.txt','head /tmp/run_a/final.txt',
+                                    'python -c "open(\x27/tmp/run_a/final.txt\x27).read()"'),10):
+            rows+=pair(n*10,command,'run_b')
+        rows+=pair(200,'porch delegate wait run_a','answer mentions run_b\n[porch] done run_id=run_c')
+        rows+=pair(210,'porch delegate wait "$RID" --json','{"run_id":"run_json"}')
+        rows+=pair(212,'porch delegate wait "$RID" --json','{\n "run_id": "run_large",\n "final_text": "'+('x'*1100000)+'"\n}')
+        rows+=pair(220,'porch delegate wait "$RID"','plain run_other and run_id=run_fake')
+        rows+=pair(225,'porch delegate wait "$RID"','{"run_id":"run_answer"}')
+        rows+=pair(226,'porch delegate wait "$RID"','[porch] wait run_id=run_progress attached')
+        rows+=pair(230,'porch delegate wait run_bg','running in background with ID: 3',background=True)
+        rows+=pair(240,'head -n 3 /tmp/other','unrelated')
+        rows+=pair(250,'porch delegate wait run_bg','running in background with ID: task123',background=True)
+        rows+=pair(260,'TaskOutput task123','[porch] done run_id=run_bg',tool='TaskOutput')
+        list(collector.stream(rows)); calls=[f for f in collector.facts() if f['kind']=='porch_call']
+        self.assertEqual(sum(f['data']['op']=='other' for f in calls),4)
+        self.assertEqual(sum(f['data']['op']=='read-final' for f in calls),3)
+        self.assertFalse(any(f['target']=='run_b' for f in calls))
+        self.assertFalse(any(f['target']=='run_fake' for f in calls))
+        self.assertFalse(any(f['target']=='run_answer' for f in calls))
+        self.assertTrue(any(f['target']=='run_c' and f['data']['op']=='wait' for f in calls))
+        self.assertTrue(any(f['target']=='run_json' for f in calls))
+        self.assertTrue(any(f['target']=='run_large' for f in calls))
+        self.assertTrue(any(f['target']=='run_progress' for f in calls))
+        self.assertTrue(any(f['target'] is None and f['data']['op']=='wait' for f in calls))
+        self.assertFalse(any(f['data'].get('via')=='background_output' and f['ts']=='241' for f in calls))
+        self.assertTrue(any(f['data'].get('via')=='background_output' and f['target']=='run_bg' for f in calls))
+        for n in range(1100):
+            collector.pending[str(n)]={'op':'wait','targets':[],'background':True}
+            collector._result({'text':f'running in background with ID: task{n:05}','rel':{'call_id':str(n)}})
+        self.assertLessEqual(len(collector.background),1000)
+
+    def test_verdict_naive_timestamps_use_utc(self):
+        self.assertEqual(sessions_verdicts._epoch('2025-01-01T00:00:00'),sessions_verdicts._epoch('2025-01-01T00:00:00Z'))
+
+    def test_codex_completed_task_after_abort_clears_last_abort(self):
+        ref=sessions.SessionRef('codex','sessions','fixture')
+        prompt={'kind':'prompt','native_type':'event_msg.user_message','text':'question','ts':'1'}
+        abort={'kind':'boundary','native_type':'event_msg.turn_aborted','native':{'reason':'cancel'},'ts':'2'}
+        start={'kind':'boundary','native_type':'event_msg.task_started','ts':'3'}
+        final={'kind':'assistant','native_type':'event_msg.agent_message','text':'answer','ts':'4',
+               'native':{'phase':'final_answer','layer':'event'}}
+        complete={'kind':'boundary','native_type':'event_msg.task_complete','ts':'5'}
+        turns=sessions._codex_turns(ref,[prompt,abort,start,final,complete])
+        self.assertFalse(turns[-1]['aborted'])
+        self.assertFalse(turns[-1]['open'])
+        self.assertEqual(turns[-1]['final']['text'],'answer')
+        turns=sessions._codex_turns(ref,[prompt,abort,start,final])
+        self.assertFalse(turns[-1]['aborted'])
+        turns=sessions._codex_turns(ref,[prompt,final,complete,abort])
+        self.assertTrue(turns[-1]['aborted'])
+
+    def test_codex_parent_metadata_layouts_deduplicate_state_edge(self):
+        for source in ({'subagent': {'thread_spawn': {'parent_thread_id':'parent'}}}, {'subagent': {}}):
+            meta={'source':source,'parent_thread_id':'parent'}
+            ref=sessions.SessionRef('codex','sessions','child')
+            with patch.object(sessions,'porch_workers',return_value=set()):
+                sessions._codex_enrich_ref(ref,Path('/fixture/rollout.jsonl'),meta=meta,
+                                           state_parent='parent',state_db=Path('/fixture/state.sqlite'))
+            edges=ref.extra['edges']
+            self.assertEqual([(edge['type'],edge['target_id']) for edge in edges],[('subagent','parent')])
+            self.assertEqual(edges[0]['basis'], 'thread_spawn.parent_thread_id' if source['subagent'].get('thread_spawn') else 'session_meta.parent_thread_id')
+            self.assertEqual(ref.extra['session_class'],'subagent')
+
+    def test_trace_last_turn_harness_states(self):
+        prompt={'kind':'prompt','origin':'human','text':'question','ts':'1','locator':{'line':1}}
+        claude_answer={'kind':'assistant','text':'answer','ts':'2','locator':{'line':2},'native':{'message_id':'m','stop_reason':'end_turn'}}
+        codex_answer={'kind':'assistant','text':'answer','ts':'2','locator':{'line':2},'native':{'phase':'final_answer','layer':'response'}}
+        devin_prompt={**prompt,'native_type':'message_nodes.user','seq':1,'native':{'node_id':1,'canonical':True}}
+        devin_answer={'kind':'assistant','text':'answer','ts':'2','seq':2,'native_type':'message_nodes.assistant',
+                      'native':{'node_id':2,'canonical':True,'finish_reason':'stop','has_tool_calls':False}}
+        cases=[('claude-code',[prompt],'open'),('claude-code',[prompt,claude_answer],'closed'),
+               ('claude-code',[prompt,{'kind':'context','interrupted':True,'ts':'3'}],'aborted'),
+               ('codex',[prompt],'open'),('codex',[prompt,codex_answer,{'kind':'boundary','native_type':'event_msg.task_complete'}],'closed'),
+               ('codex',[prompt,{'kind':'boundary','native_type':'event_msg.turn_aborted','native':{'reason':'interrupted'},'ts':'3'}],'aborted'),
+               ('devin',[devin_prompt],'open'),('devin',[devin_prompt,devin_answer],'closed')]
+        for harness,fragments,expected in cases:
+            with self.subTest(harness=harness,state=expected):
+                store=sessions.Store(harness,'test',Path('/fixture'),'sqlite' if harness=='devin' else 'jsonl_dir')
+                ref=sessions.SessionRef(harness,'test','id')
+                row,*_=index.session_payload(store,ref,fragments,{})
+                self.assertEqual(row['_facts'][0]['data']['state'],expected)
+        store=sessions.Store('devin','test',Path('/fixture'),'sqlite')
+        ref=sessions.SessionRef('devin','test','id')
+        native_turn={'prompts':[prompt],'final':None,'finals':[],'open':False,'aborted':True,
+                     'abort_reason':'native cancellation','ts_start':'1','ts_end':'3'}
+        with patch.object(sessions,'interpret_session',return_value=[native_turn]):
+            row,*_=index.session_payload(store,ref,[],{})
+        self.assertEqual(row['_facts'][0]['data']['state'],'aborted')
+        self.assertEqual(row['_facts'][0]['data']['abort_reason'],'native cancellation')
+
+    def test_trace_tool_facts_and_bounds(self):
+        collector=sessions_facts.FactCollector()
+        def call(n, tool, args):
+            return {'kind':'tool_call','text':json.dumps({'name':tool,'input':args}), 'ts':str(n),
+                    'locator':{'line':n},'rel':{'call_id':str(n),'tool':tool}}
+        def result(n,text,error=False):
+            return {'kind':'tool_result','text':text,'ts':str(n+1),'locator':{'line':n+1},
+                    'rel':{'call_id':str(n)},'error':error}
+        rows=[call(1,'Bash',{'command':'"$PORCH" delegate wait "$RID"'}),result(1,'SECRET\n[porch] done run_id=run_abc'),
+              call(3,'Bash',{'command':'porch delegate wait run_a --quiet'}),result(3,'done'),
+              call(5,'Bash',{'command':'porch delegate wait-any run_a run_b'}),result(5,'done'),
+              call(7,'Bash',{'command':'porch delegate status run_a --json'}),result(7,'done'),
+              call(9,'Bash',{'command':'porch delegate events run_a'}),result(9,'done',True),
+              call(11,'Bash',{'command':'porch delegate -a x --detach --name x'}),result(11,'[porch] stage=delegate detached run_id=run_new\nrun_id=run_new'),
+              call(13,'Bash',{'command':'porch delegate wait run_bg','run_in_background':True}),result(13,'Command running in background with ID: task123. Output is being written to: /tmp/task.out'),
+              call(15,'Read',{'file_path':'/tmp/task.out'}),result(15,'done run_bg'),
+              call(17,'Read',{'file_path':'/tmp/run-delegate-foo/final.txt'}),result(17,'answer'),
+              call(19,'Bash',{'command':'cat "$ART/final.txt"'}),result(19,'answer'),
+              call(21,'mcp__ccd_turn__wrap_up',{'recap':'x'*1200}),
+              call(23,'mcp__ccd_turn__update_plan',{'items':[{'text':str(i)*300,'status':'in_progress' if i==0 else 'pending'} for i in range(60)]}),
+              call(25,'mcp__ccd_turn__update_plan',{'advance':True}),
+              call(27,'mcp__ccd_turn__update_plan',{'done':[2],'start':3}),
+              call(29,'ExitPlanMode',{'plan':'first'}), call(31,'ExitPlanMode',{'plan':'last'})]
+        consumed=list(collector.stream(rows)); facts=collector.facts()
+        self.assertTrue(all('text' not in f for f in consumed if f['kind']=='tool_result'))
+        calls=[f for f in facts if f['kind']=='porch_call']
+        self.assertTrue(any(f['target']=='run_abc' and f['data']['op']=='wait' for f in calls))
+        self.assertFalse(any(f['target']=='run_id' for f in calls))
+        self.assertTrue(any(f['data']['quiet'] for f in calls))
+        self.assertTrue(any(f['data']['op']=='wait-any' for f in calls))
+        self.assertTrue(any(f['data']['op']=='status' and f['data']['json'] for f in calls))
+        self.assertTrue(any(f['data']['op']=='events' and f['data']['is_error'] for f in calls))
+        self.assertTrue(any(f['target']=='run_new' and f['data']['detach'] for f in calls))
+        self.assertTrue(any(f['target']=='run_bg' and f['data'].get('via')=='background_output' for f in calls))
+        self.assertTrue(any(f['target']=='run-delegate-foo' and f['data']['op']=='read-final' for f in calls))
+        self.assertTrue(any(f['target'] is None and f['data']['op']=='read-final' for f in calls))
+        status={f['target']:f for f in facts if f['kind']=='status_text'}
+        self.assertEqual(len(status['wrap_up']['short_text']),1000)
+        items=status['plan_items']['data']['items']
+        self.assertEqual(len(items),50); self.assertLessEqual(len(items[0]['text']),200)
+        self.assertEqual([item['status'] for item in items[:3]],['completed','completed','in_progress'])
+        self.assertEqual(status['plan']['short_text'],'last')
+
+    def test_trace_codex_tools_and_todowrite(self):
+        collector=sessions_facts.FactCollector()
+        def call(n,name,args):
+            return {'kind':'tool_call','text':json.dumps({'name':name,'arguments':json.dumps(args)}),
+                    'rel':{'call_id':str(n),'tool':name},'ts':str(n),'locator':{'line':n}}
+        fragments=[call(1,'exec_command',{'cmd':'porch delegate wait run_x'}),
+                   {'kind':'tool_result','text':'hidden output','rel':{'call_id':'1'},'ts':'2'},
+                   call(3,'update_plan',{'plan':[{'step':'step','status':'in_progress'}]}),
+                   call(5,'TodoWrite',{'todos':[{'content':'todo','status':'pending'}]})]
+        list(collector.stream(fragments)); facts=collector.facts()
+        self.assertTrue(any(f['target']=='run_x' and f['data']['op']=='wait' for f in facts))
+        self.assertEqual(next(f for f in facts if f['kind']=='status_text')['data']['items'],[{'text':'todo','status':'pending'}])
+
+    def test_wrap_up_closes_only_in_progress_plan_item(self):
+        collector = sessions_facts.FactCollector()
+        def call(name, args, ts):
+            return {'kind':'tool_call', 'text':json.dumps({'name':name,'input':args}), 'ts':ts,
+                    'locator':{'line':int(ts)}, 'rel':{'tool':name}}
+        fragments = [call('mcp__ccd_turn__update_plan', {'items':[{'text':'one','status':'in_progress'},
+                                                                   {'text':'two','status':'pending'}]}, '1'),
+                     call('mcp__ccd_turn__wrap_up', {'recap':'done'}, '2')]
+        list(collector.stream(fragments))
+        fact = next(f for f in collector.facts() if f.get('target') == 'plan_items')
+        self.assertEqual(fact['data'], {'items':[{'text':'one','status':'completed'},
+                                                {'text':'two','status':'pending'}], 'closed_by':'wrap_up'})
+        self.assertEqual(fact['locator'], {'line':2})
+        self.assertEqual(fact['ts'], '2')
+        collector = sessions_facts.FactCollector()
+        list(collector.stream([call('mcp__ccd_turn__update_plan', {'items':[{'text':'later','status':'pending'}]}, '3'),
+                               call('mcp__ccd_turn__wrap_up', {'recap':'done'}, '4')]))
+        fact = next(f for f in collector.facts() if f.get('target') == 'plan_items')
+        self.assertEqual(fact['data'], {'items':[{'text':'later','status':'pending'}], 'closed_by':'wrap_up'})
+        collector = sessions_facts.FactCollector()
+        list(collector.stream([call('TodoWrite', {'todos':[{'content':'other','status':'in_progress'}]}, '3'),
+                               call('mcp__ccd_turn__wrap_up', {'recap':'done'}, '4')]))
+        fact = next(f for f in collector.facts() if f.get('target') == 'plan_items')
+        self.assertEqual(fact['data']['items'][0]['status'], 'in_progress')
     def test_normalized_match_fast_path_matches_full_unicode_normalization(self):
         rng = random.Random(771)
         alphabet = ['a','b','e','i','I','K','Ё','ё','Σ','ς','İ','K','\u0301','\u0345','\u1100','\u1161','😀',' ','|','"']
@@ -63,7 +260,7 @@ class CapabilityTests(unittest.TestCase):
             {'kind':'boundary','native_type':'event_msg.task_complete','ts':'6'},
         ]
         expected = sessions.interpret_session(store, ref, fragments)
-        compact = list(index._codex_index_fragments([dict(f) for f in fragments]))
+        compact = list(sessions_facts.FactCollector().stream([dict(f) for f in fragments]))
         self.assertNotIn('text', compact[2])
         self.assertNotIn('text', compact[3])
         self.assertEqual(sessions.interpret_session(store, ref, compact), expected)
@@ -120,6 +317,536 @@ class IndexStorageTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.directory = Path(self.tmp.name) / 'index'
 
+    def test_porch_task_fact_and_worker_fallback(self):
+        root=Path(self.tmp.name)/'runs'; run=root/'run_brief'; run.mkdir(parents=True)
+        contract=(Path(index.__file__).resolve().parents[2]/'prompts'/'delegate-executor.txt').read_text()
+        (run/'meta.json').write_text(json.dumps({'run_id':'run_brief','task':contract+'Build the fixture\nDetails',
+                                                 'started_at':'2025-01-01T00:00:00Z','status':'running'}))
+        (run/'normalized').mkdir(); (run/'normalized'/'events.jsonl').write_text('{"type":"run_started"}\n')
+        store=sessions.Store('porch','runs',root,'run_registry')
+        with patch.object(sessions,'stores_for',side_effect=lambda h:[store] if h=='porch' else []):
+            index.sync(self.directory,harnesses=['porch'])
+            with contextlib.closing(index.open_reader(self.directory)) as conn:
+                fact=conn.execute("SELECT short_text,ts FROM facts WHERE session_key='porch:run_brief' AND target='task'").fetchone()
+                self.assertEqual(fact,('Build the fixture\nDetails','2025-01-01T00:00:00Z'))
+                self.assertEqual(conn.execute("SELECT title FROM sessions WHERE session_key='porch:run_brief'").fetchone()[0], 'Build the fixture')
+                self.assertEqual(conn.execute("SELECT count(*) FROM docs WHERE session_key='porch:run_brief' AND kind='prompt'").fetchone()[0],0)
+                graph=sessions_trace.trace_snapshot(conn,['porch:run_brief'],{'synced':True,'discovery_complete':True})
+                self.assertEqual(graph['nodes'][0]['task']['snippet'],'Build the fixture\nDetails')
+        with index.writer(self.directory) as conn:
+            index.replace_session(conn,{'session_key':'codex:worker','harness':'codex','native_id':'worker','store':'test','content_state':'ok'},
+                [{'kind':'prompt','origin':'delegated','text':contract+'Worker task','ts':'later','locator_json':'{}'}],[],[],[])
+            index.replace_session(conn,{'session_key':'porch:run_empty','harness':'porch','native_id':'run_empty','store':'runs','content_state':'ok'},[],[],[],
+                [{'type':'worker_session','target_key':'codex:worker','basis':'native'}])
+            graph=sessions_trace.trace_snapshot(conn,['porch:run_empty'],{'synced':True,'discovery_complete':True})
+            self.assertEqual(next(n for n in graph['nodes'] if n['key']=='porch:run_empty')['task']['snippet'],'Worker task')
+
+    def test_prefixed_native_title_uses_prompt_and_does_not_index_prefix_as_title(self):
+        contract=(Path(index.__file__).resolve().parents[2]/'prompts'/'delegate-executor.txt').read_text()
+        prefix=sessions.executor_prefix()
+        store=sessions.Store('codex','test',Path('/fixture'),'jsonl_dir')
+        prompt={'kind':'prompt','origin':'delegated','text':contract+'Implement a useful change\nMore detail',
+                'native_type':'event_msg.user_message','ts':'1','locator':{'file':'/fixture/one','line':2}}
+        ref=sessions.SessionRef('codex','test','one',title=prefix)
+        row,docs,aliases,edges=index.session_payload(store,ref,[prompt],{'/fixture/one':'revision'})
+        self.assertEqual(row['title'],'Implement a useful change')
+        self.assertEqual(next(d for d in docs if d['kind']=='title')['text'],'Implement a useful change')
+        with index.writer(self.directory) as conn:
+            index.replace_session(conn,row,docs,[],aliases,edges)
+            self.assertEqual(index.find_in_snapshot(conn,[prefix],kind='title')[0],[])
+            self.assertEqual(len(index.find_in_snapshot(conn,['useful change'],kind='title')[0]),1)
+        normal=sessions.SessionRef('codex','test','two',title='Ordinary title')
+        self.assertEqual(index.session_payload(store,normal,[prompt],{})[0]['title'],'Ordinary title')
+
+    def test_codex_state_prefix_title_uses_rollout_prompt(self):
+        root=Path(self.tmp.name)/'codex'; active=root/'sessions'; active.mkdir(parents=True)
+        sid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'; rollout=active/f'rollout-2025-01-01T00-00-00-{sid}.jsonl'
+        contract=(Path(index.__file__).resolve().parents[2]/'prompts'/'delegate-executor.txt').read_text()
+        records=[{'type':'session_meta','payload':{'id':sid}},
+                 {'type':'event_msg','payload':{'type':'user_message','message':contract+'Make a useful fix\nDetails'}}]
+        rollout.write_text(''.join(json.dumps(record)+'\n' for record in records))
+        db=root/'state_1.sqlite'
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.executescript('CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,rollout_path TEXT); CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT);')
+            conn.execute('INSERT INTO threads VALUES(?,?,?)',(sid,sessions.executor_prefix(),str(rollout)))
+        stores=[sessions.Store('codex','sessions',active,'jsonl_dir'),sessions.Store('codex','state:state_1.sqlite',db,'sqlite')]
+        with patch.object(sessions,'stores_for',return_value=stores), patch.object(sessions,'porch_workers',return_value=set()):
+            self.assertEqual(index.sync(self.directory,harnesses=['codex'])['codex']['extracted'],1)
+        with contextlib.closing(index.open_reader(self.directory)) as conn:
+            self.assertEqual(conn.execute('SELECT title FROM sessions').fetchone()[0],'Make a useful fix')
+            title,source=conn.execute("SELECT text,source_key FROM docs WHERE kind='title'").fetchone()
+            self.assertEqual(title,'Make a useful fix'); self.assertEqual(source,index.source_key(str(rollout)))
+            self.assertEqual(index.find_in_snapshot(conn,[sessions.executor_prefix()],kind='title')[0],[])
+
+    def test_derived_sqlite_title_links_to_its_prompt(self):
+        db=Path(self.tmp.name)/'opencode.db'
+        contract=(Path(index.__file__).resolve().parents[2]/'prompts'/'delegate-executor.txt').read_text()
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.executescript('''CREATE TABLE session_v2(id TEXT,title TEXT,time_updated INTEGER,time_busy INTEGER,time_idle INTEGER);
+                CREATE TABLE session_message(id TEXT,session_id TEXT,type TEXT,seq INTEGER,time_created INTEGER,time_updated INTEGER,data TEXT);
+                CREATE TABLE session_part(message_id TEXT,session_id TEXT,ordinal INTEGER,type TEXT,time_updated INTEGER,data TEXT);''')
+            conn.execute('INSERT INTO session_v2 VALUES(?,?,?,?,?)',('s',sessions.executor_prefix(),1,None,None))
+            conn.execute('INSERT INTO session_message VALUES(?,?,?,?,?,?,?)',('m','s','user',1,1,1,json.dumps({'text':contract+'Useful SQLite task'})))
+        store=sessions.Store('opencode','db',db,'sqlite')
+        with patch.object(sessions,'stores_for',side_effect=lambda h:[store] if h=='opencode' else []):
+            index.sync(self.directory,harnesses=['opencode'])
+            with contextlib.closing(index.open_reader(self.directory)) as conn:
+                found,_=index.find_in_snapshot(conn,['Useful SQLite task'],kind='title')
+            with patch.object(sessions,'emit') as emit:
+                index.cmd_show_at(argparse.Namespace(at=found[0]['evidence']['Useful SQLite task']['locator'],max_chars=0))
+                self.assertTrue(any('Useful SQLite task' in str(c.args[0].get('text','')) for c in emit.call_args_list))
+
+    def test_collection_evidence_is_hash_seed_independent(self):
+        with index.writer(self.directory) as conn:
+            for name,op,ts in [('a','wait','2025-01-01T02:00:00Z'),('b','read-final','2025-01-01T03:00:00Z')]:
+                key='claude-code:'+name
+                edge=[] if name=='a' else [{'type':'continuation','target_key':'claude-code:a'}]
+                fact={'kind':'porch_call','target':'run_x','ts':ts,'data':{'op':op,'result_ts':ts,'is_error':False}}
+                index.replace_session(conn,{'session_key':key,'harness':'claude-code','native_id':name,'store':'test',
+                                            'content_state':'ok','_facts':[fact]},[],[],[],edge)
+            index.replace_session(conn,{'session_key':'porch:run_x','harness':'porch','native_id':'run_x','store':'runs',
+                'content_state':'ok','status_json':json.dumps({'status':'completed','finished_at':'2025-01-01T01:00:00Z'})},[],[],[],
+                [{'type':'caller_run','target_key':'claude-code:a'}])
+        script='''import sys,json;sys.path.insert(0,sys.argv[1]);import sessions_index as i,sessions_trace as t,sessions_verdicts as v;from pathlib import Path
+c=i.open_reader(Path(sys.argv[2]));coverage={'synced':True,'discovery_complete':True};n,a,e,u=t._graph(c,coverage);engine=v.Verdicts(c,n,a,e,u,coverage,t._fact_pointer);print(json.dumps(engine.collection('porch:run_x'),sort_keys=True))'''
+        outputs=[]
+        for seed in ('1','987'):
+            result=subprocess.run([sys.executable,'-c',script,str(Path(index.__file__).parent),str(self.directory)],
+                                  env=dict(os.environ,PYTHONHASHSEED=seed),capture_output=True,text=True,check=True)
+            outputs.append(result.stdout)
+        self.assertEqual(outputs[0],outputs[1])
+        self.assertEqual(json.loads(outputs[0])['reason'],'waited')
+
+    def test_trace_compact_node_evidence_and_coverage_contract(self):
+        coverage={'synced':True,'complete':False,'discovery_complete':True,'next':'porch sessions index build',
+                  'codex':{'ok':4,'pending':0,'error':0,'offline':0,'unsupported':0},
+                  'devin':{'ok':2,'pending':1,'error':0,'offline':0,'unsupported':0}}
+        with index.writer(self.directory) as conn:
+            row={'session_key':'codex:one','harness':'codex','native_id':'one','store':'test','class':'interactive',
+                 'content_state':'ok','status_json':'{"custom": true}',
+                 '_facts':[{'kind':'last_turn','ts':'3','data':{'state':'aborted','final_ts':'2','abort_reason':'cancel'}},
+                           {'kind':'status_text','target':'plan_items','data':{'items':[{'text':'x'*250,'status':'pending'}]*8,'closed_by':'wrap_up'}},
+                           {'kind':'status_text','target':'wrap_up','short_text':'w'*200},
+                           {'kind':'status_text','target':'plan','short_text':'secret plan'}]}
+            doc={'kind':'prompt','origin':'human','ts':'1','text':'p'*200,'locator_json':'{}','source_key':'["/tmp/x"]','source_rev':'[]'}
+            index.replace_session(conn,row,[doc],[],[{'alias':'alias','kind':'test'}],[])
+            compact=sessions_trace.trace_snapshot(conn,['codex:one'],coverage)
+            node=compact['nodes'][0]
+            self.assertNotIn('last_prompt',node); self.assertNotIn('ref',node); self.assertNotIn('native_status',node)
+            self.assertEqual(set(node['task']),{'ts','snippet'}); self.assertEqual(len(node['task']['snippet']),160)
+            self.assertEqual(node['state'],{'last_turn':'aborted','ts':'3','abort_reason':'cancel'})
+            self.assertEqual(node['plan']['closed_by'],'wrap_up'); self.assertEqual(len(node['plan']['open']),5)
+            self.assertTrue(all(len(x)==80 for x in node['plan']['open']))
+            self.assertEqual(node['verdicts'][0]['reason'],'last turn interrupted after an answer')
+            self.assertNotIn('exit_plan',node); self.assertNotIn('codex',compact['_summary']['coverage'])
+            self.assertEqual(compact['_summary']['coverage']['totals']['pending'],1)
+            expanded=sessions_trace.trace_snapshot(conn,['codex:one'],coverage,evidence=True)['nodes'][0]
+            self.assertIn('alias',expanded['aliases']); self.assertIn('show',expanded['task'])
+            self.assertEqual(len(expanded['plan']['items']),8); self.assertIn('exit_plan',expanded)
+            second={**doc,'text':'second','ts':'2'}
+            index.replace_session(conn,row,[doc,second],[],[{'alias':'alias','kind':'test'}],[])
+            self.assertEqual(sessions_trace.trace_snapshot(conn,['codex:one'],coverage)['nodes'][0]['last_prompt']['snippet'],'second')
+            row['_facts'][0]['data']['final_ts'] = None
+            answer={**doc,'kind':'answer','text':'answer','ts':None}
+            index.replace_session(conn,row,[doc,answer],[],[],[])
+            self.assertEqual(sessions_trace.trace_snapshot(conn,['codex:one'],coverage)['nodes'][0]['verdicts'][0]['reason'],
+                             'last turn interrupted after an answer')
+
+    def test_collection_verdict_evidence_branches(self):
+        coverage={'synced':True,'discovery_complete':True,**{h:{'pending':0,'error':0,'offline':0,'unsupported':0} for h in index.UNIT_BUILDERS}}
+        finish='2025-01-01T01:00:00Z'; after='2025-01-01T02:00:00Z'; before='2025-01-01T00:00:00Z'
+        def call(op,target='run_a',ts=after,**kwargs):
+            return {'kind':'porch_call','target':target,'ts':ts,'locator':{'file':'/fixture/caller','line':1},
+                    'data':{'op':op,'call_ts':ts,'result_ts':ts,'is_error':False,**kwargs}}
+        with index.writer(self.directory) as conn:
+            def put(key,updated=after,status=None,facts=(),edges=(),aliases=(),state='ok',source_state='ok'):
+                h,n=key.split(':',1); source=index.source_key('/fixture/'+n)
+                conn.execute("INSERT OR REPLACE INTO sources(source_key,harness,store,kind,state) VALUES(?,?,?,'file',?)",(source,h,'test',source_state));conn.commit()
+                row={'session_key':key,'harness':h,'native_id':n,'store':'test','updated':updated,'class':'interactive',
+                     'status_json':json.dumps(status or {}),'content_state':state,'_facts':list(facts)}
+                index.replace_session(conn,row,[],[{'source_key':source,'role':'content','fingerprint':'[]'}],
+                    [{'alias':a,'kind':'test'} for a in aliases],list(edges))
+            def verdict():
+                nodes,aliases,edges,unresolved=sessions_trace._graph(conn,coverage)
+                engine=sessions_verdicts.Verdicts(conn,nodes,aliases,edges,unresolved,coverage,sessions_trace._fact_pointer,now=sessions.ts_epoch('2025-01-03T00:00:00Z'))
+                return engine.collection('porch:run_a')
+            put('claude-code:caller',aliases=['claude:caller'])
+            edge={'type':'caller_run','unresolved':'claude:caller','basis':'launcher'}
+            status={'status':'completed','finished_at':finish,'artifacts_dir':'/tmp/run-delegate-art'}
+            def run(facts=()): put('porch:run_a',status=status,edges=[edge],facts=facts)
+            run()
+            self.assertEqual(verdict()['reason'],'caller_continued_without_collecting')
+            put('claude-code:caller',facts=[call('delegate',detach=True)],aliases=['claude:caller'])
+            self.assertEqual(verdict()['reason'],'caller_continued_without_collecting')
+            put('claude-code:caller',updated=before,facts=[call('delegate',ts=before,detach=True)],aliases=['claude:caller'])
+            self.assertEqual(verdict()['reason'],'caller_stopped_before_finish')
+            for observation in (call('status',ts=before),call('events'),call('wait-any'),call('wait',quiet=True),call('wait',background=True)):
+                put('claude-code:caller',facts=[call('delegate',detach=True),observation],aliases=['claude:caller'])
+                self.assertEqual(verdict()['observed'],'unknown')
+            put('claude-code:caller',aliases=['claude:caller'])
+            coverage['claude-code']['pending'] = 1  # Another session in the same harness.
+            coverage['codex']['pending'] = 1
+            self.assertEqual(verdict()['reason'],'caller_continued_without_collecting')
+            coverage['claude-code']['walk_complete'] = False
+            self.assertEqual(verdict()['reason'],'caller content incomplete')
+            coverage['claude-code']['walk_complete'] = True
+            put('claude-code:caller',facts=[{'kind':'status_text','target':'wrap_up','ts':after,'data':None}],aliases=['claude:caller'])
+            self.assertEqual(verdict()['reason'],'caller_continued_without_collecting')
+            put('claude-code:caller',updated=before,aliases=['claude:caller'])
+            self.assertEqual(verdict()['reason'],'caller_stopped_before_finish')
+            for op,options,expected in [('wait',{},'waited'),('result',{},'waited'),('read-final',{'target':'run-delegate-art'},'read final.txt'),
+                                        ('delegate',{'detach':False},'foreground result'),
+                                        ('wait',{'background':True,'via':'background_output'},'waited via background output')]:
+                target=options.pop('target','run_a')
+                put('claude-code:caller',facts=[call(op,target,**options)],aliases=['claude:caller'])
+                self.assertEqual(verdict()['reason'],expected)
+            put('claude-code:caller',facts=[call('wait',result_locator={'file':'/fixture/caller','line':2})],aliases=['claude:caller'])
+            compact=sessions_trace.trace_snapshot(conn,['porch:run_a'],coverage)
+            expanded=sessions_trace.trace_snapshot(conn,['porch:run_a'],coverage,evidence=True)
+            compact_collection=next(n['collection'] for n in compact['nodes'] if n['key']=='porch:run_a')
+            expanded_collection=next(n['collection'] for n in expanded['nodes'] if n['key']=='porch:run_a')
+            self.assertEqual(len(compact_collection['evidence']),1)
+            self.assertEqual(len(expanded_collection['evidence']),2)
+            self.assertNotIn('show',compact_collection['evidence'][0])
+            self.assertEqual(json.loads(shlex.split(expanded_collection['evidence'][-1]['show'])[-1])['v'],1)
+            self.assertNotIn('porch sessions show --at',json.dumps(compact))
+            self.assertNotIn('"locator"',json.dumps(compact))
+            for item in (call('wait',quiet=True),call('wait-any'),call('events'),call('status'),
+                         call('wait',background=True),call('result',ts=before)):
+                put('claude-code:caller',facts=[item],aliases=['claude:caller'])
+                self.assertEqual(verdict()['observed'],'unknown')
+            for target in (None,'run_unrelated'):
+                put('claude-code:caller',facts=[call('read-final',target)],aliases=['claude:caller'])
+                self.assertEqual(verdict()['reason'],'unattributed read or wait after finish')
+            put('claude-code:caller',updated='2025-01-02T23:59:00Z',aliases=['claude:caller'])
+            self.assertEqual(verdict()['reason'],'caller still active')
+            put('claude-code:caller',aliases=['claude:caller'],state='unavailable')
+            self.assertEqual(verdict()['reason'],'caller content incomplete')
+            put('claude-code:caller',aliases=['claude:caller'],source_state='pending')
+            self.assertEqual(verdict()['reason'],'caller content incomplete')
+            put('claude-code:caller',aliases=['claude:caller'])
+            for collector,expected in [('claude:caller',None),('claude:else','another, unresolved session')]:
+                run([{'kind':'delivery','target':'run_a','ts':after,'locator':{'file':'/fixture/deliveries.jsonl','line':1},
+                      'data':{'via':'wait','format':'text','stdout':'pipe','collector':collector}}])
+                got=verdict(); self.assertEqual(got['reason'],'delivered via wait')
+                self.assertEqual(got['evidence'][0].get('collector'),expected)
+            put('codex:collector',aliases=['codex:other'])
+            run([{'kind':'delivery','target':'run_a','ts':after,'locator':{'file':'/fixture/deliveries.jsonl','line':1},
+                  'data':{'via':'foreground','format':'text','stdout':'pipe','collector':'codex:other'}}])
+            got=verdict(); self.assertEqual(got['reason'],'delivered via foreground')
+            self.assertEqual(got['evidence'][0]['collector'],'codex:collector')
+            run(); put('claude-code:next',facts=[call('wait')],edges=[{'type':'continuation','target_key':'claude-code:caller'}])
+            self.assertEqual(verdict()['reason'],'waited')
+            put('claude-code:next',edges=[{'type':'continuation','target_key':'claude-code:caller'}])
+            put('claude-code:fork',facts=[call('wait')],edges=[{'type':'fork','target_key':'claude-code:caller'}])
+            self.assertEqual(verdict()['reason'],'waited')
+            put('porch:run_a',status=status)
+            self.assertEqual(verdict()['reason'],'caller not resolved')
+            put('porch:parent',status={'status':'completed'})
+            put('porch:run_a',status=status,edges=[{'type':'caller_run','target_key':'porch:parent'}])
+            self.assertEqual(verdict()['reason'],'caller content incomplete')
+            put('porch:run_a',status={'status':'completed'})
+            self.assertEqual(verdict()['reason'],'run not finished')
+            put('porch:run_a',status={'status':'running'})
+            self.assertIsNone(verdict()['observed'])
+
+    def test_trace_verdicts_and_left_behind_filters(self):
+        coverage={'synced':True,'discovery_complete':True,**{h:{'pending':0,'error':0,'offline':0,'unsupported':0} for h in index.UNIT_BUILDERS}}
+        now=sessions.ts_epoch('2025-01-03T00:00:00Z')
+        with index.writer(self.directory) as conn:
+            def put(key,status,updated='2025-01-02T00:00:00Z',cls='headless',facts=(),edges=(),cwd='/project'):
+                h,n=key.split(':',1)
+                index.replace_session(conn,{'session_key':key,'harness':h,'native_id':n,'store':'test','class':cls,
+                    'class_basis':'executor-prefix' if cls=='headless' else None,
+                    'updated':updated,'cwd':cwd,'content_state':'ok','status_json':json.dumps(status),'_facts':list(facts)},[],[],[],list(edges))
+            put('claude-code:root',{},cls='interactive')
+            edge={'type':'caller_run','target_key':'claude-code:root','basis':'fixture'}
+            put('porch:running',{'status':'running'},edges=[edge])
+            put('porch:failed',{'status':'failed','exit_code':1},edges=[edge])
+            put('codex:open',{},facts=[{'kind':'last_turn','ts':'2025-01-02T00:00:00Z','data':{'state':'open'}}])
+            put('codex:live',{},updated='2025-01-02T23:59:00Z',facts=[{'kind':'last_turn','ts':'2025-01-02T23:59:00Z','data':{'state':'open'}}])
+            put('codex:aborted',{},facts=[{'kind':'last_turn','ts':'2025-01-02T00:00:00Z','data':{'state':'aborted','abort_reason':'cancel'}}])
+            put('codex:plan',{},facts=[{'kind':'status_text','target':'plan_items','data':{'items':[{'text':'todo','status':'pending'}]}}])
+            put('codex:other',{},cwd='/other',facts=[{'kind':'last_turn','data':{'state':'aborted'}}])
+            put('codex:old',{},updated='2024-01-01T00:00:00Z',facts=[{'kind':'last_turn','data':{'state':'aborted'}}])
+            put('claude-desktop:interrupted',{'interruptedAwaitingPerson':True},cls='interactive')
+            put('agy:existing',{},cls='interactive')
+            unrelated=index.source_key('/fixture/existing')
+            conn.execute("INSERT INTO sources(source_key,harness,store,kind,state) VALUES(?,'agy','conversations','file','pending')",(unrelated,))
+            conn.execute("INSERT INTO session_sources(session_key,source_key,role) VALUES('agy:existing',?,'content')",(unrelated,))
+            nodes,aliases,edges,unresolved=sessions_trace._graph(conn,coverage)
+            engine=sessions_verdicts.Verdicts(conn,nodes,aliases,edges,unresolved,coverage,sessions_trace._fact_pointer,now=now)
+            for key in ('porch:running','porch:failed','codex:open','codex:aborted','codex:plan'):
+                self.assertIn('unfinished',[v['kind'] for v in engine.verdicts(key)])
+            self.assertIn('active',[v['kind'] for v in engine.verdicts('codex:live')])
+            self.assertIn('unfinished',[v['kind'] for v in engine.verdicts('claude-desktop:interrupted')])
+            self.assertTrue(any(v['kind']=='orphaned' and v['observed'] is True for v in engine.verdicts('codex:open')))
+            coverage['agy']['pending']=1
+            self.assertTrue(any(v['kind']=='orphaned' and v['observed'] is True for v in engine.verdicts('codex:open')))
+            pending=index.source_key('/fixture/new')
+            conn.execute("INSERT INTO sources(source_key,harness,store,kind,state) VALUES(?,'porch','runs','file','pending')",(pending,))
+            engine._pending_cache.clear()
+            self.assertTrue(any(v['kind']=='orphaned' and v['observed']=='unknown' and 'first-time' in v['reason'] for v in engine.verdicts('codex:open')))
+            conn.execute("UPDATE sources SET state='error' WHERE source_key=?",(pending,))
+            engine._pending_cache.clear()
+            self.assertTrue(any(v['kind']=='orphaned' and v['observed']=='unknown' and 'first-time' in v['reason'] for v in engine.verdicts('codex:open')))
+            conn.execute('DELETE FROM sources WHERE source_key=?',(pending,))
+            engine._pending_cache.clear()
+            coverage['discovery_complete']=False
+            self.assertTrue(any(v['kind']=='orphaned' and v['observed']=='unknown' for v in engine.verdicts('codex:open')))
+            coverage['discovery_complete']=True
+            with patch.object(sessions,'iter_all_fragments',side_effect=AssertionError('raw scan')):
+                result=sessions_trace.trace_snapshot(conn,[],coverage,left_behind=True,since='7d',cwd='/project',now=now)
+            keys={n['key'] for n in result['nodes']}
+            self.assertIn('claude-code:root',keys); self.assertIn('porch:running',keys)
+            self.assertEqual(set(next(n for n in result['nodes'] if n['key']=='claude-code:root')),{'key','harness','title','updated'})
+            self.assertNotIn('codex:other',keys)
+            self.assertNotIn('codex:old',keys)
+            only_porch=sessions_trace.trace_snapshot(conn,[],coverage,left_behind=True,since='7d',harnesses=['porch'],now=now)
+            self.assertEqual(set(only_porch['_summary']['seeds']),{'porch:running','porch:failed'})
+            self.assertIn('unfinished',result['_summary']['verdicts'])
+
+    def test_left_behind_evaluates_each_candidate_once(self):
+        coverage={'synced':True,'discovery_complete':True,**{h:{'walk_complete':True} for h in index.UNIT_BUILDERS}}
+        with index.writer(self.directory) as conn:
+            index.replace_session(conn,{'session_key':'porch:run_x','harness':'porch','native_id':'run_x',
+                'store':'runs','class':'headless','updated':'2025-01-01T00:00:00Z','content_state':'ok',
+                'status_json':'{"status":"running"}'},[],[],[],[])
+            calls=[]; original=sessions_verdicts.Verdicts.verdicts
+            def counted(engine,key,collection=None):
+                calls.append(key); return original(engine,key,collection)
+            with patch.object(sessions_verdicts.Verdicts,'verdicts',counted):
+                sessions_trace.trace_snapshot(conn,[],coverage,left_behind=True,since='2024-01-01',now=sessions.ts_epoch('2025-01-02T00:00:00Z'))
+            self.assertEqual(calls,['porch:run_x'])
+
+    def test_trace_edges_alias_late_resolution_and_limits(self):
+        coverage={'discovery_complete':True, **{h:{'pending':0,'error':0,'offline':0} for h in index.UNIT_BUILDERS}}
+        def add(conn,key,edges=(),aliases=(),text=None):
+            harness,native=key.split(':',1)
+            row={'session_key':key,'harness':harness,'native_id':native,'store':'runs' if harness=='porch' else 'test',
+                 'created':'2026-01-01','status_json':'{}','content_state':'ok'}
+            docs=[{'kind':'prompt','origin':'human','text':text,'locator_json':'{}','source_key':'["/tmp/test"]','source_rev':'[]'}] if text else []
+            index.replace_session(conn,row,docs,[],[{'alias':a,'kind':'test'} for a in aliases],
+                                  [{'type':t,'target_key':target,'unresolved':unresolved,'basis':t,'locator':{'file':'fixture'}} for t,target,unresolved in edges])
+        with index.writer(self.directory) as conn:
+            # A child is committed before its target and resolves when queried later.
+            add(conn,'porch:run_1',[('caller_run',None,'claude:caller-key'),('worker_session','codex:worker',None)],text='x'*400)
+            add(conn,'porch:run_2',[('caller_run',None,'run:run_1'),('parent_run','porch:run_1',None)])
+            add(conn,'porch:run_3',[('continuation','porch:run_2',None)])
+            add(conn,'claude-code:caller',aliases=['claude:caller-key','claude-desktop:tab'])
+            add(conn,'codex:worker',[('subagent','codex:root',None),('fork','codex:root',None)])
+            add(conn,'codex:root',[('subagent','codex:worker',None)])
+            add(conn,'opencode:child',[('subagent','codex:worker',None)])
+            add(conn,'agy:child',[('subagent','opencode:child',None)])
+            add(conn,'claude-code:child',[('subagent','claude-code:caller',None),('spawned','claude-desktop:tab',None),
+                                           ('continuation','claude-code:caller',None)])
+            result=sessions_trace.trace_snapshot(conn,['claude-desktop:tab','run_2'],coverage,max_nodes=100)
+            self.assertTrue(all('locator' not in edge and 'show' not in edge for edge in result['edges']))
+            with_evidence=sessions_trace.trace_snapshot(conn,['claude-desktop:tab','run_2'],coverage,max_nodes=100,evidence=True)
+            self.assertTrue(all('locator' in edge or 'show' in edge for edge in with_evidence['edges']))
+            pairs={(e['from'],e['to'],e['type']) for e in result['edges']}
+            self.assertIn(('claude-code:caller','porch:run_1','caller_run'),pairs)
+            self.assertIn(('porch:run_1','codex:worker','worker_session'),pairs)
+            self.assertIn(('porch:run_1','porch:run_2','parent_run'),pairs)
+            self.assertIn(('porch:run_2','porch:run_3','continuation'),pairs)
+            self.assertIn(('codex:root','codex:worker','subagent'),pairs)
+            self.assertIn(('opencode:child','agy:child','subagent'),pairs)
+            self.assertEqual(result['_summary']['seeds'],['claude-code:caller','porch:run_2'])
+            self.assertLessEqual(len(next(n for n in result['nodes'] if n['key']=='porch:run_1')['task']['snippet']),300)
+            self.assertEqual(result['nodes'],sorted(result['nodes'],key=lambda n:(n.get('created') is None,n.get('created') or '',n['key'])))
+            limited=sessions_trace.trace_snapshot(conn,['claude-code:caller'],coverage,max_nodes=2)
+            self.assertGreater(limited['_summary']['truncated']['omitted_nodes'],0)
+            self.assertIn('--max-nodes',limited['_summary']['truncated']['next'])
+            shallow=sessions_trace.trace_snapshot(conn,['claude-code:caller'],coverage,depth=0)
+            self.assertEqual([n['key'] for n in shallow['nodes']],['claude-code:caller'])
+            self.assertGreater(shallow['_summary']['truncated']['omitted_nodes'],0)
+            self.assertIn('--depth 1',shallow['_summary']['truncated']['next'])
+            with self.assertRaisesRegex(index.SessionIndexError,'unknown session reference: absent'):
+                sessions_trace.trace_snapshot(conn,['claude-code:caller','absent'],coverage)
+
+    def test_trace_unresolved_reasons(self):
+        with index.writer(self.directory) as conn:
+            row={'session_key':'porch:r','harness':'porch','native_id':'r','store':'runs','content_state':'ok'}
+            edges=[{'type':'worker_session','target_key':key,'basis':'fixture'} for key in ('codex:absent','devin:absent','gemini:absent')]
+            index.replace_session(conn,row,[],[],[],edges)
+            coverage={'discovery_complete':True,'codex':{'pending':0,'error':0,'offline':0},'devin':{'pending':1,'error':0,'offline':0,'walk_complete':False}}
+            result=sessions_trace.trace_snapshot(conn,['r'],coverage)
+            reasons={e['target']:e['reason'] for e in result['unresolved']}
+            self.assertEqual(reasons['codex:absent'],'target not indexed; store walk complete')
+            self.assertEqual(reasons['devin:absent'],'target store incomplete (pending|error|offline)')
+            self.assertEqual(reasons['gemini:absent'],'target harness not indexed')
+
+    def test_orphan_parent_evidence_and_walk_completeness(self):
+        coverage={'synced':True,'discovery_complete':True,
+                  **{h:{'walk_complete':True,'pending':0,'error':0,'offline':0} for h in index.UNIT_BUILDERS}}
+        with index.writer(self.directory) as conn:
+            row={'session_key':'codex:child','harness':'codex','native_id':'child','store':'test',
+                 'class':'subagent','content_state':'ok'}
+            index.replace_session(conn,row,[],[],[],[{'type':'fork','target_key':'codex:missing','basis':'native',
+                                                       'locator':{'file':'/fixture','line':1}}])
+            def orphan():
+                nodes,aliases,edges,unresolved=sessions_trace._graph(conn,coverage)
+                engine=sessions_verdicts.Verdicts(conn,nodes,aliases,edges,unresolved,coverage,sessions_trace._fact_pointer)
+                return next(v for v in engine.verdicts('codex:child') if v['kind']=='orphaned')
+            self.assertEqual(orphan()['observed'],True)
+            self.assertEqual(orphan()['reason'],'caller/parent codex:missing not found; its store was walked completely')
+            coverage['codex']['walk_complete']=False
+            self.assertEqual(orphan()['observed'],'unknown')
+            self.assertEqual(orphan()['reason'],'unresolved parent: codex:missing')
+            index.replace_session(conn,{'session_key':'porch:unrecorded','harness':'porch','native_id':'unrecorded',
+                                        'store':'runs','class':'headless','content_state':'ok','status_json':'{}'},[],[],[],[])
+            nodes,aliases,edges,unresolved=sessions_trace._graph(conn,coverage)
+            engine=sessions_verdicts.Verdicts(conn,nodes,aliases,edges,unresolved,coverage,sessions_trace._fact_pointer)
+            self.assertTrue(any(v['reason']=='launcher not recorded' and v['observed']=='unknown'
+                                for v in engine.verdicts('porch:unrecorded')))
+
+    def test_orphan_requires_recorded_parent_or_delegated_worker_evidence(self):
+        coverage={'synced':True,'discovery_complete':True,**{h:{'walk_complete':True} for h in index.UNIT_BUILDERS}}
+        with index.writer(self.directory) as conn:
+            for name,cls,basis in [('script','headless','sdk'),('worker','headless','executor-prefix'),('child','subagent','thread_spawn')]:
+                index.replace_session(conn,{'session_key':'codex:'+name,'harness':'codex','native_id':name,
+                    'store':'test','class':cls,'class_basis':basis,'content_state':'ok'},[],[],[],[])
+            nodes,aliases,edges,unresolved=sessions_trace._graph(conn,coverage)
+            engine=sessions_verdicts.Verdicts(conn,nodes,aliases,edges,unresolved,coverage,sessions_trace._fact_pointer)
+            self.assertFalse(any(v['kind']=='orphaned' for v in engine.verdicts('codex:script')))
+            worker=next(v for v in engine.verdicts('codex:worker') if v['kind']=='orphaned')
+            self.assertTrue(worker['observed']); self.assertEqual(worker['reason'],'no porch run record references this worker')
+            child=next(v for v in engine.verdicts('codex:child') if v['kind']=='orphaned')
+            self.assertEqual(child['observed'],'unknown'); self.assertEqual(child['reason'],'parent not recorded by the harness')
+            coverage['porch']['walk_complete']=False
+            self.assertEqual(next(v for v in engine.verdicts('codex:worker') if v['kind']=='orphaned')['observed'],'unknown')
+            coverage['porch']['walk_complete']=True
+            index.replace_session(conn,{'session_key':'porch:run_x','harness':'porch','native_id':'run_x',
+                'store':'runs','class':'headless','content_state':'ok'},[],[],[],
+                [{'type':'worker_session','target_key':'codex:worker'}])
+            nodes,aliases,edges,unresolved=sessions_trace._graph(conn,coverage)
+            engine=sessions_verdicts.Verdicts(conn,nodes,aliases,edges,unresolved,coverage,sessions_trace._fact_pointer)
+            self.assertFalse(any(v['kind']=='orphaned' for v in engine.verdicts('codex:worker')))
+
+    def test_trace_alias_edges_merge_existing_nodes(self):
+        coverage={'discovery_complete':True}
+        with index.writer(self.directory) as conn:
+            for key in ('claude-code:cli','claude-desktop:tab'):
+                harness,native=key.split(':',1)
+                row={'session_key':key,'harness':harness,'native_id':native,'store':'test','content_state':'ok'}
+                edges=[{'type':'alias','target_key':'claude-code:cli','basis':'cliSessionId'}] if harness=='claude-desktop' else []
+                index.replace_session(conn,row,[],[],[],edges)
+            result=sessions_trace.trace_snapshot(conn,['claude-desktop:tab'],coverage)
+            self.assertEqual([n['key'] for n in result['nodes']],['claude-code:cli'])
+            self.assertNotIn('aliases',result['nodes'][0])
+            expanded=sessions_trace.trace_snapshot(conn,['claude-desktop:tab'],coverage,evidence=True)
+            self.assertIn('claude-desktop:tab',expanded['nodes'][0]['aliases'])
+            self.assertEqual(result['edges'],[])
+
+    def test_trace_cli_emits_one_document_and_busy_coverage(self):
+        with index.writer(self.directory) as conn:
+            index.replace_session(conn,{'session_key':'porch:r','harness':'porch','native_id':'r',
+                                        'store':'runs','content_state':'ok',
+                                        '_facts':[{'kind':'porch_call','short_text':'must-not-print'}]},[],[],[],[])
+        args=argparse.Namespace(refs=['r'],depth=None,max_nodes=200,deadline=0)
+        out=io.StringIO()
+        with patch.object(index,'index_dir',return_value=self.directory), \
+             patch.object(index,'sync',return_value={'synced':False,'reason':'another sync in progress'}), \
+             contextlib.redirect_stdout(out):
+            self.assertEqual(sessions_trace.cmd_trace(args),0)
+        lines=out.getvalue().splitlines()
+        self.assertEqual(len(lines),1)
+        data=json.loads(lines[0])
+        self.assertFalse(data['_summary']['coverage']['synced'])
+        self.assertFalse(data['_summary']['coverage']['stat_pass'])
+        self.assertEqual(data['_summary']['seeds'],['porch:r'])
+        self.assertNotIn('facts',data['nodes'][0])
+        self.assertNotIn('must-not-print',out.getvalue())
+        args.refs=['r','absent']
+        out=io.StringIO()
+        with patch.object(index,'index_dir',return_value=self.directory), \
+             patch.object(index,'sync',return_value={'synced':False,'reason':'another sync in progress'}), \
+             contextlib.redirect_stdout(out):
+            with self.assertRaisesRegex(index.SessionIndexError,'unknown session reference: absent'):
+                sessions_trace.cmd_trace(args)
+        self.assertEqual(out.getvalue(),'')
+        args.refs=['r']; args.left_behind=True
+        with self.assertRaisesRegex(ValueError,'supply REF or --left-behind'):
+            sessions_trace.cmd_trace(args)
+        out=io.StringIO()
+        with patch.object(index,'index_dir',return_value=self.directory), \
+             patch.object(index,'sync',return_value={'synced':False,'reason':'another sync in progress'}), \
+             patch.object(sys,'argv',['sessions','trace','--left-behind','--since','7d','--cwd','/project','-a','porch','--evidence']), \
+             contextlib.redirect_stdout(out):
+            self.assertEqual(sessions.main(),0)
+        self.assertIn('nodes',json.loads(out.getvalue()))
+
+    def test_trace_fact_lifecycle_and_unsearchable_tool_output(self):
+        root=Path(self.tmp.name)/'projects'; root.mkdir(); path=root/'one.jsonl'
+        def records(command=True):
+            data=[{'type':'user','timestamp':'2026-01-01T00:00:00Z','message':{'role':'user','content':'question'}}]
+            if command:
+                data += [{'type':'assistant','timestamp':'2026-01-01T00:00:01Z','message':{'role':'assistant','content':[{'type':'tool_use','id':'t','name':'Bash','input':{'command':'porch delegate wait run_test'}}]}},
+                         {'type':'user','timestamp':'2026-01-01T00:00:02Z','message':{'role':'user','content':[{'type':'tool_result','tool_use_id':'t','content':'secrettooloutput'}]}}]
+            return ''.join(json.dumps(x)+'\n' for x in data)
+        path.write_text(records())
+        store=sessions.Store('claude-code','projects',root,'jsonl_dir')
+        with patch.object(sessions,'stores_for',side_effect=lambda h:[store] if h=='claude-code' else []):
+            index.sync(self.directory,harnesses=['claude-code'])
+            with contextlib.closing(index.open_reader(self.directory)) as conn:
+                rows=conn.execute('SELECT kind,target,data FROM facts ORDER BY kind').fetchall()
+                self.assertEqual([r[0] for r in rows],['last_turn','porch_call'])
+                self.assertEqual(json.loads(rows[0][2])['state'],'open')
+                self.assertEqual(index.find_in_snapshot(conn,['secrettooloutput'])[0],[])
+                graph=sessions_trace.trace_snapshot(conn,['claude-code:one'],{'synced':True,'discovery_complete':True})
+                self.assertEqual(set(graph['nodes'][0]['task']), {'ts','snippet'})
+                graph=sessions_trace.trace_snapshot(conn,['claude-code:one'],{'synced':True,'discovery_complete':True},evidence=True)
+                show=graph['nodes'][0]['task']['show']
+            with patch.object(sessions,'emit') as emitted:
+                self.assertEqual(index.cmd_show_at(argparse.Namespace(at=shlex.split(show)[-1],max_chars=0)),0)
+                self.assertTrue(any(c.args[0].get('text')=='question' for c in emitted.call_args_list))
+            for invalid in ('z:abc', 'd:abc'):
+                with self.assertRaisesRegex(index.SessionIndexError, 'invalid locator'):
+                    index.cmd_show_at(argparse.Namespace(at=invalid,max_chars=0))
+            path.write_text(records(False))
+            self.assertEqual(index.sync(self.directory,harnesses=['claude-code'])['claude-code']['extracted'],1)
+            with contextlib.closing(index.open_reader(self.directory)) as conn:
+                self.assertEqual(conn.execute('SELECT kind FROM facts').fetchall(),[('last_turn',)])
+            with patch.dict(index.EXTRACTOR_VERSIONS,{'claude-code':'test-new'}):
+                self.assertEqual(index.sync(self.directory,harnesses=['claude-code'])['claude-code']['extracted'],1)
+            path.unlink(); index.sync(self.directory,harnesses=['claude-code'])
+            with contextlib.closing(index.open_reader(self.directory)) as conn:
+                self.assertEqual(conn.execute('SELECT count(*) FROM facts').fetchone(),(0,))
+
+    def test_existing_index_gains_facts_table(self):
+        with index.writer(self.directory) as conn:
+            conn.execute('DROP TABLE facts'); conn.commit()
+        with index.writer(self.directory) as conn:
+            self.assertTrue(sessions.table_exists(conn,'facts'))
+
+    def test_fact_replacement_rolls_back_with_documents(self):
+        row={'session_key':'agy:a','harness':'agy','native_id':'a','store':'test','content_state':'ok',
+             '_facts':[{'kind':'status_text','target':'plan','short_text':'old'}]}
+        with index.writer(self.directory) as conn:
+            index.replace_session(conn,row,[{'kind':'answer','text':'old'}],[],[],[])
+            row['_facts']=[{'kind':'status_text','target':'plan','short_text':'new'}]
+            with self.assertRaises(sqlite3.IntegrityError):
+                index.replace_session(conn,row,[{'kind':'invalid','text':'new'}],[],[],[])
+            self.assertEqual(conn.execute('SELECT short_text FROM facts').fetchall(),[('old',)])
+
+    def test_codex_rollout_trace_facts(self):
+        root=Path(self.tmp.name)/'codex'; active=root/'sessions'; active.mkdir(parents=True)
+        sid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+        path=active/f'rollout-2026-01-01T00-00-00-{sid}.jsonl'
+        records=[{'type':'session_meta','payload':{'id':sid}},
+                 {'type':'event_msg','timestamp':'2026-01-01T00:00:00Z','payload':{'type':'user_message','message':'question'}},
+                 {'type':'response_item','timestamp':'2026-01-01T00:00:01Z','payload':{'type':'function_call','name':'exec_command','call_id':'c1','arguments':json.dumps({'cmd':'porch delegate wait run_a'})}},
+                 {'type':'response_item','timestamp':'2026-01-01T00:00:02Z','payload':{'type':'function_call_output','call_id':'c1','output':'done'}},
+                 {'type':'response_item','timestamp':'2026-01-01T00:00:03Z','payload':{'type':'function_call','name':'update_plan','call_id':'c2','arguments':json.dumps({'plan':[{'step':'work','status':'in_progress'}]})}}]
+        path.write_text(''.join(json.dumps(r)+'\n' for r in records))
+        store=sessions.Store('codex','sessions',active,'jsonl_dir')
+        with patch.object(sessions,'stores_for',side_effect=lambda h:[store] if h=='codex' else []):
+            self.assertEqual(index.sync(self.directory,harnesses=['codex'])['codex']['extracted'],1)
+        with contextlib.closing(index.open_reader(self.directory)) as conn:
+            rows=conn.execute('SELECT kind,target,data FROM facts').fetchall()
+            self.assertTrue(any(k=='porch_call' and target=='run_a' and json.loads(data)['op']=='wait' for k,target,data in rows))
+            self.assertTrue(any(k=='status_text' and target=='plan_items' and json.loads(data)['items']==[{'text':'work','status':'in_progress'}] for k,target,data in rows))
+
     def test_missing_store_is_offline_then_complete_walk_deletes(self):
         root = Path(self.tmp.name) / 'projects'; root.mkdir()
         path = root / 'one.jsonl'
@@ -131,6 +858,7 @@ class IndexStorageTests(unittest.TestCase):
         with patch.object(sessions, 'stores_for', return_value=[]):
             result = index.sync(self.directory, harnesses=['claude-code'])
         self.assertFalse(result['complete'])
+        self.assertFalse(result['claude-code']['walk_complete'])
         self.assertEqual(result['claude-code']['deleted'], 0)
         with contextlib.closing(index.open_reader(self.directory)) as conn:
             self.assertEqual(conn.execute('SELECT count(*) FROM sessions').fetchone()[0], 1)
@@ -138,6 +866,7 @@ class IndexStorageTests(unittest.TestCase):
         with patch.object(sessions, 'stores_for', side_effect=lambda h: [store] if h == 'claude-code' else []):
             result = index.sync(self.directory, harnesses=['claude-code'])
         self.assertEqual(result['claude-code']['deleted'], 1)
+        self.assertTrue(result['claude-code']['walk_complete'])
 
     def test_file_snapshot_rejects_sqlite(self):
         path = Path(self.tmp.name) / 'source.db'
@@ -445,6 +1174,24 @@ class IndexStorageTests(unittest.TestCase):
             self.assertEqual(index.sync(self.directory,harnesses=['codex'])['codex']['extracted'], 1)
             with contextlib.closing(index.open_reader(self.directory)) as conn:
                 self.assertEqual(conn.execute('SELECT session_key FROM sessions').fetchall(), [('codex:'+sid,)])
+
+    def test_codex_top_level_parent_is_indexed_once(self):
+        root=Path(self.tmp.name)/'codex'; active=root/'sessions'; active.mkdir(parents=True)
+        sid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'; parent='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        path=active/f'rollout-2026-01-01T00-00-00-{sid}.jsonl'
+        path.write_text(json.dumps({'type':'session_meta','payload':{'id':sid,'parent_thread_id':parent,
+                       'source':{'subagent':{'other':{}}}}})+'\n')
+        db=root/'state_1.sqlite'
+        with contextlib.closing(sqlite3.connect(db)) as conn, conn:
+            conn.executescript('CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT); CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT);')
+            conn.execute('INSERT INTO threads VALUES(?,?)',(sid,str(path)))
+            conn.execute('INSERT INTO thread_spawn_edges VALUES(?,?)',(parent,sid))
+        stores=[sessions.Store('codex','sessions',active,'jsonl_dir'),sessions.Store('codex','state:state_1.sqlite',db,'sqlite')]
+        with patch.object(sessions,'stores_for',return_value=stores), patch.object(sessions,'porch_workers',return_value=set()):
+            index.sync(self.directory,harnesses=['codex'])
+        with contextlib.closing(index.open_reader(self.directory)) as conn:
+            self.assertEqual(conn.execute("SELECT type,target_key,basis FROM edges WHERE session_key=?",('codex:'+sid,)).fetchall(),
+                             [('subagent','codex:'+parent,'session_meta.parent_thread_id')])
 
     def test_failed_extraction_tracks_new_source_inside_store(self):
         root = Path(self.tmp.name) / 'projects'; root.mkdir()
@@ -777,12 +1524,13 @@ print(json.dumps(result))
             result = index.sync(self.directory)
             self.assertEqual(result['claude-code']['extracted'], 1)
             self.assertEqual(result['claude-code']['deleted'], 0)
+            self.assertFalse(result['claude-code']['walk_complete'])
             with contextlib.closing(index.open_reader(self.directory)) as conn:
                 self.assertEqual(conn.execute("SELECT text FROM docs WHERE session_key='claude-code:a' AND kind='prompt'").fetchone(), ('updated',))
                 self.assertEqual(conn.execute("SELECT state FROM sources WHERE store='two'").fetchone(), ('offline',))
                 self.assertEqual(conn.execute('SELECT count(*) FROM sessions').fetchone(), (2,))
             moved.rename(two)
-            index.sync(self.directory)
+            self.assertTrue(index.sync(self.directory)['claude-code']['walk_complete'])
             with contextlib.closing(index.open_reader(self.directory)) as conn:
                 self.assertEqual(conn.execute("SELECT state FROM sources WHERE store='two'").fetchone(), ('ok',))
 
@@ -1100,6 +1848,10 @@ index.sync(Path(sys.argv[2]),harnesses=['devin'])
             result = index.sync(self.directory,harnesses=['porch','claude-desktop'])
             self.assertEqual(result['porch']['extracted'],1)
             self.assertEqual(result['claude-desktop']['extracted'],1)
+            with contextlib.closing(index.open_reader(self.directory)) as conn:
+                status=json.loads(conn.execute("SELECT status_json FROM sessions WHERE session_key='porch:r'").fetchone()[0])
+                self.assertTrue({'status','exit_code','started_at','finished_at','artifacts_dir','backend','native_session_id','continued_from'} <= status.keys())
+                self.assertEqual(status['artifacts_dir'],str(artifacts))
             unchanged = index.sync(self.directory,harnesses=['porch','claude-desktop'])
             self.assertEqual(unchanged['porch']['extracted'] + unchanged['claude-desktop']['extracted'],0)
             (run / 'final.txt').write_text('saved answer')
@@ -1110,6 +1862,29 @@ index.sync(Path(sys.argv[2]),harnesses=['devin'])
             self.assertEqual(index.sync(self.directory,harnesses=['porch','claude-desktop'])['porch']['extracted'],1)
             with audit.open('a') as out: out.write(json.dumps({'type':'user','message':{'content':'second'}})+'\n')
             self.assertEqual(index.sync(self.directory,harnesses=['porch','claude-desktop'])['claude-desktop']['extracted'],1)
+
+    def test_porch_delivery_appears_and_is_bounded(self):
+        root=Path(self.tmp.name)/'runs'; run=root/'r'; run.mkdir(parents=True)
+        (run/'meta.json').write_text(json.dumps({'run_id':'r','status':'completed'}))
+        store=sessions.Store('porch','runs',root,'run_registry')
+        with patch.object(sessions,'stores_for',side_effect=lambda h:[store] if h=='porch' else []):
+            self.assertEqual(index.sync(self.directory,harnesses=['porch'])['porch']['extracted'],1)
+            delivery=run/'deliveries.jsonl'
+            entry={'ts':'2026-01-01T00:00:00Z','via':'wait','format':'text','stdout':'pipe','collector':None}
+            delivery.write_text((''.join(json.dumps(dict(entry,ts=str(i)))+'\n' for i in range(25)))+'broken\n')
+            self.assertEqual(index.sync(self.directory,harnesses=['porch'])['porch']['extracted'],1)
+            with contextlib.closing(index.open_reader(self.directory)) as conn:
+                facts=conn.execute("SELECT ts,target,data FROM facts WHERE kind='delivery' ORDER BY rowid").fetchall()
+                self.assertEqual(len(facts),20)
+                self.assertEqual((facts[0][0],facts[-1][0],facts[-1][1]),('5','24','r'))
+                self.assertEqual(json.loads(facts[-1][2]),{'via':'wait','format':'text','stdout':'pipe','collector':None})
+                status=json.loads(conn.execute("SELECT status_json FROM sessions WHERE session_key='porch:r'").fetchone()[0])
+                self.assertEqual((status['deliveries_count'],status['deliveries_malformed']),(25,1))
+            self.assertEqual(index.sync(self.directory,harnesses=['porch'])['porch']['extracted'],0)
+            with delivery.open('a') as handle: handle.write(json.dumps(dict(entry,ts='later'))+'\n')
+            self.assertEqual(index.sync(self.directory,harnesses=['porch'])['porch']['extracted'],1)
+            with contextlib.closing(index.open_reader(self.directory)) as conn:
+                self.assertEqual(json.loads(conn.execute("SELECT status_json FROM sessions WHERE session_key='porch:r'").fetchone()[0])['deliveries_count'],26)
 
     def test_porch_manifest_race_does_not_invalidate_other_runs(self):
         root = Path(self.tmp.name) / 'runs'
@@ -1478,7 +2253,7 @@ index.sync(Path(sys.argv[2]),harnesses=['devin'])
         with index.writer(self.directory) as conn:
             conn.execute("UPDATE meta SET value='999' WHERE key='schema_version'")
             conn.commit()
-        with self.assertRaisesRegex(index.SessionIndexError, 'unsupported session index schema'):
+        with self.assertRaisesRegex(index.SessionIndexError, 'porch sessions index drop then porch sessions index build'):
             with index.writer(self.directory):
                 pass
 

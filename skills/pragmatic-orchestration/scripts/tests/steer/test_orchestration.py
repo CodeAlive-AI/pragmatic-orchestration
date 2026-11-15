@@ -672,6 +672,9 @@ class OrchestrationTests(unittest.TestCase):
         # collector must still be the launch-time caller, not the run itself.
         self.assertEqual(rec["collector"], launcher_metadata(env)["launcher_instance"])
         self.assertEqual(rec["collector"], self.reg.load_meta(rid).get("launcher_instance"))
+        self.assertGreaterEqual(rec['ts'], self.reg.load_meta(rid)['finished_at'])
+        self.assertTrue(rec['ts'].endswith('Z'))
+        self.assertTrue(self.reg.load_meta(rid)['finished_at'].endswith('Z'))
 
     def test_detached_run_records_only_on_wait(self):
         p = self.cli("-a", "codex", "--detach", "DETACHED_TASK")

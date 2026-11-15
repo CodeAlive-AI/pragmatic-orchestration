@@ -473,6 +473,9 @@ Rules:
 
 - Pure read: sqlite opened `mode=ro` (never `immutable=1` on live dbs — WAL
   state matters), files only opened for reading, nothing written anywhere.
+- Store discovery follows directory symlinks (each real directory once, so
+  loops cannot recur); session ids stay relative to the store root, and a
+  store reporting `unreadable_dirs` skipped part of its tree.
 - `sessions` never prints record content beyond `--max-chars` per fragment;
   use `show --file`/`--around` deliberately rather than bulk-dumping whole
   histories — sessions may contain secrets pasted by the user.

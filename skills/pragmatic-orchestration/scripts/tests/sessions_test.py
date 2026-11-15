@@ -762,6 +762,75 @@ class CodexIndexTests(FixtureMixin, unittest.TestCase):
         self.assertTrue(out and all(f["kind"] == "metadata" or f["kind"] == "prompt" for f in out))
         self.assertIn("no local rollout", out[0]["basis"])
 
+    def _stale_state_store(self, rows):
+        """A state_*.sqlite whose threads rows point at missing rollout paths."""
+        home = self.root / "codex_home"
+        db = home / "state_9.sqlite"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, "
+                     "created_at TEXT, cwd TEXT, title TEXT)")
+        for sid, rollout in rows:
+            conn.execute("INSERT INTO threads VALUES (?,?,?,?,?)",
+                         (sid, rollout, "2026-01-02T00:00:00Z", "/w", sid))
+        conn.commit()
+        conn.close()
+        return home, sessions.Store("codex", "state:state_9.sqlite", db, "sqlite")
+
+    @staticmethod
+    def _rollout_records(sid, text):
+        return [
+            {"timestamp": "2026-01-02T00:00:00Z", "type": "session_meta",
+             "payload": {"id": sid, "cwd": "/w"}},
+            {"timestamp": "2026-01-02T00:00:01Z", "type": "event_msg",
+             "payload": {"type": "user_message", "turn_id": "t", "message": text}},
+        ]
+
+    @unittest.skipUnless(sys.version_info >= (3, 14), "stdlib Zstandard requires Python 3.14")
+    def test_stale_rollout_path_falls_back_to_zst_and_archived(self):
+        from compression import zstd
+        home = self.root / "codex_home"
+        sid_zst = "cccccccc-1111-2222-3333-444444444444"
+        sid_arch = "dddddddd-1111-2222-3333-444444444444"
+        packed_dir = home / "sessions" / "2026" / "01" / "02"
+        packed_dir.mkdir(parents=True)
+        name_zst = f"rollout-2026-01-02T00-00-00-{sid_zst}.jsonl"
+        (packed_dir / f"{name_zst}.zst").write_bytes(
+            zstd.compress("".join(json.dumps(r) + "\n"
+                                  for r in self._rollout_records(sid_zst, "packed sibling")).encode()))
+        name_arch = f"rollout-2026-01-03T00-00-00-{sid_arch}.jsonl"
+        arch = home / "archived_sessions"
+        arch.mkdir(parents=True)
+        (arch / f"{name_arch}.zst").write_bytes(
+            zstd.compress("".join(json.dumps(r) + "\n"
+                                  for r in self._rollout_records(sid_arch, "archived rollout")).encode()))
+        _home, store = self._stale_state_store([
+            (sid_zst, str(packed_dir / name_zst)),          # .jsonl gone, .jsonl.zst beside it
+            (sid_arch, str(home / "sessions" / "2026" / "01" / "03" / name_arch)),  # moved to archived
+        ])
+        refs = {r.session_id: r for r in sessions.codex_iter_sessions(store)}
+        stats: dict[str, int] = {}
+        out = list(sessions.codex_iter_fragments(store, refs[sid_zst], 400, stats))
+        self.assertTrue(any(f["text"] == "packed sibling" for f in out))
+        self.assertTrue(str(out[0]["locator"]["file"]).endswith(".jsonl.zst"))
+        out = list(sessions.codex_iter_fragments(store, refs[sid_arch], 400, stats))
+        self.assertTrue(any(f["text"] == "archived rollout" for f in out))
+        self.assertIn("archived_sessions", out[0]["locator"]["file"])
+
+    def test_stale_rollout_path_finds_archived_plain_rollout(self):
+        home = self.root / "codex_home"
+        sid = "eeeeeeee-1111-2222-3333-444444444444"
+        name = f"rollout-2026-01-04T00-00-00-{sid}.jsonl"
+        arch = home / "archived_sessions"
+        write_jsonl(arch / name, self._rollout_records(sid, "plain archived"))
+        _home, store = self._stale_state_store([
+            (sid, str(home / "sessions" / "2026" / "01" / "04" / name)),
+        ])
+        refs = {r.session_id: r for r in sessions.codex_iter_sessions(store)}
+        out = list(sessions.codex_iter_fragments(store, refs[sid], 400, {}))
+        self.assertTrue(any(f["text"] == "plain archived" for f in out))
+        self.assertIn("archived_sessions", out[0]["locator"]["file"])
+
     def test_grep_over_layered_stores_judges_each_rollout_once(self):
         home, sid, child = self.make()
         env = {"CODEX_HOME": str(home)}
@@ -1059,6 +1128,54 @@ class PorchRunTests(FixtureMixin, unittest.TestCase):
         out = list(sessions.porch_iter_fragments(store, refs[0], 400, stats))
         self.assertTrue(any(f["kind"] == "prompt" and f["authorship"] == "agent" for f in out))
         self.assertTrue(any(f["kind"] == "boundary" and f["status"] == "completed" for f in out))
+
+    def test_run_meta_fields_and_final_answer_fragment(self):
+        run = self.root / "runs" / "run_meta-1"
+        write_json(run / "meta.json",
+                   {"run_id": "run_meta-1", "agent_id": "codex", "backend": "codex-cli",
+                    "model": "gpt-6", "cwd": "/work/repo", "task": "answer me",
+                    "launched_at": "2026-01-10T00:00:00Z",
+                    "finished_at": "2026-01-10T00:05:00Z",
+                    "status": "completed", "exit_code": 0,
+                    "native_session_id": "native-top-1",
+                    "session_handle": {"thread_id": "native-handle-1"},
+                    "launcher": "codex", "launcher_instance": "run:parent-9",
+                    "continued_from": "run_prev-2"})
+        (run / "final.txt").write_text("the saved final answer\n", encoding="utf-8")
+        write_jsonl(run / "normalized" / "events.jsonl", [
+            {"type": "run_started", "ts": "2026-01-10T00:00:01Z", "agent": "codex"},
+            {"type": "end", "ts": "2026-01-10T00:05:00Z", "status": "completed"},
+        ])
+        store = sessions.Store("porch", "runs", self.root / "runs", "run_registry")
+        ref = list(sessions.porch_iter_sessions(store))[0]
+        # top-level native_session_id wins over session_handle.thread_id
+        self.assertEqual(ref.extra["native_session"], "native-top-1")
+        self.assertEqual(ref.extra["launcher"], "codex")
+        self.assertEqual(ref.extra["launcher_instance"], "run:parent-9")
+        self.assertEqual(ref.extra["continued_from"], "run_prev-2")
+        self.assertEqual(ref.extra["exit_code"], 0)
+        self.assertEqual(ref.extra["status"], "completed")
+        self.assertEqual(ref.extra["finished_at"], "2026-01-10T00:05:00Z")
+        out = list(sessions.porch_iter_fragments(store, ref, 400, {}))
+        finals = [f for f in out if f.get("native_type") == "final.txt"]
+        self.assertEqual(len(finals), 1)
+        final = finals[0]
+        self.assertEqual(final["kind"], "assistant")
+        self.assertEqual(final["authorship"], "agent")
+        self.assertEqual(final["text"], "the saved final answer\n")
+        self.assertEqual(final["locator"]["file"], str(run / "final.txt"))
+        self.assertIn("final answer", final["basis"])
+        # emitted after the run's other fragments
+        self.assertEqual(out[-1]["native_type"], "final.txt")
+
+    def test_native_session_falls_back_to_session_handle(self):
+        run = self.root / "runs" / "run_handle-1"
+        write_json(run / "meta.json",
+                   {"run_id": "run_handle-1", "task": "t",
+                    "session_handle": {"thread_id": "handle-only"}})
+        store = sessions.Store("porch", "runs", self.root / "runs", "run_registry")
+        ref = list(sessions.porch_iter_sessions(store))[0]
+        self.assertEqual(ref.extra["native_session"], "handle-only")
 
 
 class EnrichmentTests(FixtureMixin, unittest.TestCase):
@@ -2093,6 +2210,135 @@ class GrepPrefilterTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(len(full), 3)
         exact = [r.as_dict() for r in sessions.iter_all_sessions(store, "/repo/1", None, None, cwd_exact=True)]
         self.assertEqual(exact, full)
+
+
+class SymlinkTraversalTests(FixtureMixin, unittest.TestCase):
+    """Discovery follows directory symlinks once; cycles cannot recur."""
+
+    def setUp(self):
+        super().setUp()
+        self.env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
+
+    def run_cli(self, *args, env_extra=None):
+        env = dict(self.env)
+        env.update(env_extra or {})
+        return subprocess.run([sys.executable, str(LIB / "sessions.py"), *args],
+                              capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
+
+    def make_claude_store(self):
+        archive = self.root / "archive"
+        proj = archive / "-Users-x-proj"
+        sid1 = "11111111-1111-4111-8111-111111111111"
+        write_jsonl(proj / f"{sid1}.jsonl", [
+            {"type": "user", "timestamp": "2026-01-01T00:00:00Z", "cwd": "/x",
+             "sessionId": sid1, "message": {"role": "user", "content": "real session"}},
+        ])
+        write_jsonl(proj / "subagents" / "agent-a1.jsonl", [
+            {"type": "user", "timestamp": "2026-01-01T00:01:00Z",
+             "message": {"role": "user", "content": "subagent task"}},
+        ])
+        # a cycle inside the archive dir: points back at the store root
+        os.symlink(self.root / "projects", proj / "loop")
+        other = archive / "-Users-y-other"
+        sid2 = "22222222-2222-4222-8222-222222222222"
+        write_jsonl(other / f"{sid2}.jsonl", [
+            {"type": "user", "timestamp": "2026-01-02T00:00:00Z", "cwd": "/y",
+             "sessionId": sid2, "message": {"role": "user", "content": "linked file"}},
+        ])
+        projects = self.root / "projects"
+        projects.mkdir()
+        os.symlink(proj, projects / "-Users-x-proj")       # project bucket is a dir link
+        (projects / "-Users-y-other").mkdir()
+        os.symlink(other / f"{sid2}.jsonl",
+                   projects / "-Users-y-other" / f"{sid2}.jsonl")  # session file is a file link
+        os.symlink(projects, projects / "back")           # link to the store root itself
+        return projects, [f"-Users-x-proj/{sid1}",
+                          "-Users-x-proj/subagents/agent-a1",
+                          f"-Users-y-other/{sid2}"]
+
+    def test_claude_code_store_follows_links_once(self):
+        projects, expected = self.make_claude_store()
+        store = sessions.Store("claude-code", "projects", projects, "jsonl_dir")
+        refs = list(sessions.claude_iter_sessions(store))
+        ids = [r.session_id for r in refs]
+        self.assertEqual(sorted(ids), sorted(expected))
+        self.assertEqual(len(ids), len(set(ids)))  # every session exactly once
+        # ids are computed from the walked path under the store root
+        self.assertTrue(all(not r.session_id.startswith(str(self.root / "archive")) for r in refs))
+        # the same set through the list path (iter_all_sessions)
+        listed = [r.session_id for r in sessions.iter_all_sessions(store, None, None, None)]
+        self.assertEqual(sorted(listed), sorted(expected))
+
+    def test_claude_code_list_cli_sees_linked_sessions(self):
+        projects, expected = self.make_claude_store()
+        proc = self.run_cli("list", "-a", "claude-code", "--limit", "0",
+                            env_extra={"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(projects)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        rows = [json.loads(l) for l in proc.stdout.splitlines() if l.strip()]
+        ids = [r["session_id"] for r in rows if not r.get("_summary")]
+        self.assertEqual(sorted(ids), sorted(expected))
+        self.assertTrue(rows[-1]["scan_complete"])
+
+    def make_codex_store(self):
+        home = self.root / "codex_home"
+        sid = "33333333-3333-4333-8333-333333333333"
+        archive_day = self.root / "archive" / "2026" / "11" / "15"
+        write_jsonl(archive_day / f"rollout-2026-11-15T00-00-00-{sid}.jsonl", [
+            {"timestamp": "2026-11-15T00:00:00Z", "type": "session_meta",
+             "payload": {"id": sid, "cwd": "/z"}},
+            {"timestamp": "2026-11-15T00:00:01Z", "type": "event_msg",
+             "payload": {"type": "user_message", "turn_id": "t", "message": "via day link"}},
+        ])
+        # a cycle inside the linked day dir: points back at the sessions root
+        os.symlink(home / "sessions", archive_day / "back")
+        day = home / "sessions" / "2026" / "11" / "15"
+        day.parent.mkdir(parents=True)
+        os.symlink(archive_day, day)
+        return home / "sessions", sid
+
+    def test_codex_store_follows_linked_day_dir(self):
+        root, sid = self.make_codex_store()
+        store = sessions.Store("codex", "sessions", root, "jsonl_dir")
+        refs = list(sessions.codex_iter_sessions(store))
+        self.assertEqual([r.session_id for r in refs], [sid])
+        stats: dict[str, int] = {}
+        out = list(sessions.codex_iter_fragments(store, refs[0], 400, stats))
+        self.assertTrue(any(f["kind"] == "prompt" and f["text"] == "via day link" for f in out))
+
+
+class TurnContractTests(unittest.TestCase):
+    """The shared turn contract: fallback rule and delegated-brief signature."""
+
+    def test_fallback_turns(self):
+        def p(text, origin=None, ts=None):
+            f = {"kind": "prompt", "text": text, "ts": ts}
+            if origin:
+                f["origin"] = origin
+            return f
+        a = lambda text: {"kind": "assistant", "text": text}  # noqa: E731
+        frags = [
+            p("first", "human"), a("thinking aloud"), {"kind": "tool_call", "text": "x"}, a("answer one"),
+            p("<system-reminder>", "injected"), a("after reminder"),
+            p("second"), {"kind": "tool_result", "text": "y"},
+            p("third", "delegated"), a(""),
+        ]
+        ref = sessions.SessionRef("grok", "s", "id")
+        turns = sessions.turns_fallback(ref, frags)
+        self.assertEqual([t["prompts"][0]["text"] for t in turns], ["first", "second", "third"])
+        # an injected prompt does not split a turn; the last assistant text wins
+        self.assertEqual(turns[0]["final"]["text"], "after reminder")
+        self.assertEqual(turns[0]["final_basis"], "fallback")
+        self.assertIsNone(turns[1]["final"])
+        self.assertFalse(turns[1]["open"])  # followed by another prompt: closed without an answer
+        self.assertIsNone(turns[2]["final"])
+        self.assertTrue(turns[2]["open"])
+
+    def test_delegated_brief_signature(self):
+        prefix = sessions.executor_prefix()
+        self.assertTrue(prefix)
+        self.assertTrue(sessions.is_delegated_brief("\n" + prefix + "\n\nDo the task."))
+        self.assertFalse(sessions.is_delegated_brief("Please do the task. " + prefix))
+        self.assertFalse(sessions.is_delegated_brief(None))
 
 
 if __name__ == "__main__":

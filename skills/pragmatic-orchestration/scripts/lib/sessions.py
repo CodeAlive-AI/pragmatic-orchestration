@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import ctypes
+import fnmatch
 import json
 import os
 import re
@@ -460,6 +461,87 @@ def _steer_root() -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME", HOME / ".cache")) / "pragmatic-orchestration" / "steer"
 
 
+def _walk(root: Path, pattern: str, stats: dict[str, int] | None = None) -> Iterator[Path]:
+    """root.rglob(pattern) that follows directory symlinks, each real dir once.
+
+    Path.rglob does not descend into symlinked directories; several history
+    stores keep project folders as links into an archive volume, so session
+    discovery must follow them. Every directory is tracked by (st_dev,
+    st_ino): a symlink loop or two links to one directory are walked once,
+    under the alphabetically first link name for determinism. Matching runs
+    on the walked path under root — never the resolved target — so session
+    ids keep their store-relative form, and symlinked files match like real
+    ones. Like rglob, directories whose own name matches are yielded too.
+    A link to a real directory also under root is always pruned — the real
+    path reports those files, keeping ids identical to what rglob saw.
+    Unreadable directories are skipped and counted in
+    stats['unreadable_dirs'].
+    """
+    parts = tuple(p for p in pattern.split("/") if p not in ("", "."))
+    if not parts:
+        return
+    froot = os.fspath(root)
+    if not os.path.isdir(froot):
+        return  # rglob on a missing root yields nothing, silently
+    depth = len(parts)
+
+    def _tail_match(rel_parts: tuple[str, ...]) -> bool:
+        # rglob(pattern) is glob("**/" + pattern): the pattern's components
+        # match the tail of the relative path at any depth.
+        if len(rel_parts) < depth:
+            return False
+        return all(fnmatch.fnmatch(name, pat) for name, pat in zip(rel_parts[-depth:], parts))
+
+    def _dir_key(dirpath: str) -> tuple[int, int] | None:
+        try:
+            st = os.stat(dirpath)
+        except OSError:
+            return None
+        return (st.st_dev, st.st_ino)
+
+    visited: set[tuple[int, int]] = set()
+    root_key = _dir_key(froot)
+    if root_key is not None:
+        visited.add(root_key)
+
+    # Inodes of real directories reachable without crossing a link: a
+    # symlink to one is pruned so ids stay on the real path rglob used.
+    real_keys: set[tuple[int, int]] = set()
+    for dirpath, _dirs, _files in os.walk(froot, followlinks=False):
+        key = _dir_key(dirpath)
+        if key is not None:
+            real_keys.add(key)
+
+    def _onerror(_exc: OSError) -> None:
+        if stats is not None:
+            stats["unreadable_dirs"] = stats.get("unreadable_dirs", 0) + 1
+
+    for dirpath, dirnames, filenames in os.walk(froot, followlinks=True, onerror=_onerror):
+        dirnames.sort()
+        rel = Path(dirpath).relative_to(root).parts
+        # Entries are matched before pruning so a deduplicated link still
+        # yields its own path, exactly as rglob lists it without descending.
+        dir_matches = [name for name in dirnames if _tail_match(rel + (name,))]
+        kept = []
+        for name in dirnames:
+            full = os.path.join(dirpath, name)
+            key = _dir_key(full)
+            if key is not None and key in visited:
+                continue
+            if (key is not None and key in real_keys
+                    and os.path.islink(full)):
+                continue
+            if key is not None:
+                visited.add(key)
+            kept.append(name)
+        dirnames[:] = kept
+        for name in filenames:
+            if _tail_match(rel + (name,)):
+                yield Path(dirpath) / name
+        for name in dir_matches:
+            yield Path(dirpath) / name
+
+
 class Store:
     """One physical history store a reader knows about."""
 
@@ -470,9 +552,10 @@ class Store:
         self.kind = kind  # jsonl_dir | session_dirs | sqlite | json_dir | run_registry
         self.status = "ok" if path.exists() else "missing"
         self.error: str | None = None
+        self.walk_stats: dict[str, int] = {}  # _walk diagnostics (unreadable_dirs)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "harness": self.harness,
             "store": self.name,
             "path": str(self.path),
@@ -481,6 +564,9 @@ class Store:
             "error": self.error,
             "evidence": HARNESS_EVIDENCE.get(self.harness, "spec"),
         }
+        if self.walk_stats.get("unreadable_dirs"):
+            out["unreadable_dirs"] = self.walk_stats["unreadable_dirs"]
+        return out
 
 
 def stores_for(harness: str) -> list[Store]:
@@ -642,11 +728,102 @@ class SessionRef:
 
 
 # ---------------------------------------------------------------------------
+# Extraction contract shared by readers and the session index
+# ---------------------------------------------------------------------------
+# Readers add what they know, so raw listings only gain fields:
+# - SessionRef.extra keys: native_id, surface, session_class, class_basis,
+#   edges, status, sources.
+# - prompt fragments: origin (one of ORIGINS) and origin_basis.
+# - assistant fragments: native (the format's own evidence, e.g. stop_reason).
+# Record readers stay per-record (RawPrefilter feeds them candidate lines);
+# logic that needs neighbouring records lives in TURN_RULES.
+
+ORIGINS = ("human", "delegated", "injected", "unknown")
+SESSION_CLASSES = ("interactive", "headless", "subagent", "unknown")
+EDGE_TYPES = ("subagent", "fork", "continuation", "spawned", "caller_run",
+              "worker_session", "parent_run", "alias")
+
+_EXECUTOR_PREFIX: str | None = None
+
+
+def executor_prefix() -> str:
+    """First non-empty line of the delegate executor contract.
+
+    `porch delegate` puts prompts/delegate-executor.txt in front of every new
+    task, so a prompt starting with this line is a delegated brief.
+    """
+    global _EXECUTOR_PREFIX
+    if _EXECUTOR_PREFIX is None:
+        path = Path(__file__).resolve().parents[2] / "prompts" / "delegate-executor.txt"
+        _EXECUTOR_PREFIX = ""
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    _EXECUTOR_PREFIX = line.strip()
+                    break
+        except OSError:
+            pass
+    return _EXECUTOR_PREFIX
+
+
+def is_delegated_brief(text: Any) -> bool:
+    prefix = executor_prefix()
+    return bool(prefix) and isinstance(text, str) and text.lstrip().startswith(prefix)
+
+
+TurnRule = Callable[["SessionRef", list[dict[str, Any]]], list[dict[str, Any]]]
+TURN_RULES: dict[str, TurnRule] = {}
+
+
+def turns_fallback(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Turns for a harness without native final-answer evidence.
+
+    A turn starts at a prompt that is not injected; its final answer is the
+    last non-empty assistant text before the next such prompt. The last turn
+    without any assistant text is open.
+    """
+    turns: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    def close(turn: dict[str, Any], last: bool) -> dict[str, Any]:
+        final = turn.pop("_last")
+        turn["final"] = final
+        turn["final_basis"] = "fallback" if final is not None else "none"
+        turn["open"] = last and final is None
+        return turn
+
+    for frag in fragments:
+        kind = frag.get("kind")
+        if kind == "prompt" and frag.get("origin", "unknown") != "injected":
+            if current is not None:
+                turns.append(close(current, last=False))
+            current = {"prompts": [frag], "_last": None, "ts_start": frag.get("ts"), "ts_end": frag.get("ts")}
+        elif current is not None and kind == "assistant":
+            text = frag.get("text")
+            if isinstance(text, str) and text.strip():
+                current["_last"] = frag
+                current["ts_end"] = frag.get("ts") or current["ts_end"]
+    if current is not None:
+        turns.append(close(current, last=True))
+    return turns
+
+
+def interpret_session(store: Store, ref: SessionRef, fragments: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group a full session's fragments into turns with their final answers.
+
+    Each turn: {"prompts", "final", "final_basis" ("native:<marker>" |
+    "fallback" | "none"), "open", "ts_start", "ts_end"}.
+    """
+    rule = TURN_RULES.get(store.harness, turns_fallback)
+    return rule(ref, list(fragments))
+
+
+# ---------------------------------------------------------------------------
 # claude-code
 # ---------------------------------------------------------------------------
 
 def claude_iter_sessions(store: Store) -> Iterator[SessionRef]:
-    for path in sorted(store.path.rglob("*.jsonl")):
+    for path in sorted(_walk(store.path, "*.jsonl", store.walk_stats)):
         yield _claude_session_ref(store, path)
 
 
@@ -710,7 +887,7 @@ def _claude_head_cwd(path: Path) -> str | None:
 
 
 def _claude_light_sessions(store: Store, need_cwd: bool) -> Iterator[SessionRef]:
-    for path in sorted(store.path.rglob("*.jsonl")):
+    for path in sorted(_walk(store.path, "*.jsonl", store.walk_stats)):
         ref = _claude_session_ref(store, path, light=True)
         if need_cwd:
             ref.cwd = _claude_head_cwd(path)
@@ -847,7 +1024,8 @@ def codex_iter_sessions(store: Store) -> Iterator[SessionRef]:
     if store.name == "history":
         yield from _codex_history_sessions(store)
         return
-    paths = sorted(store.path.rglob("rollout-*.jsonl")) + sorted(store.path.rglob("rollout-*.jsonl.zst"))
+    paths = (sorted(_walk(store.path, "rollout-*.jsonl", store.walk_stats))
+             + sorted(_walk(store.path, "rollout-*.jsonl.zst", store.walk_stats)))
     for path in paths:
         if path.name.endswith(".zst") and path.with_suffix("").exists():
             continue  # the uncompressed rollout is the canonical copy
@@ -1038,7 +1216,7 @@ def _rollout_index(codex_home: Path) -> list[tuple[dict[str, Path], dict[str, Pa
             if base.is_dir():
                 for pattern, suffix, index in (("rollout-*.jsonl", ".jsonl", plain),
                                                ("rollout-*.jsonl.zst", ".jsonl.zst", packed)):
-                    for path in base.rglob(pattern):
+                    for path in _walk(base, pattern):
                         core = path.name[len("rollout-"):-len(suffix)]
                         for pos, char in enumerate(core):
                             if char == "-":
@@ -1057,14 +1235,50 @@ def _find_codex_rollout(thread_id: str) -> Path | None:
     return None
 
 
+def _codex_rollout_fallbacks(stored: str) -> Iterator[Path]:
+    """Candidate locations for a state row's stale rollout_path, in order.
+
+    First the same path with the other compression (.jsonl.zst rollouts are
+    compressed in place), then the same basename — either compression — under
+    archived_sessions, which is flat on disk. The archived root is the
+    sibling of the 'sessions' component in the stored path when there is
+    one, plus CODEX_HOME's. The caller's index lookup stays the last resort.
+    """
+    p = Path(stored)
+    if p.name.endswith(".zst"):
+        yield p.with_name(p.name[:-4])
+    else:
+        yield p.with_name(p.name + ".zst")
+    names = [p.name, p.name[:-4] if p.name.endswith(".zst") else p.name + ".zst"]
+    seen: set[Path] = set()
+    for parent in p.parents:
+        if parent.name == "sessions":
+            root = parent.parent / "archived_sessions"
+            if root not in seen:
+                seen.add(root)
+                for name in names:
+                    yield root / name
+            break
+    root = Path(os.environ.get("CODEX_HOME") or (HOME / ".codex")) / "archived_sessions"
+    if root not in seen:
+        for name in names:
+            yield root / name
+
+
 def _codex_rollout_for(ref: SessionRef) -> str | None:
     """The rollout file codex_iter_fragments reads for a non-history ref, or None for a db-only thread."""
     file = ref.locator.get("file")
     if file:
         return file
     rollout = ref.extra.get("rollout_path")
-    if not rollout or not Path(rollout).exists():
-        rollout = _find_codex_rollout(ref.session_id)
+    if rollout:
+        path = Path(rollout)
+        if path.exists():
+            return str(path)
+        for cand in _codex_rollout_fallbacks(rollout):
+            if cand.exists():
+                return str(cand)
+    rollout = _find_codex_rollout(ref.session_id)
     if rollout and Path(rollout).exists():
         return str(rollout)
     return None
@@ -1605,7 +1819,7 @@ def gemini_iter_sessions(store: Store) -> Iterator[SessionRef]:
         store.status = "ok" if store.path.exists() else "missing"
         return
     slug2cwd = _gemini_projects_map(store.path.parent)
-    for path in sorted(store.path.rglob("chats/session-*.json")):
+    for path in sorted(_walk(store.path, "chats/session-*.json", store.walk_stats)):
         proj_hash = path.relative_to(store.path).parts[0]
         data = read_json(path)
         if not isinstance(data, dict):
@@ -1690,7 +1904,7 @@ def claude_desktop_iter_sessions(store: Store) -> Iterator[SessionRef]:
     if not store.path.is_dir():
         store.status = "missing"
         return
-    for meta_path in sorted(store.path.rglob("local_*.json")):
+    for meta_path in sorted(_walk(store.path, "local_*.json", store.walk_stats)):
         data = read_json(meta_path)
         if not isinstance(data, dict):
             continue
@@ -1739,7 +1953,7 @@ def _claude_transcript(cli_sid: str) -> Path | None:
         return None
     if root not in _CLAUDE_TRANSCRIPTS:
         index: dict[str, Path] = {}
-        for path in root.rglob("*.jsonl"):
+        for path in _walk(root, "*.jsonl"):
             index.setdefault(path.name, path)
         _CLAUDE_TRANSCRIPTS[root] = index
     return _CLAUDE_TRANSCRIPTS[root].get(f"{cli_sid}.jsonl")
@@ -2124,7 +2338,7 @@ def qwen_iter_sessions(store: Store) -> Iterator[SessionRef]:
     if not store.path.is_dir():
         store.status = "missing"
         return
-    for path in sorted(store.path.rglob("*.jsonl")):
+    for path in sorted(_walk(store.path, "*.jsonl", store.walk_stats)):
         rel = path.relative_to(store.path).as_posix()
         stats: dict[str, int] = {}
         first_ts = last_ts = cwd = sid = None
@@ -2238,7 +2452,7 @@ def kimi_iter_sessions(store: Store) -> Iterator[SessionRef]:
     for _ln, rec in iter_jsonl(store.path.parent / "session_index.jsonl", {}):
         if rec.get("sessionId") and rec.get("workDir"):
             index[str(rec["sessionId"])] = rec["workDir"]
-    for state_path in sorted(store.path.rglob("state.json")):
+    for state_path in sorted(_walk(store.path, "state.json", store.walk_stats)):
         state = read_json(state_path)
         sess_dir = state_path.parent
         sid = sess_dir.name
@@ -2344,7 +2558,7 @@ def omp_iter_sessions(store: Store) -> Iterator[SessionRef]:
     if not store.path.is_dir():
         store.status = "missing"
         return
-    for path in sorted(store.path.rglob("*.jsonl")):
+    for path in sorted(_walk(store.path, "*.jsonl", store.walk_stats)):
         stats: dict[str, int] = {}
         first_ts = last_ts = cwd = title = sid = None
         models: list[str] = []
@@ -2463,7 +2677,12 @@ def porch_iter_sessions(store: Store) -> Iterator[SessionRef]:
             extra={
                 "agent_id": meta.get("agent_id"), "backend": meta.get("backend"),
                 "effort": meta.get("effort"), "status": meta.get("status"),
-                "native_session": handle.get("thread_id"),
+                "native_session": meta.get("native_session_id") or handle.get("thread_id"),
+                "launcher": meta.get("launcher"),
+                "launcher_instance": meta.get("launcher_instance"),
+                "continued_from": meta.get("continued_from"),
+                "exit_code": meta.get("exit_code"),
+                "finished_at": meta.get("finished_at"),
             },
         )
 
@@ -2472,11 +2691,12 @@ def porch_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
     run_dir = Path(ref.locator["dir"])
     norm_dir = run_dir / "normalized"
     files = sorted(norm_dir.glob("*.jsonl")) if norm_dir.is_dir() else sorted(run_dir.glob("normalized/*.jsonl"))
+    meta = read_json(run_dir / "meta.json")
+    meta = meta if isinstance(meta, dict) else {}
     if not files:
-        art = read_json(run_dir / "meta.json") or {}
         stats["unreadable"] = stats.get("unreadable", 0) + 1
-        if art.get("artifacts_dir"):
-            norm_dir = Path(art["artifacts_dir"]) / "normalized"
+        if meta.get("artifacts_dir"):
+            norm_dir = Path(meta["artifacts_dir"]) / "normalized"
             files = sorted(norm_dir.glob("*.jsonl")) if norm_dir.is_dir() else []
     seq = 0
     for npath in files:
@@ -2513,6 +2733,29 @@ def porch_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
                 yield frag("porch", "runs", ref.session_id, seq, "metadata", str(t), loc,
                            text=rec.get("data") or rec.get("text"), ts=rec.get("ts") or rec.get("timestamp"),
                            authorship="system", visible=False, max_chars=max_chars)
+    final = _porch_final_answer(run_dir, meta)
+    if final is not None:
+        path, text = final
+        seq += 1
+        yield frag("porch", "runs", ref.session_id, seq, "assistant", "final.txt",
+                   {"file": str(path)}, text=text, ts=meta.get("finished_at"),
+                   authorship="agent", visible=True,
+                   basis="the run's saved final answer (final.txt)", max_chars=max_chars)
+
+
+def _porch_final_answer(run_dir: Path, meta: dict[str, Any]) -> tuple[Path, str] | None:
+    """The run's saved final answer: run_dir/final.txt, else artifacts_dir's."""
+    candidates = [run_dir / "final.txt"]
+    artifacts = meta.get("artifacts_dir")
+    if artifacts:
+        candidates.append(Path(artifacts) / "final.txt")
+    for path in candidates:
+        try:
+            if path.is_file():
+                return path, path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -3159,7 +3402,8 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
                 if str(rec.get("session_id")) == query_id:
                     return SessionRef("codex", "history", query_id, locator={"file": str(p)})
             return None
-        hits = list(p.rglob(f"rollout-*-{query_id}.jsonl")) + list(p.rglob(f"rollout-*-{query_id}.jsonl.zst"))
+        hits = (list(_walk(p, f"rollout-*-{query_id}.jsonl", store.walk_stats))
+                + list(_walk(p, f"rollout-*-{query_id}.jsonl.zst", store.walk_stats)))
         if len(hits) == 1:
             return SessionRef("codex", store.name, query_id, locator={"file": str(hits[0])})
     elif store.harness == "grok":
@@ -3193,12 +3437,12 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
             if f.exists():
                 return SessionRef("devin", "transcripts", query_id, locator={"file": str(f)})
     elif store.harness == "gemini" and store.name == "chats":
-        hits = list(p.rglob(f"chats/*{query_id[:8]}*.json"))
+        hits = list(_walk(p, f"chats/*{query_id[:8]}*.json", store.walk_stats))
         if len(hits) == 1:
             return SessionRef("gemini", "chats", query_id, locator={"file": str(hits[0])})
     elif store.harness == "claude-desktop":
         sid = query_id if query_id.startswith("local_") else f"local_{query_id}"
-        metas = list(p.rglob(f"{sid}.json"))
+        metas = list(_walk(p, f"{sid}.json", store.walk_stats))
         if len(metas) == 1:
             loc = {"file": str(metas[0])}
             d = metas[0].with_suffix("")
@@ -3216,7 +3460,7 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
             return SessionRef("cursor", store.name, query_id,
                               locator={"db": str(p), "table": "cursorDiskKV", "key": f"composerData:{query_id}"})
     elif store.harness == "qwen-code":
-        hits = list(p.rglob(f"chats/{query_id}.jsonl"))
+        hits = list(_walk(p, f"chats/{query_id}.jsonl", store.walk_stats))
         if len(hits) == 1:
             return SessionRef("qwen-code", store.name, query_id, locator={"file": str(hits[0])})
     elif store.harness == "kimi-code":
@@ -3224,7 +3468,7 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
         if len(hits) == 1:
             return SessionRef("kimi-code", store.name, query_id, locator={"dir": str(hits[0])})
     elif store.harness == "omp":
-        hits = list(p.rglob(f"{query_id}.jsonl"))
+        hits = list(_walk(p, f"{query_id}.jsonl", store.walk_stats))
         if len(hits) == 1:
             return SessionRef("omp", store.name, query_id, locator={"file": str(hits[0])})
     elif store.harness == "porch":

@@ -10,6 +10,12 @@ BACKEND_LAUNCHERS = {
 KNOWN_LAUNCHERS = frozenset({*BACKEND_LAUNCHERS.values(), "gemini", "cursor", "terminal", "unknown"})
 
 
+def launcher_instance(launcher: str, session_id: str) -> str:
+    """Derive the opaque registry key for a caller's native session ID."""
+    digest = sha256(f"porch-launcher:{launcher}:{session_id}".encode()).hexdigest()
+    return f"{launcher}:{digest[:32]}"
+
+
 def launcher_metadata(env: Mapping[str, str]) -> dict:
     explicit = env.get("PORCH_LAUNCHER", "").strip().lower()
     if explicit:
@@ -37,6 +43,5 @@ def _with_instance(metadata: dict, env: Mapping[str, str]) -> dict:
                env.get("CLAUDE_CODE_SESSION_ID", "") if launcher == "claude" else "")
     if session:
         # Keep the session identifier out of registry files and launch URLs.
-        digest = sha256(f"porch-launcher:{launcher}:{session}".encode()).hexdigest()
-        metadata["launcher_instance"] = f"{launcher}:{digest[:32]}"
+        metadata["launcher_instance"] = launcher_instance(launcher, session)
     return metadata

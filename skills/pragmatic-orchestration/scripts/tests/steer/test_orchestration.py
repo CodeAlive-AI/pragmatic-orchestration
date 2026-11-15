@@ -743,6 +743,7 @@ class OrchestrationTests(unittest.TestCase):
 
     def test_launcher_inference_rejects_ambiguity(self):
         self.assertEqual(launcher_metadata({"CODEX_THREAD_ID": "t"})["launcher"], "codex")
+        self.assertEqual(launcher_metadata({"CODEX_THREAD_ID": "t"})["launcher_instance"], "codex:822e6185d3271b50365880c59d5fa33a")
         self.assertEqual(launcher_metadata({"CLAUDECODE": "1"}),
                          {"launcher": "claude", "launcher_source": "environment"})
         self.assertEqual(launcher_metadata({"PORCH_LAUNCHER": "codex", "PORCH_LAUNCHER_RUN_ID": "run_parent"})["launcher_instance"], "run:run_parent")

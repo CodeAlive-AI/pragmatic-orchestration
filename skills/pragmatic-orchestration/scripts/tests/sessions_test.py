@@ -194,6 +194,74 @@ def check_prefilter_skips(case, store, refs, patterns):
 
 
 class ClaudeCodeTests(FixtureMixin, unittest.TestCase):
+    def test_origins_stop_reasons_and_worker(self):
+        root = self.root / "claude"
+        path = root / "project" / "session.jsonl"
+        def user(text, origin=None, **extra):
+            return {"type": "user", "message": {"content": text}, **({"origin": {"kind": origin}} if origin else {}), **extra}
+        def assistant(mid, text, reason=None, block="text"):
+            return {"type": "assistant", "message": {"id": mid, "stop_reason": reason, "content": [{"type": block, "text": text}]}}
+        delegated = sessions.executor_prefix() + "\nassignment"
+        records = [user([{"type": "tool_result", "content": "tool"}, {"type": "text", "text": "quote <system-reminder> inside"}], "human"),
+                   assistant("m1", "streamed", None), assistant("m1", "", "end_turn", "tool_use"),
+                   user("meta", "human", isMeta=True), user("compact", isCompactSummary=True),
+                   user("<command-name>start", "human"), user("notice", "task-notification"),
+                   user("peer prompt", "peer"), assistant("m2", "sequence final", "stop_sequence"),
+                   user("unknown prompt"), assistant("m3", "tool narration", "tool_use"),
+                   user(delegated, "human"), assistant("m4", "legacy fallback"),
+                   user("open prompt", "human"), user("[Request interrupted by user]", "human")]
+        write_jsonl(path, records)
+        store = sessions.Store("claude-code", "fixture", root, "jsonl_dir")
+        with patch.object(sessions, "porch_workers", return_value={("claude-code", "session")}):
+            ref = next(sessions.claude_iter_sessions(store))
+        self.assertEqual((ref.extra["session_class"], ref.extra["class_basis"]), ("headless", "porch registry"))
+        fragments = list(sessions.claude_iter_fragments(store, ref, 0, {}))
+        self.assertEqual(next(f for f in fragments if f.get("text") == "tool")["kind"], "tool_result")
+        by_text = {f.get("text"): f for f in fragments if f.get("text")}
+        for text in ("meta", "compact", "<command-name>start", "notice", "[Request interrupted by user]"):
+            self.assertEqual(by_text[text]["origin"], "injected", text)
+        self.assertEqual(by_text["quote <system-reminder> inside"]["origin"], "human")
+        self.assertEqual(by_text["peer prompt"]["origin"], "delegated")
+        self.assertEqual(by_text["unknown prompt"]["origin"], "unknown")
+        self.assertEqual(by_text[delegated]["origin"], "delegated")
+        turns = sessions.interpret_session(store, ref, fragments)
+        self.assertEqual([t["final_basis"] for t in turns], ["native:end_turn", "native:stop_sequence", "none", "fallback", "none"])
+        self.assertEqual([t["final"]["text"] if t["final"] else None for t in turns], ["streamed", "sequence final", None, "legacy fallback", None])
+        self.assertTrue(turns[-1]["open"])
+        late = root / "project" / "late.jsonl"
+        write_jsonl(late, [{"type": "file-history-snapshot"}] * 300 + [user("late human", "human")])
+        with patch.object(sessions, "porch_workers", return_value=set()):
+            late_ref = sessions._claude_session_ref(store, late)
+        self.assertEqual(late_ref.extra["session_class"], "unknown")
+        late_turns = sessions.interpret_session(store, late_ref, sessions.claude_iter_fragments(store, late_ref, 0, {}))
+        sessions.refine_class(late_ref, late_turns)
+        self.assertEqual(late_ref.extra["session_class"], "interactive")
+
+    def test_classification_and_turn_evidence(self):
+        root = self.root / "claude"
+        path = root / "project" / "parent" / "subagents" / "agent-a.jsonl"
+        write_jsonl(path, [
+            {"type": "user", "agentId": "a", "origin": {"kind": "human"}, "message": {"content": [
+                {"type": "tool_result", "content": "tool"}, {"type": "text", "text": "quote <system-reminder> here"}]}},
+            {"type": "assistant", "message": {"id": "m", "content": [{"type": "text", "text": "answer"}]}},
+            {"type": "assistant", "message": {"id": "m", "stop_reason": "end_turn", "content": [{"type": "tool_use", "id": "t"}]}},
+            {"type": "user", "isCompactSummary": True, "message": {"content": "summary"}},
+            {"type": "user", "origin": {"kind": "peer"}, "message": {"content": "next"}},
+            {"type": "user", "message": {"content": "[Request interrupted by user]"}},
+        ])
+        store = sessions.Store("claude-code", "fixture", root, "jsonl_dir")
+        ref = next(sessions.claude_iter_sessions(store))
+        fragments = list(sessions.claude_iter_fragments(store, ref, 0, {}))
+        turns = sessions.interpret_session(store, ref, fragments)
+        self.assertEqual(ref.extra["session_class"], "subagent")
+        self.assertEqual(ref.extra["edges"][0]["target_id"], "parent")
+        self.assertEqual(ref.extra["edges"][0]["locator"]["agentId"], "a")
+        self.assertEqual([t["prompts"][0]["origin"] for t in turns], ["human", "delegated"])
+        self.assertEqual(turns[0]["final"]["text"], "answer")
+        self.assertEqual(turns[0]["final_basis"], "native:end_turn")
+        self.assertTrue(turns[1]["open"])
+        self.assertIsNone(turns[1]["final"])
+
     def make(self):
         proj = self.root / "claude" / "-Users-x-proj"
         sid = "11111111-2222-3333-4444-555555555555"
@@ -279,6 +347,141 @@ class HermesTests(FixtureMixin, unittest.TestCase):
 
 
 class CodexTests(FixtureMixin, unittest.TestCase):
+    def test_discovery_reads_only_bounded_heads(self):
+        home = self.root / "codex_home"
+        sid = "bounded-thread"
+        path = home / "sessions" / f"rollout-2026-01-01T00-00-00-{sid}.jsonl"
+        write_jsonl(path, [{"type": "session_meta", "payload": {"id": sid, "source": "vscode"}},
+                           {"type": "turn_context", "payload": {"model": "test"}}])
+        write_jsonl(home / "sessions" / "rollout-unusual.jsonl",
+                    [{"type": "session_meta", "payload": {"id": "unusual"}}])
+        db = home / "state_1.sqlite"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, source TEXT)")
+        conn.execute("INSERT INTO threads VALUES (?, ?, ?)", (sid, str(path), "vscode"))
+        conn.commit()
+        conn.close()
+        for store, count in ((sessions.Store("codex", "sessions", home / "sessions", "jsonl_dir"), 2),
+                             (sessions.Store("codex", "state:state_1.sqlite", db, "sqlite"), 1)):
+            sessions.reset_discovery_caches()
+            with patch.object(sessions, "iter_jsonl", wraps=sessions.iter_jsonl) as reader:
+                self.assertEqual(len(list(sessions.codex_iter_sessions(store))), count)
+                self.assertTrue(reader.called)
+                for call in reader.call_args_list:
+                    self.assertIsNotNone(call.kwargs.get("max_lines"), call)
+                    self.assertLessEqual(call.kwargs["max_lines"], 300)
+
+    def test_classification_and_turns(self):
+        home = self.root / "codex_home"
+        sid = "12345678-1111-2222-3333-444444444444"
+        parent = "parent-thread"
+        old = home / "sessions" / "2026" / "01" / f"rollout-2026-01-01T00-00-00-{sid}.jsonl"
+        new = home / "sessions" / "2026" / "02" / f"rollout-2026-02-01T00-00-00-{sid}.jsonl"
+        def event(kind, **fields):
+            return {"type": "event_msg", "payload": {"type": kind, **fields}}
+        def message(role, text, phase=None):
+            return {"type": "response_item", "payload": {"type": "message", "role": role, "phase": phase,
+                    "content": [{"type": "input_text" if role == "user" else "output_text", "text": text}]}}
+        meta = {"type": "session_meta", "payload": {"id": sid,
+                "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}}, "forked_from_id": "fork-parent"}}
+        delegated = sessions.executor_prefix() + "\nAssignment"
+        records = [meta,
+            event("task_started", turn_id="1"), message("user", "# AGENTS.md instructions\nInjected"),
+            message("user", "<environment_context>injected</environment_context>"),
+            message("user", "first prompt"), event("user_message", turn_id="1", message="first prompt"),
+            event("agent_message", turn_id="1", phase="commentary", message="working"),
+            message("assistant", "answer one", "final_answer"), event("task_complete", turn_id="1"),
+            event("task_started", turn_id="2"), message("user", "response only"),
+            event("agent_message", turn_id="2", message="old unphased text"),
+            event("turn_complete", turn_id="2", last_agent_message="saved answer"),
+            event("task_started", turn_id="3"), event("user_message", turn_id="3", message=delegated),
+            event("agent_message", turn_id="3", phase="commentary", message="not final"),
+            message("assistant", "not final"),
+            event("task_complete", turn_id="3"),
+            event("task_started", turn_id="4"), event("user_message", turn_id="4", message="abort this"),
+            event("agent_message", turn_id="4", phase="final_answer", message="discard"),
+            event("turn_aborted", turn_id="4", reason="interrupted"),
+            event("task_started", turn_id="5"), event("user_message", turn_id="5", message="another"),
+            event("agent_message", turn_id="5", message="unphased"),
+            event("task_complete", turn_id="5", last_agent_message="task answer")]
+        write_jsonl(old, records)
+        write_jsonl(new, [meta, event("user_message", message="new revision")])
+        os.utime(old, (100, 100))
+        os.utime(new, (200, 200))
+        db = home / "state_5.sqlite"
+        conn = sqlite3.connect(db)
+        conn.executescript("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, source TEXT);"
+                           "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT);")
+        conn.execute("INSERT INTO threads VALUES (?, ?, ?)", (sid, str(old), "cli"))
+        conn.execute("INSERT INTO thread_spawn_edges VALUES (?, ?)", ("state-parent", sid))
+        conn.commit()
+        conn.close()
+        store = sessions.Store("codex", "sessions", home / "sessions", "jsonl_dir")
+        refs = list(sessions.codex_iter_sessions(store))
+        self.assertEqual(len(refs), 2)
+        ref = next(r for r in refs if r.locator["file"] == str(old))
+        self.assertEqual(ref.locator["file"], str(old))
+        self.assertTrue(all(r.extra["selected_rollout"] == str(old) for r in refs))
+        self.assertEqual(sessions._codex_rollout_for(next(r for r in refs if r.locator["file"] == str(new))), str(new))
+        self.assertEqual(ref.extra["native_id"], sid)
+        self.assertEqual(ref.extra["session_class"], "subagent")
+        self.assertEqual({(e["type"], e["target_id"]) for e in ref.extra["edges"]},
+                         {("subagent", parent), ("subagent", "state-parent"), ("fork", "fork-parent")})
+        status = ref.extra["native_status"]
+        self.assertTrue({"turn_aborted", "turn_aborted_last_reason", "task_complete"}.isdisjoint(status))
+        self.assertEqual(status["alternates"], [str(new)])
+        self.assertNotIn("revision", status)
+        fragments = list(sessions.codex_iter_fragments(store, ref, 0, {}))
+        injected = [f for f in fragments if f.get("origin") == "injected"]
+        self.assertEqual(len(injected), 2)
+        turns = sessions.interpret_session(store, ref, fragments)
+        self.assertEqual(len(turns), 5)
+        self.assertEqual([t["prompts"][0]["text"] for t in turns], ["first prompt", "response only", delegated, "abort this", "another"])
+        self.assertEqual([t["prompts"][0]["origin"] for t in turns], ["human", "unknown", "delegated", "human", "human"])
+        self.assertEqual([t["final"]["text"] if t["final"] else None for t in turns], ["answer one", "saved answer", None, "discard", "task answer"])
+        self.assertEqual([t["final_basis"] for t in turns], ["native:final_answer", "native:turn_complete", "none", "native:final_answer", "native:task_complete"])
+        self.assertFalse(turns[3]["open"])
+        self.assertEqual([t["aborted"] for t in turns], [False, False, False, True, False])
+        self.assertEqual(turns[3]["abort_reason"], "interrupted")
+        self.assertNotIn("abort_reason", turns[0])
+        self.assertEqual(turns[0]["final"]["native"], {"phase": "final_answer", "turn_id": None, "layer": "response"})
+        state_store = sessions.Store("codex", "state:state_5.sqlite", db, "sqlite")
+        state_ref = next(sessions.codex_iter_sessions(state_store))
+        self.assertEqual(sessions._codex_rollout_for(state_ref), str(old))
+        self.assertTrue({"turn_aborted", "turn_aborted_last_reason", "task_complete"}.isdisjoint(state_ref.extra["native_status"]))
+        self.assertTrue(any(e["basis"] == "thread_spawn_edges" for e in state_ref.extra["edges"]))
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE threads SET rollout_path = NULL WHERE id = ?", (sid,))
+        conn.commit()
+        conn.close()
+        sessions.reset_discovery_caches()
+        refs = list(sessions.codex_iter_sessions(store))
+        self.assertTrue(all(r.extra["selected_rollout"] == str(new) for r in refs))
+        ref = next(r for r in refs if r.locator["file"] == str(new))
+        self.assertEqual(ref.extra["native_status"]["revision"], "ambiguous")
+        self.assertEqual(ref.extra["native_status"]["alternates"], [str(old)])
+        state_ref = next(sessions.codex_iter_sessions(state_store))
+        self.assertEqual(sessions._codex_rollout_for(state_ref), str(new))
+        self.assertEqual(state_ref.extra["native_status"]["revision"], "ambiguous")
+        worker = sessions.SessionRef("codex", "fixture", "worker", locator={"file": str(new)})
+        with patch.object(sessions, "porch_workers", return_value={("codex", "worker")}):
+            sessions._codex_enrich_ref(worker)
+        self.assertEqual(worker.extra["session_class"], "headless")
+        self.assertEqual(worker.extra["class_basis"], "porch registry")
+        delegated_path = self.root / "delegated" / "rollout-2026-01-01T00-00-00-delegated.jsonl"
+        write_jsonl(delegated_path, [{"type": "session_meta", "payload": {"id": "delegated", "source": "cli"}},
+                                     event("user_message", message=delegated)])
+        delegated_store = sessions.Store("codex", "fixture", delegated_path.parent, "jsonl_dir")
+        delegated_ref = next(sessions.codex_iter_sessions(delegated_store))
+        self.assertEqual(delegated_ref.extra["session_class"], "headless")
+        self.assertEqual(delegated_ref.extra["class_basis"], "executor-prefix")
+        for originator, expected in (("Codex Desktop", "interactive"), ("codex_work_desktop", "interactive"),
+                                     ("codex-tui", "interactive"), ("codex_exec", "unknown"),
+                                     ("pragmatic-orchestration-steer", "unknown"), ("unrecognized", "unknown")):
+            client = sessions.SessionRef("codex", "fixture", "other", locator={})
+            sessions._codex_enrich_ref(client, meta={"source": "vscode", "originator": originator})
+            self.assertEqual(client.extra["session_class"], expected, originator)
+
     def make(self):
         sid = "99999999-8888-7777-6666-555555555555"
         path = self.root / "codex" / "2026" / "01" / "02" / f"rollout-2026-01-02T00-00-00-{sid}.jsonl"
@@ -368,6 +571,19 @@ class CodexTests(FixtureMixin, unittest.TestCase):
 
 
 class OpenCodeDbTests(FixtureMixin, unittest.TestCase):
+    def test_porch_worker_class_and_subagent_precedence(self):
+        db = self.root / "opencode.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("CREATE TABLE session_v2 (id TEXT, parent_id TEXT); CREATE TABLE session_message (session_id TEXT, seq INTEGER, data TEXT, type TEXT);")
+        conn.executemany("INSERT INTO session_v2 VALUES (?,?)", [("worker", None), ("child", "parent")])
+        conn.commit()
+        conn.close()
+        store = sessions.Store("opencode", "db", db, "sqlite")
+        with patch.object(sessions, "porch_workers", return_value={("opencode", "worker"), ("opencode", "child")}):
+            refs = {ref.session_id: ref for ref in sessions.opencode_iter_sessions(store)}
+        self.assertEqual((refs["worker"].extra["session_class"], refs["worker"].extra["class_basis"]), ("headless", "porch registry"))
+        self.assertEqual(refs["child"].extra["session_class"], "subagent")
+
     def make(self):
         db = self.root / "opencode.db"
         sqlite3.connect(db).close()
@@ -485,6 +701,75 @@ class GrokTests(FixtureMixin, unittest.TestCase):
 
 
 class DevinTests(FixtureMixin, unittest.TestCase):
+    def test_classification_and_turns(self):
+        db = self.root / "sessions.db"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, working_directory TEXT, model TEXT,
+                agent_mode TEXT, created_at TEXT, last_activity_at TEXT, title TEXT, hidden INTEGER, main_chain_id INTEGER);
+            CREATE TABLE message_nodes (row_id INTEGER PRIMARY KEY, session_id TEXT, node_id INTEGER,
+                parent_node_id INTEGER, chat_message TEXT, created_at TEXT, metadata TEXT);
+        """)
+        for sid, tip in (("forest", 13), ("missing", None), ("bad-tip", 99), ("worker", None)):
+            conn.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?)", (sid, "/repo", "model", "bypass", 1, 2, sid, 0, tip))
+        delegated = sessions.executor_prefix() + "\nassignment"
+        def add(sid, node, parent, role, content, second, *, message_id=None, user=False, finish=None, calls=False, node_meta=None):
+            msg = {"role": role, "content": content, "message_id": message_id,
+                   "metadata": {"created_at": f"2026-01-01T00:00:{second:02d}Z", "finish_reason": finish}}
+            if user:
+                msg["metadata"]["is_user_input"] = 1
+            if calls:
+                msg["tool_calls"] = [{"id": "call", "name": "read"}]
+            conn.execute("INSERT INTO message_nodes (session_id,node_id,parent_node_id,chat_message,created_at,metadata) VALUES (?,?,?,?,?,?)",
+                         (sid, node, parent, json.dumps(msg), "2035-01-01T00:00:00Z", json.dumps(node_meta or {})))
+        add("forest", 1, None, "user", "first", 1, message_id="first", user=True)
+        add("forest", 2, 1, "assistant", "first answer", 2, finish="stop")
+        add("forest", 3, 2, "user", "injected", 3)
+        add("forest", 4, None, "system", "summary", 3, node_meta={"summarized_from": 3, "extensions": {"compact/prior_node_ids": [2]}})
+        add("forest", 5, 4, "user", "latest copy", 5, message_id="dup", user=True)
+        add("forest", 6, 5, "user", "older copy", 4, message_id="dup", user=True)
+        add("forest", 7, 6, "assistant", "tool commentary", 6, finish="tool_calls", calls=True)
+        add("forest", 8, 7, "user", delegated, 7, message_id="delegated", user=True)
+        add("forest", 9, 8, "assistant", "unmarked fallback", 8)
+        add("forest", 10, 9, "user", "third", 9, user=True)
+        add("forest", 11, 10, "assistant", "third answer", 10, finish="stop")
+        add("forest", 12, 11, "user", "open", 11, user=True)
+        add("forest", 13, 12, "assistant", "", 12, finish="tool_calls", calls=True)
+        add("forest", 14, 1, "user", "dead branch", 0, user=True)
+        for sid in ("missing", "bad-tip"):
+            add(sid, 1, None, "user", "recover me", 1, user=True)
+            add(sid, 2, 1, "assistant", "recovered answer", 2, finish="stop")
+        conn.commit()
+        conn.close()
+        store = sessions.Store("devin", "sessions.db", db, "sqlite")
+        with patch.object(sessions, "porch_workers", return_value={("devin", "worker")}):
+            refs = {ref.session_id: ref for ref in sessions.devin_iter_sessions(store)}
+        self.assertEqual(refs["worker"].extra["session_class"], "headless")
+        self.assertEqual(refs["worker"].extra["class_basis"], "porch registry")
+        ref = refs["forest"]
+        self.assertEqual(ref.extra["session_class"], "unknown")
+        self.assertEqual(ref.extra["edges"], [])
+        self.assertEqual([s["table"] for s in ref.extra["sources"]], ["sessions", "message_nodes"])
+        fragments = list(sessions.devin_iter_fragments(store, ref, 0, {}))
+        injected = next(f for f in fragments if f.get("text") == "injected")
+        self.assertEqual(injected["origin"], "injected")
+        self.assertEqual(next(f for f in fragments if f.get("text") == "first")["ts"], "2026-01-01T00:00:01Z")
+        turns = sessions.interpret_session(store, ref, fragments)
+        self.assertEqual([t["prompts"][0]["text"] for t in turns], ["first", "latest copy", delegated, "third", "open"])
+        self.assertEqual([t["final"]["text"] if t["final"] else None for t in turns], ["first answer", None, "unmarked fallback", "third answer", None])
+        self.assertEqual([t["final_basis"] for t in turns], ["native:stop", "none", "fallback", "native:stop", "none"])
+        self.assertTrue(turns[-1]["open"])
+        self.assertEqual(turns[2]["prompts"][0]["origin"], "delegated")
+        sessions.refine_class(ref, turns)
+        self.assertEqual((ref.extra["session_class"], ref.extra["class_basis"]), ("interactive", "genuine prompt"))
+        for sid in ("missing", "bad-tip"):
+            ref = refs[sid]
+            fragments = list(sessions.devin_iter_fragments(store, ref, 0, {}))
+            self.assertTrue(all(f["native"]["canonical"] is None for f in fragments))
+            recovered = sessions.interpret_session(store, ref, fragments)
+            self.assertEqual(recovered[0]["final"]["text"], "recovered answer")
+            self.assertEqual(recovered[0]["final_basis"], "fallback")
+
     def make(self):
         base = self.root / "devin"
         base.mkdir()
@@ -878,6 +1163,61 @@ class CodexIndexTests(FixtureMixin, unittest.TestCase):
 
 
 class ClaudeDesktopTests(FixtureMixin, unittest.TestCase):
+    def test_cowork_new_prompt_closes_unfinished_turn(self):
+        ref = sessions.SessionRef("claude-desktop", "cowork", "s", extra={"surface": "cowork"})
+        store = sessions.Store("claude-desktop", "cowork", self.root, "session_dirs")
+        fragments = [
+            {"kind": "prompt", "native_type": "user", "origin": "human", "text": "first"},
+            {"kind": "assistant", "native_type": "assistant.text", "text": "partial"},
+            {"kind": "prompt", "native_type": "user", "origin": "human", "text": "next"},
+        ]
+        turns = sessions.interpret_session(store, ref, fragments)
+        self.assertEqual([turn["open"] for turn in turns], [False, True])
+        self.assertTrue(all(turn["final"] is None for turn in turns))
+
+    def test_manifest_lineage_and_stream_turns(self):
+        root = self.root / "desktop"
+        claude = self.root / "claude"
+        sid = "cli-session"
+        manifest = {"sessionId": "local_code", "cliSessionId": sid, "title": "Title", "titleSource": "user",
+                    "priorCliSessionIds": ["old1", "old2"], "spawnedFrom": {"sessionId": "parent", "taskId": "task", "title": "Spawn"},
+                    "forkedFromSessionId": "fork", "forkedAtMessageUuid": "uuid",
+                    "interruptedAwaitingPerson": True, "cleanShutdown": False, "error": "failure", "errorCategory": "network",
+                    "errorAt": "time", "completedTurns": 2, "isArchived": True}
+        write_json(root / "local_code.json", manifest)
+        write_jsonl(claude / "project" / f"{sid}.jsonl", [
+            {"type": "user", "origin": {"kind": "human"}, "message": {"content": "question"}},
+            {"type": "assistant", "message": {"id": "m", "stop_reason": "end_turn", "content": [{"type": "text", "text": "answer"}]}}])
+        store = sessions.Store("claude-desktop", "code-sessions", root, "json_dir")
+        ref = next(sessions.claude_desktop_iter_sessions(store))
+        self.assertEqual((ref.title, ref.extra["titleSource"]), ("Title", "user"))
+        self.assertEqual({(e["type"], e["target_id"]) for e in ref.extra["edges"]}, {("alias", sid), ("continuation", "old1"), ("continuation", "old2"), ("spawned", "parent"), ("fork", "fork")})
+        self.assertEqual(next(e for e in ref.extra["edges"] if e["type"] == "spawned")["locator"]["taskId"], "task")
+        self.assertEqual(next(e for e in ref.extra["edges"] if e["type"] == "fork")["locator"]["forkedAtMessageUuid"], "uuid")
+        self.assertEqual(ref.extra["native_status"], {k: manifest[k] for k in ("interruptedAwaitingPerson", "cleanShutdown", "error", "errorCategory", "errorAt", "completedTurns", "isArchived")})
+        sessions.reset_discovery_caches()
+        with patch.dict(os.environ, {"PORCH_HISTORY_ROOT_CLAUDE_CODE": str(claude)}):
+            turns = sessions.interpret_session(store, ref, sessions.claude_desktop_iter_fragments(store, ref, 0, {}))
+        self.assertEqual((turns[0]["prompts"][0]["text"], turns[0]["final"]["text"]), ("question", "answer"))
+        cowork_root = self.root / "cowork"
+        cowork = cowork_root / "local_cowork"
+        write_json(cowork_root / "local_cowork.json", {"sessionId": "local_cowork"})
+        write_jsonl(cowork / "audit.jsonl", [
+            {"type": "user", "message": {"content": "main"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "main answer"}]}},
+            {"type": "user", "parent_tool_use_id": "child", "message": {"content": "child prompt"}},
+            {"type": "assistant", "parent_tool_use_id": "child", "message": {"content": [{"type": "text", "text": "child answer"}]}},
+            {"type": "result", "subtype": "success"},
+            {"type": "user", "message": {"content": "unfinished"}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "partial"}]}}])
+        store = sessions.Store("claude-desktop", "cowork", cowork_root, "session_dirs")
+        ref = next(sessions.claude_desktop_iter_sessions(store))
+        turns = sessions.interpret_session(store, ref, sessions.claude_desktop_iter_fragments(store, ref, 0, {}))
+        self.assertEqual([t["prompts"][0]["text"] for t in turns], ["main", "unfinished"])
+        self.assertEqual(turns[0]["final"]["text"], "main answer")
+        self.assertIsNone(turns[1]["final"])
+        self.assertTrue(turns[1]["open"])
+
     def test_cowork(self):
         root = self.root / "lam"
         sess = root / "proj" / "local_abc"
@@ -1107,6 +1447,70 @@ class OmpTests(FixtureMixin, unittest.TestCase):
 
 
 class PorchRunTests(FixtureMixin, unittest.TestCase):
+    def test_normalized_artifact_events_and_coverage(self):
+        run = self.root / "runs" / "r"
+        artifacts = self.root / "artifacts"
+        write_json(run / "meta.json", {"run_id": "r", "artifacts_dir": str(artifacts)})
+        write_jsonl(artifacts / "normalized" / "agent.jsonl", [
+            {"type": "turn_started", "data": "start"},
+            {"type": "thinking_delta", "data": "reasoning"},
+            {"type": "tool_started", "data": "tool"},
+            {"type": "answer_delta", "data": "answer"},
+            {"type": "turn_completed", "data": "done"},
+            {"type": "run_completed", "data": "done"},
+        ])
+        store = sessions.Store("porch", "runs", run.parent, "run_registry")
+        ref = next(sessions.porch_iter_sessions(store))
+        stats = {}
+        fragments = list(sessions.porch_iter_fragments(store, ref, 0, stats))
+        self.assertEqual([f["kind"] for f in fragments], ["boundary", "reasoning", "tool_call", "assistant", "boundary", "boundary"])
+        self.assertEqual(fragments[3]["text"], "answer")
+        self.assertNotIn("unreadable", stats)
+
+    def test_saved_final_without_stored_prompt(self):
+        run = self.root / "runs" / "answer-only"
+        write_json(run / "meta.json", {"run_id": "answer-only", "status": "completed"})
+        (run / "final.txt").write_text("saved result", encoding="utf-8")
+        store = sessions.Store("porch", "runs", run.parent, "run_registry")
+        ref = next(sessions.porch_iter_sessions(store))
+        turns = sessions.interpret_session(store, ref, sessions.porch_iter_fragments(store, ref, 0, {}))
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["prompts"], [])
+        self.assertEqual((turns[0]["final"]["text"], turns[0]["final_basis"], turns[0]["open"]),
+                         ("saved result", "native:final.txt", False))
+
+    def test_lineage_worker_backends_and_caller_keys(self):
+        from steer.launcher import launcher_instance, launcher_metadata
+        claude_root = self.root / "claude"
+        write_jsonl(claude_root / "project" / "caller-claude.jsonl", [{"type": "user", "message": {"content": "task"}}])
+        claude_ref = next(sessions.claude_iter_sessions(sessions.Store("claude-code", "test", claude_root, "jsonl_dir")))
+        codex_root = self.root / "codex"
+        write_jsonl(codex_root / "rollout-2026-01-01T00-00-00-caller-codex.jsonl", [{"type": "session_meta", "payload": {"id": "caller-codex"}}])
+        codex_ref = next(sessions.codex_iter_sessions(sessions.Store("codex", "test", codex_root, "jsonl_dir")))
+        self.assertEqual(claude_ref.extra["launcher_key"], launcher_metadata({"CLAUDE_CODE_SESSION_ID": "caller-claude"})["launcher_instance"])
+        self.assertEqual(codex_ref.extra["launcher_key"], launcher_metadata({"CODEX_THREAD_ID": "caller-codex"})["launcher_instance"])
+        root = self.root / "runs"
+        for backend, harness in sessions.BACKEND_HARNESS.items():
+            write_json(root / backend / "meta.json", {"run_id": backend, "backend": backend, "native_session_id": "native", "task": "brief",
+                       "launcher_instance": "run:parent", "continued_from": "previous"})
+            (root / backend / "final.txt").write_text("final", encoding="utf-8")
+            write_jsonl(root / backend / "normalized" / "events.jsonl", [{"type": "run_started"}])
+        for launcher, native in (("claude", "caller-claude"), ("codex", "caller-codex")):
+            write_json(root / launcher / "meta.json", {"run_id": launcher, "launcher_instance": launcher_instance(launcher, native)})
+        store = sessions.Store("porch", "runs", root, "run_registry")
+        refs = {ref.session_id: ref for ref in sessions.porch_iter_sessions(store)}
+        self.assertEqual(refs["claude"].extra["edges"][0]["unresolved"], claude_ref.extra["launcher_key"])
+        self.assertEqual(refs["codex"].extra["edges"][0]["unresolved"], codex_ref.extra["launcher_key"])
+        for backend, harness in sessions.BACKEND_HARNESS.items():
+            ref = refs[backend]
+            edges = ref.extra["edges"]
+            self.assertEqual(next(e for e in edges if e["type"] == "worker_session")["target_harness"], harness)
+            self.assertEqual(next(e for e in edges if e["type"] == "caller_run")["unresolved"], "run:parent")
+            self.assertEqual(next(e for e in edges if e["type"] == "parent_run")["target_id"], "parent")
+            self.assertEqual(next(e for e in edges if e["type"] == "continuation")["target_id"], "previous")
+            turns = sessions.interpret_session(store, ref, sessions.porch_iter_fragments(store, ref, 0, {}))
+            self.assertEqual((turns[0]["prompts"][0]["text"], turns[0]["final"]["text"], turns[0]["final_basis"]), ("brief", "final", "native:final.txt"))
+
     def test_runs(self):
         run = self.root / "runs" / "run_test-1"
         write_json(run / "meta.json",
@@ -2314,6 +2718,104 @@ class SymlinkTraversalTests(FixtureMixin, unittest.TestCase):
         self.assertTrue(any(f["kind"] == "prompt" and f["text"] == "via day link" for f in out))
 
 
+class AllFinalsTests(unittest.TestCase):
+    def setUp(self):
+        self.prompt = {"kind": "prompt", "origin": "human", "text": "question"}
+        self.injected = {"kind": "prompt", "origin": "injected", "text": "notification"}
+
+    def assert_pair(self, turns):
+        self.assertEqual(len(turns), 1)
+        self.assertEqual([f["text"] for f in turns[0]["finals"]], ["one", "two"])
+        self.assertEqual(turns[0]["final"]["text"], "two")
+
+    def test_claude_completed_before_interrupt_and_leading(self):
+        def answer(mid, text):
+            return {"kind": "assistant", "text": text, "native": {"message_id": mid, "stop_reason": "end_turn"}}
+        ref = sessions.SessionRef("claude-code", "s", "id")
+        self.assert_pair(sessions._claude_turns(ref, [self.prompt, answer("1", "one"), self.injected, answer("2", "two"), {"kind": "context", "interrupted": True}]))
+        turns = sessions._claude_turns(ref, [answer("0", "leading"), self.prompt, answer("1", "one")])
+        self.assertEqual(turns[0]["prompts"], [])
+        self.assertEqual(turns[0]["finals"][0]["text"], "leading")
+        sessions.refine_class(ref, turns)
+        self.assertEqual(ref.extra["session_class"], "interactive")
+
+    def test_desktop_code_and_cowork(self):
+        code = sessions.SessionRef("claude-desktop", "code-sessions", "id", extra={"surface": "code-tab"})
+        def a(mid, text):
+            return {"kind": "assistant", "text": text, "native": {"message_id": mid, "stop_reason": "end_turn"}}
+        self.assert_pair(sessions._desktop_turns(code, [self.prompt, a("1", "one"), self.injected, a("2", "two")]))
+        cowork = sessions.SessionRef("claude-desktop", "cowork", "id", extra={"surface": "cowork"})
+        result = {"kind": "boundary", "native_type": "result.success"}
+        self.assert_pair(sessions._desktop_turns(cowork, [self.prompt, {"kind": "assistant", "text": "one"}, result, self.injected, {"kind": "assistant", "text": "two"}, result]))
+
+    def test_codex_native_turns_and_copy_dedup(self):
+        def final(text, layer="response", phase="final_answer"):
+            return {"kind": "assistant", "text": text, "native": {"phase": phase, "layer": layer}}
+        start = {"kind": "boundary", "native_type": "event_msg.task_started"}
+        stop = {"kind": "boundary", "native_type": "event_msg.task_complete"}
+        saved = lambda text: final(text, "task_complete", None)
+        ref = sessions.SessionRef("codex", "s", "id")
+        turns = sessions._codex_turns(ref, [self.prompt, start, final("one"), stop, saved("one"), self.injected,
+                                           start, final("two"), stop, saved("two"),
+                                           {"kind": "boundary", "native_type": "event_msg.turn_aborted", "native": {"reason": "interrupted"}}])
+        self.assert_pair(turns)
+        self.assertTrue(turns[0]["aborted"])
+        self.assertEqual(turns[0]["abort_reason"], "interrupted")
+
+    def test_devin_multiple_stops(self):
+        def f(kind, node, text, finish=None, origin=None):
+            return {"kind": kind, "native_type": "message_nodes." + ("assistant" if kind == "assistant" else "user"),
+                    "text": text, "origin": origin, "seq": node,
+                    "native": {"node_id": node, "canonical": True, "finish_reason": finish, "has_tool_calls": False}}
+        ref = sessions.SessionRef("devin", "s", "id")
+        self.assert_pair(sessions._devin_turns(ref, [f("prompt", 1, "q", origin="human"), f("assistant", 2, "one", "stop"), f("prompt", 3, "injected", origin="injected"), f("assistant", 4, "two", "stop")]))
+
+    def test_opencode_v1_and_v2(self):
+        ref = sessions.SessionRef("opencode", "s", "id", extra={"oc_source": "v1"})
+        def f1(text): return [{"kind": "boundary", "native_type": "part.step-start"}, {"kind": "assistant", "text": text}, {"kind": "boundary", "native_type": "part.step-finish", "status": "stop"}]
+        self.assert_pair(sessions.opencode_turns(ref, [self.prompt, *f1("one"), self.injected, *f1("two")]))
+        ref.extra["oc_source"] = "v2"
+        def f2(mid, text): return {"kind": "assistant", "text": text, "native": {"message_id": mid, "completed": True, "finish": "stop", "after_last_tool": True}}
+        self.assert_pair(sessions.opencode_turns(ref, [self.prompt, f2("1", "one"), self.injected, f2("2", "two")]))
+
+    def test_agy_multiple_completed_answers(self):
+        def a(text): return {"kind": "assistant", "text": text, "native": {"status": "DONE", "has_tool_calls": False}}
+        ref = sessions.SessionRef("agy", "s", "id")
+        self.assert_pair(sessions.agy_turns(ref, [self.prompt, a("one"), self.injected, a("two")]))
+
+    def test_porch_and_fallback(self):
+        ref = sessions.SessionRef("porch", "s", "id")
+        final = {"kind": "assistant", "native_type": "final.txt", "text": "saved"}
+        turn = sessions._porch_turns(ref, [self.prompt, self.injected, final])[0]
+        self.assertEqual(turn["finals"], [final])
+        fallback = sessions.turns_fallback(ref, [self.prompt, {"kind": "assistant", "text": "one"}, self.injected, {"kind": "assistant", "text": "two"}])[0]
+        self.assertEqual([f["text"] for f in fallback["finals"]], ["two"])
+        self.assertEqual(fallback["final_basis"], "fallback")
+
+    def test_leading_native_answers(self):
+        cases = [
+            (sessions._claude_turns, sessions.SessionRef("claude-code", "s", "id"),
+             [{"kind": "assistant", "text": "leading", "native": {"message_id": "m", "stop_reason": "end_turn"}}]),
+            (sessions._codex_turns, sessions.SessionRef("codex", "s", "id"),
+             [{"kind": "assistant", "text": "leading", "native": {"phase": "final_answer", "layer": "response"}}]),
+            (sessions._desktop_turns, sessions.SessionRef("claude-desktop", "cowork", "id", extra={"surface": "cowork"}),
+             [{"kind": "assistant", "text": "leading"}, {"kind": "boundary", "native_type": "result.success"}]),
+            (sessions._devin_turns, sessions.SessionRef("devin", "s", "id"),
+             [{"kind": "assistant", "text": "leading", "native_type": "message_nodes.assistant", "native": {"node_id": 1, "canonical": True, "finish_reason": "stop", "has_tool_calls": False}}]),
+            (sessions.opencode_turns, sessions.SessionRef("opencode", "s", "id", extra={"oc_source": "v2"}),
+             [{"kind": "assistant", "text": "leading", "native": {"message_id": "m", "completed": True, "finish": "stop", "after_last_tool": True}}]),
+            (sessions.agy_turns, sessions.SessionRef("agy", "s", "id"),
+             [{"kind": "assistant", "text": "leading", "native": {"status": "DONE", "has_tool_calls": False}}]),
+            (sessions._porch_turns, sessions.SessionRef("porch", "s", "id"),
+             [{"kind": "assistant", "native_type": "final.txt", "text": "leading"}]),
+        ]
+        for rule, ref, records in cases:
+            with self.subTest(harness=ref.harness):
+                leading = rule(ref, records)[0]
+                self.assertEqual(leading["prompts"], [])
+                self.assertEqual([f["text"] for f in leading["finals"]], ["leading"])
+
+
 class TurnContractTests(unittest.TestCase):
     """The shared turn contract: fallback rule and delegated-brief signature."""
 
@@ -2348,9 +2850,42 @@ class TurnContractTests(unittest.TestCase):
         self.assertFalse(sessions.is_delegated_brief("Please do the task. " + prefix))
         self.assertFalse(sessions.is_delegated_brief(None))
 
+    def test_refine_class(self):
+        for existing, origin, expected, basis in ((None, "human", "interactive", "genuine prompt"),
+                                                   ("unknown", "delegated", "headless", "executor-prefix"),
+                                                   ("unknown", "unknown", "unknown", "old"),
+                                                   ("subagent", "human", "subagent", "old"),
+                                                   ("headless", "human", "headless", "old")):
+            ref = sessions.SessionRef("devin", "s", "id", extra={"session_class": existing, "class_basis": "old"})
+            sessions.refine_class(ref, [{"prompts": [{"origin": origin}]}])
+            self.assertEqual((ref.extra["session_class"], ref.extra["class_basis"]), (expected, basis))
+        ref = sessions.SessionRef("devin", "s", "id", extra={"session_class": "unknown"})
+        sessions.refine_class(ref, [])
+        self.assertEqual(ref.extra["session_class"], "unknown")
+
+    def test_reset_discovery_caches(self):
+        caches = (sessions._PORCH_WORKERS, sessions._CODEX_HOME_CACHE, sessions._ROLLOUT_INDEX, sessions._CLAUDE_TRANSCRIPTS)
+        for cache in caches:
+            cache["test"] = None
+        sessions.reset_discovery_caches()
+        self.assertTrue(all(not cache for cache in caches))
+
 
 class AgyTests(FixtureMixin, unittest.TestCase):
     """agy (Antigravity CLI): metadata cache + brain transcripts, file-only."""
+
+    def test_preview_and_porch_worker_class(self):
+        root = self.make_root()
+        self.write_meta(root, {"preview": self.entry(summary={"Preview": "a title preview"}),
+                               "worker": self.entry(summary={"Preview": "worker preview", "AppDataDir": "antigravity"}),
+                               "child": self.entry(summary={"Preview": "child"})})
+        write_json(root / "brain" / "parent" / ".system_generated" / "subagents" / "child.json", {"conversationId": "child"})
+        store = sessions.Store("agy", "cli", root, "agy_root")
+        with patch.object(sessions, "porch_workers", return_value={("agy", "worker"), ("agy", "child")}):
+            refs = {ref.session_id: ref for ref in sessions.agy_iter_sessions(store)}
+        self.assertEqual(refs["preview"].extra["session_class"], "unknown")
+        self.assertEqual((refs["worker"].extra["session_class"], refs["worker"].extra["class_basis"]), ("headless", "porch registry"))
+        self.assertEqual(refs["child"].extra["session_class"], "subagent")
 
     def make_root(self):
         root = self.root / "agy"

@@ -6,6 +6,23 @@ index, no database, and no cache. Every emitted record carries a native locator
 (file + line, or db + table + key) so any conclusion can be traced back to the
 raw source.
 
+Claude Code prompt fragments may include `origin` and `origin_basis` describing
+the record's authorship evidence. Assistant fragments may include `native`
+message identifiers and stop reasons. Claude Code session headers include a
+native ID, class, lineage edges and source paths; Desktop manifests include
+their links and native status facts. An edge points from the session to its
+source or parent and includes a locator for its evidence.
+
+Codex session headers include lineage and the selected rollout; interpreted
+turns carry abort facts. A resolvable state `rollout_path` takes precedence;
+otherwise the newest rollout is selected and multiple revisions are marked
+`ambiguous`, with the other paths listed as alternates. Raw listing and grep
+continue to read each rollout separately. Turn interpretation prefers explicit
+final-answer phases, then the terminal event's saved answer, then unphased
+assistant text; commentary never becomes a final answer, and an abort
+discards only the unfinished tail of a turn. Every completed answer of a turn
+is kept (`finals`), not only the last one.
+
 Supported harnesses: `claude-code`, `codex` (CLI + Desktop), `opencode`,
 `agy` (Antigravity CLI),
 `grok`, `devin` (CLI/Desktop), `gemini`, `cursor`, `claude-desktop`,
@@ -199,6 +216,9 @@ Never infer authorship from `kind` alone — check `authorship` and `basis`.
   (`human`, `task-notification`, …); `isMeta=true` and `isSidechain=true`
   mark technical/subagent records — classify them `system`/technical, keep
   `authorship=agent` for orchestrator-injected user records.
+- Command and reminder wrappers classify a text block as context only when
+  they begin it; quoted wrappers inside a prompt remain prompt text. As a
+  result, grep may now show such quoted text under `prompt` instead of `context`.
 - `parentUuid`/`uuid` chain gives conversation order; `sessionId` groups
   records; `subagents/` subdirectories hold sidechain transcripts whose
   `agentId`/`promptId` identify the subagent.

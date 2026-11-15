@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
+from steer.launcher import launcher_instance
 
 HOME = Path.home()
 IS_MACOS = sys.platform == "darwin"
@@ -136,7 +137,7 @@ def frag(
     usage: Any = None,
     interrupted: bool = False,
     origin: str | None = None,
-    origin_basis: str = "",
+    origin_basis: str | None = None,
     native: dict[str, Any] | None = None,
     max_chars: int = 400,
 ) -> dict[str, Any]:
@@ -153,6 +154,12 @@ def frag(
         out["text"], truncated = _trunc(text, max_chars)
         if truncated:
             out["truncated"] = True
+    if origin is not None:
+        out["origin"] = origin
+        if origin_basis:
+            out["origin_basis"] = origin_basis
+    if native is not None:
+        out["native"] = native
     if ts is not None:
         out["ts"] = _iso(ts)
     if authorship != "unknown":
@@ -179,12 +186,6 @@ def frag(
         out["usage"] = _compact_usage(usage)
     if interrupted:
         out["interrupted"] = True
-    if origin:
-        out["origin"] = origin
-    if origin_basis:
-        out["origin_basis"] = origin_basis
-    if native:
-        out["native"] = native
     return out
 
 
@@ -826,6 +827,7 @@ def turns_fallback(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dic
     def close(turn: dict[str, Any], last: bool) -> dict[str, Any]:
         final = turn.pop("_last")
         turn["final"] = final
+        turn["finals"] = [final] if final is not None else []
         turn["final_basis"] = "fallback" if final is not None else "none"
         turn["open"] = last and final is None
         return turn
@@ -849,11 +851,280 @@ def turns_fallback(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dic
 def interpret_session(store: Store, ref: SessionRef, fragments: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Group a full session's fragments into turns with their final answers.
 
-    Each turn: {"prompts", "final", "final_basis" ("native:<marker>" |
-    "fallback" | "none"), "open", "ts_start", "ts_end"}.
+    Each turn has prompts, all completed finals, the last final, its basis,
+    an open flag, and start/end timestamps.
     """
     rule = TURN_RULES.get(store.harness, turns_fallback)
     return rule(ref, list(fragments))
+
+
+def refine_class(ref: SessionRef, turns: list[dict[str, Any]]) -> None:
+    """Upgrade an unknown discovery class from the first genuine prompt."""
+    if ref.extra.get("session_class") not in (None, "unknown") or not turns:
+        return
+    prompts = next((turn.get("prompts") for turn in turns if turn.get("prompts")), [])
+    origin = prompts[0].get("origin") if prompts else None
+    if origin == "delegated":
+        ref.extra.update(session_class="headless", class_basis="executor-prefix")
+    elif origin == "human":
+        ref.extra.update(session_class="interactive", class_basis="genuine prompt")
+
+
+def _answer_segments(fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the leading segment so native answers before any prompt survive."""
+    segments: list[dict[str, Any]] = []
+    current: dict[str, Any] = {"prompts": [], "frags": [], "ts_start": None, "ts_end": None}
+    for f in fragments:
+        if f.get("kind") == "prompt" and f.get("origin", "unknown") != "injected":
+            segments.append(current)
+            current = {"prompts": [f], "frags": [f], "ts_start": f.get("ts"), "ts_end": f.get("ts")}
+        else:
+            current["frags"].append(f)
+            current["ts_start"] = current["ts_start"] or f.get("ts")
+            current["ts_end"] = f.get("ts") or current["ts_end"]
+    segments.append(current)
+    return segments
+
+
+def _claude_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    segments = _answer_segments(fragments)
+    for index, segment in enumerate(segments):
+        messages: dict[Any, dict[str, Any]] = {}
+        interrupted = False
+        for pos, f in enumerate(segment.pop("frags")):
+            if f.get("interrupted"):
+                interrupted = True
+            native = f.get("native") or {}
+            if not native or "stop_reason" not in native:
+                continue
+            mid = native.get("message_id") or ("seq", f.get("seq"), pos)
+            item = messages.setdefault(mid, {"text": None, "reason": None, "order": pos})
+            if f.get("kind") == "assistant" and str(f.get("text") or "").strip():
+                item["text"] = f
+            if native.get("stop_reason"):
+                item["reason"] = native["stop_reason"]
+                item["order"] = pos
+        complete = sorted((v for v in messages.values() if v["text"] and v["reason"] in ("end_turn", "stop_sequence")), key=lambda v: v["order"])
+        finals = [v["text"] for v in complete]
+        basis = "native:" + complete[-1]["reason"] if complete else "none"
+        if not finals and not interrupted and not any(v["reason"] for v in messages.values()) and segment["prompts"]:
+            fallback = next((v["text"] for v in reversed(list(messages.values())) if v["text"]), None)
+            if fallback:
+                finals, basis = [fallback], "fallback"
+        if not segment["prompts"] and not complete:
+            continue
+        final = finals[-1] if finals else None
+        segment.update(finals=finals, final=final, final_basis=basis, open=bool(segment["prompts"]) and (interrupted or (index == len(segments) - 1 and final is None)))
+        out.append(segment)
+    return out
+
+
+TURN_RULES["claude-code"] = _claude_turns
+
+
+def _codex_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Pair exact event/response copies within native turn boundaries, even if
+    # other records appear between them. Keep the event at the earlier position
+    # so an unusually ordered mirror cannot strand earlier assistant text.
+    prepared = list(fragments)
+    start = 0
+    boundaries = {"event_msg.task_started", "event_msg.task_complete", "event_msg.turn_complete", "event_msg.turn_aborted"}
+    for end in range(len(prepared) + 1):
+        if end != len(prepared) and prepared[end].get("native_type") not in boundaries:
+            continue
+        events: dict[str, list[int]] = {}
+        for j in range(start, end):
+            f = prepared[j]
+            if f.get("native_type") == "event_msg.user_message":
+                events.setdefault(f.get("text", ""), []).append(j)
+        for j in range(start, end):
+            f = prepared[j]
+            if f.get("native_type") == "response_item.user" and f.get("kind") == "prompt":
+                matches = events.get(f.get("text", "")) or []
+                if matches:
+                    k = matches.pop(0)
+                    if k < j:
+                        prepared[j] = {}
+                    else:
+                        prepared[j], prepared[k] = prepared[k], {}
+        start = end + 1
+    fragments = [f for f in prepared if f]
+    # The two layers can be separated by context records; the event layer is
+    # authoritative until another assistant or terminal event starts a new turn.
+    selected: list[dict[str, Any]] = []
+    for f in fragments:
+        if f.get("kind") == "prompt" and selected:
+            previous = next((x for x in reversed(selected) if x.get("kind") in ("prompt", "assistant") or x.get("native_type") in ("event_msg.task_started", "event_msg.task_complete", "event_msg.turn_complete", "event_msg.turn_aborted")), None)
+            types = {f.get("native_type"), previous.get("native_type")} if previous else set()
+            if types == {"response_item.user", "event_msg.user_message"}:
+                if f.get("native_type") == "event_msg.user_message":
+                    selected.remove(previous)
+                else:
+                    continue
+        selected.append(f)
+    turns = []
+    segments = _answer_segments(selected)
+    for i, turn in enumerate(segments):
+        segment = turn.pop("frags")
+        commentary = {f.get("text") for f in segment if f.get("kind") == "assistant" and (f.get("native") or {}).get("phase") == "commentary"}
+        choices = [f for f in segment if f.get("kind") == "assistant" and f.get("text") and
+                   (f.get("native") or {}).get("phase") != "commentary" and not (
+                       (f.get("native") or {}).get("layer") == "response" and
+                       not (f.get("native") or {}).get("phase") and f.get("text") in commentary)]
+        candidates: list[tuple[dict[str, Any], str]] = []
+        native_group: list[dict[str, Any]] = []
+        choice_ids = {id(f) for f in choices}
+        def flush() -> None:
+            explicit = next((f for f in reversed(native_group) if (f.get("native") or {}).get("phase") == "final_answer"), None)
+            saved = next((f for f in reversed(native_group) if (f.get("native") or {}).get("layer") in ("task_complete", "turn_complete")), None)
+            final = explicit or saved
+            if final:
+                basis = "native:final_answer" if explicit else "native:" + final["native"]["layer"]
+                if not any(old.get("text") == final.get("text") for old, _ in candidates):
+                    candidates.append((final, basis))
+            native_group.clear()
+        for pos, f in enumerate(segment):
+            nt = f.get("native_type")
+            if nt == "event_msg.task_started" and native_group:
+                flush()
+            if id(f) in choice_ids:
+                native_group.append(f)
+                if (f.get("native") or {}).get("layer") in ("task_complete", "turn_complete"):
+                    flush()
+            if nt == "event_msg.turn_aborted":
+                flush()
+            elif nt in ("event_msg.task_complete", "event_msg.turn_complete"):
+                following = segment[pos + 1] if pos + 1 < len(segment) else {}
+                if (following.get("native") or {}).get("layer") not in ("task_complete", "turn_complete"):
+                    flush()
+        flush()
+        finals = [f for f, _ in candidates]
+        basis = candidates[-1][1] if candidates else "none"
+        abort_event = next((f for f in reversed(segment) if f.get("native_type") == "event_msg.turn_aborted"), None)
+        aborted = abort_event is not None
+        if not finals and not aborted and not any((f.get("native") or {}).get("phase") == "final_answer" or (f.get("native") or {}).get("layer") in ("task_complete", "turn_complete") for f in choices) and turn["prompts"]:
+            final = choices[-1] if choices else None
+            if final:
+                finals, basis = [final], "fallback"
+        if not turn["prompts"] and not candidates:
+            continue
+        final = finals[-1] if finals else None
+        closed = aborted or any(f.get("native_type") in ("event_msg.task_complete", "event_msg.turn_complete") for f in segment)
+        turn.update(finals=finals, final=final, final_basis=basis, open=not closed and final is None and i == len(segments) - 1, aborted=aborted)
+        reason = (abort_event.get("native") or {}).get("reason") if abort_event else None
+        if reason is not None:
+            turn["abort_reason"] = reason
+        turns.append(turn)
+    return turns
+
+
+def _desktop_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if ref.extra.get("surface") == "code-tab":
+        return _claude_turns(ref, fragments)
+    main = [f for f in fragments if not (f.get("rel") or {}).get("parent_tool_use_id")]
+    if any(f.get("native_type") == "user" and f.get("kind") == "prompt" for f in main):
+        main = [f for f in main if f.get("native_type") != "manifest.initialMessage"]
+    turns = []
+    segments = _answer_segments(main)
+    for index, turn in enumerate(segments):
+        finals = []
+        pending = None
+        results = 0
+        for f in turn.pop("frags"):
+            if f.get("kind") == "assistant" and str(f.get("text") or "").strip():
+                pending = f
+            elif str(f.get("native_type", "")).startswith("result."):
+                results += 1
+                if pending:
+                    finals.append(pending)
+                pending = None
+        if not turn["prompts"] and not finals:
+            continue
+        turn.update(finals=finals, final=finals[-1] if finals else None, final_basis="native:result" if finals else "none", open=not results and index == len(segments) - 1)
+        turns.append(turn)
+    return turns
+
+
+def _porch_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    turns = turns_fallback(ref, fragments)
+    final = next((f for f in reversed(fragments) if f.get("native_type") == "final.txt" and isinstance(f.get("text"), str) and f["text"].strip()), None)
+    if final:
+        if turns:
+            turns[-1].update(finals=[final], final=final, final_basis="native:final.txt", open=False)
+        else:
+            # Run registries may retain the final answer but not the brief.
+            turns.append({"prompts": [], "finals": [final], "final": final, "final_basis": "native:final.txt", "open": False,
+                          "ts_start": final.get("ts"), "ts_end": final.get("ts")})
+    return turns
+
+
+TURN_RULES.update({"codex": _codex_turns, "claude-desktop": _desktop_turns, "porch": _porch_turns})
+
+
+def _devin_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    nodes = [f for f in fragments if "canonical" in (f.get("native") or {})]
+    unknown_chain = bool(nodes) and all(f["native"]["canonical"] is None for f in nodes)
+    selected = [f for f in nodes if unknown_chain or f["native"]["canonical"] is True]
+    selected.sort(key=lambda f: (ts_epoch(f.get("ts")) if ts_epoch(f.get("ts")) is not None else float("inf"),
+                                 (f.get("native") or {}).get("node_id", 0), f.get("seq", 0)))
+    last: dict[str, dict[str, Any]] = {}
+    for f in selected:
+        mid = (f.get("native") or {}).get("message_id")
+        if mid and f.get("kind") == "prompt" and f.get("origin") != "injected":
+            last[mid] = f
+    selected = [f for f in selected if f.get("kind") != "prompt" or f.get("origin") == "injected" or not (f.get("native") or {}).get("message_id") or last[f["native"]["message_id"]] is f]
+    turns = []
+    segments = _answer_segments(selected)
+    for i, turn in enumerate(segments):
+        segment = turn.pop("frags")
+        finals = [f for f in segment if f.get("kind") == "assistant" and f.get("text") and (f.get("native") or {}).get("finish_reason") == "stop" and not f["native"].get("has_tool_calls")]
+        marked = any(f.get("native_type") in ("message_nodes.assistant", "message_nodes.thinking", "message_nodes.tool_call", "message_nodes.assistant_status") and (f.get("native") or {}).get("finish_reason") is not None for f in segment)
+        if finals:
+            basis = "fallback" if unknown_chain else "native:stop"
+        elif marked:
+            basis = "none"
+        else:
+            final = next((f for f in reversed(segment) if f.get("kind") == "assistant" and isinstance(f.get("text"), str) and f["text"].strip()), None) if turn["prompts"] else None
+            finals = [final] if final else []
+            basis = "fallback" if finals else "none"
+        if not turn["prompts"] and not finals:
+            continue
+        final = finals[-1] if finals else None
+        turn.update(finals=finals, final=final, final_basis=basis, open=final is None and i == len(segments) - 1)
+        turns.append(turn)
+    return turns
+
+
+TURN_RULES["devin"] = _devin_turns
+
+_PORCH_WORKERS: dict[Path, set[tuple[str, str]]] = {}
+BACKEND_HARNESS = {"claude-code": "claude-code", "codex-cli": "codex", "devin-cli": "devin", "opencode": "opencode", "antigravity-cli": "agy"}
+
+
+def reset_discovery_caches() -> None:
+    """Refresh process-local discovery snapshots before a new index sync."""
+    _PORCH_WORKERS.clear()
+    _CODEX_HOME_CACHE.clear()
+    _ROLLOUT_INDEX.clear()
+    _CLAUDE_TRANSCRIPTS.clear()
+
+
+def porch_workers(root: Path | None = None) -> set[tuple[str, str]]:
+    """Snapshot the run registry once per root for session classification."""
+    root = root or _steer_root() / "runs"
+    if root not in _PORCH_WORKERS:
+        workers: set[tuple[str, str]] = set()
+        if root.is_dir():
+            for directory in root.iterdir():
+                meta = read_json(directory / "meta.json")
+                if isinstance(meta, dict):
+                    harness = BACKEND_HARNESS.get(meta.get("backend"))
+                    sid = meta.get("native_session_id")
+                    if harness and sid:
+                        workers.add((harness, str(sid)))
+        _PORCH_WORKERS[root] = workers
+    return _PORCH_WORKERS[root]
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +1149,8 @@ def _claude_session_ref(store: Store, path: Path, *, light: bool = False) -> Ses
     models: list[str] = []
     parent = None
     agent = None
+    agent_id = None
+    human = delegated = False
     if not light:
         stats: dict[str, int] = {}
         for line_no, rec in iter_jsonl(path, stats):
@@ -886,6 +1159,13 @@ def _claude_session_ref(store: Store, path: Path, *, light: bool = False) -> Ses
             if rec.get("timestamp"):
                 last_ts = rec["timestamp"]
             t = rec.get("type")
+            agent_id = agent_id or rec.get("agentId")
+            if line_no <= 300 and t == "user" and not rec.get("isMeta") and not rec.get("isCompactSummary") and isinstance(rec.get("message"), dict):
+                content = rec["message"].get("content")
+                texts = [content] if isinstance(content, str) else [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"] if isinstance(content, list) else []
+                texts = [s for s in texts if isinstance(s, str) and not s.lstrip().startswith(("[Request interrupted by user", *AUTOCONTEXT_MARKERS))]
+                delegated |= any(is_delegated_brief(s) for s in texts)
+                human |= bool(texts) and isinstance(rec.get("origin"), dict) and rec["origin"].get("kind") == "human"
             if cwd is None and rec.get("cwd"):
                 cwd = rec["cwd"]
             if t == "custom-title" and rec.get("customTitle"):
@@ -901,13 +1181,21 @@ def _claude_session_ref(store: Store, path: Path, *, light: bool = False) -> Ses
     if "subagents/" in rel:
         parent = rel.split("/subagents/")[0]
         agent = path.stem
+    worker = ("claude-code", path.stem) in porch_workers()
     ref = SessionRef(
         "claude-code", store.name, rel,
         locator={"file": str(path)},
         title=title, cwd=cwd,
         created=first_ts, updated=last_ts, models=models,
         parent=parent, agent=agent,
-        extra={"project_dir": project_dir} if project_dir else {},
+        extra={**({"project_dir": project_dir} if project_dir else {}),
+               "native_id": path.stem, "surface": "cli",
+               "launcher_key": launcher_instance("claude", path.stem),
+               "session_class": "subagent" if parent else "headless" if delegated or worker else "interactive" if human else "unknown",
+               "class_basis": "subagents/" if parent else "porch registry" if worker else "executor-prefix" if delegated else "origin.kind=human" if human else "no evidence",
+               "edges": ([{"type": "subagent", "target_harness": "claude-code", "target_id": Path(parent).name,
+                           "unresolved": None, "basis": "subagents/", "locator": {"file": str(path), "agentId": agent_id}}] if parent else []),
+               "sources": [{"path": str(path), "role": "content"}]},
     )
     ref.light = light
     return ref
@@ -965,7 +1253,7 @@ def _claude_record_fragments(store: Store, ref: SessionRef, path: Path,
                 blocks = [b for b in content if isinstance(b, dict)]
             else:
                 blocks = []
-            auto = bool(rec.get("isMeta"))
+            auto = bool(rec.get("isMeta") or rec.get("isCompactSummary"))
             for b in blocks:
                 seq += 1
                 bt = b.get("type")
@@ -979,18 +1267,31 @@ def _claude_record_fragments(store: Store, ref: SessionRef, path: Path,
                 else:
                     txt = b.get("text") or ""
                     interrupted = txt.startswith("[Request interrupted by user")
-                    marker = interrupted or auto or any(m in txt for m in AUTOCONTEXT_MARKERS)
+                    marker = interrupted or auto or any(txt.lstrip().startswith(m) for m in AUTOCONTEXT_MARKERS)
                     auth = "human" if origin_kind == "human" else ("system" if marker else ("agent" if origin_kind else "unknown"))
+                    if auto:
+                        origin, origin_basis = "injected", "isMeta" if rec.get("isMeta") else "isCompactSummary"
+                    elif marker:
+                        origin, origin_basis = "injected", "user interrupt" if interrupted else "wrapper"
+                    elif is_delegated_brief(txt):
+                        origin, origin_basis = "delegated", "executor-prefix"
+                    elif origin_kind:
+                        origin, origin_basis = {"human": "human", "peer": "delegated"}.get(origin_kind, "injected"), f"origin.kind={origin_kind}"
+                    else:
+                        origin, origin_basis = "unknown", "no origin"
                     yield frag("claude-code", store.name, ref.session_id, seq,
                                "context" if marker and auth == "system" else "prompt",
                                "user", loc, text=b.get("text"), ts=ts,
                                authorship=auth, visible=not marker, interrupted=interrupted,
                                basis=("user interrupt record" if interrupted
                                       else f"origin.kind={origin_kind!r} isMeta={auto}"),
-                               cwd=cwd, rel=rel_ids, max_chars=max_chars)
+                               cwd=cwd, rel=rel_ids, origin=origin, origin_basis=origin_basis, max_chars=max_chars)
         elif t == "assistant" and msg is not None:
             model = msg.get("model")
             usage = msg.get("usage")
+            if not msg.get("content") and msg.get("stop_reason"):
+                yield frag("claude-code", store.name, ref.session_id, seq, "metadata", "assistant.stop_reason", loc,
+                           ts=ts, authorship="agent", native={"message_id": msg.get("id"), "stop_reason": msg.get("stop_reason")}, max_chars=max_chars)
             for b in msg.get("content") or []:
                 if not isinstance(b, dict):
                     continue
@@ -999,21 +1300,21 @@ def _claude_record_fragments(store: Store, ref: SessionRef, path: Path,
                 if bt == "thinking" or bt == "redacted_thinking":
                     yield frag("claude-code", store.name, ref.session_id, seq, "reasoning", "assistant.thinking", loc,
                                text=b.get("thinking") or b.get("data"), ts=ts, authorship="agent",
-                               model=model, cwd=cwd, rel={**rel_ids, "message_id": msg.get("id")}, max_chars=max_chars)
+                               model=model, cwd=cwd, rel={**rel_ids, "message_id": msg.get("id")}, native={"message_id": msg.get("id"), "stop_reason": msg.get("stop_reason")}, max_chars=max_chars)
                 elif bt == "tool_use" or bt == "server_tool_use":
                     yield frag("claude-code", store.name, ref.session_id, seq, "tool_call", f"assistant.{bt}", loc,
                                text=json.dumps({"name": b.get("name"), "input": b.get("input")}, ensure_ascii=False),
                                ts=ts, authorship="agent", model=model, cwd=cwd, usage=usage,
-                               rel={**rel_ids, "call_id": b.get("id"), "message_id": msg.get("id"), "tool": b.get("name")},
+                               rel={**rel_ids, "call_id": b.get("id"), "message_id": msg.get("id"), "tool": b.get("name")}, native={"message_id": msg.get("id"), "stop_reason": msg.get("stop_reason")},
                                max_chars=max_chars)
                 elif bt in ("text",):
                     yield frag("claude-code", store.name, ref.session_id, seq, "assistant", "assistant.text", loc,
                                text=b.get("text"), ts=ts, authorship="agent", model=model, cwd=cwd,
                                usage=usage,
-                               rel={**rel_ids, "message_id": msg.get("id")}, max_chars=max_chars)
+                               rel={**rel_ids, "message_id": msg.get("id")}, native={"message_id": msg.get("id"), "stop_reason": msg.get("stop_reason")}, max_chars=max_chars)
                 else:
                     yield frag("claude-code", store.name, ref.session_id, seq, "unknown", f"assistant.{bt}", loc,
-                               text=b, ts=ts, model=model, cwd=cwd, rel=rel_ids, max_chars=max_chars)
+                               text=b, ts=ts, model=model, cwd=cwd, rel=rel_ids, native={"message_id": msg.get("id"), "stop_reason": msg.get("stop_reason")}, max_chars=max_chars)
         elif t in ("summary", "custom-title", "ai-title"):
             yield frag("claude-code", store.name, ref.session_id, seq, "metadata", t, loc,
                        text=rec.get("summary") or rec.get("customTitle") or rec.get("aiTitle"),
@@ -1055,6 +1356,170 @@ def _tool_result_text(block: dict[str, Any]) -> str:
 # codex-cli
 # ---------------------------------------------------------------------------
 
+def _codex_state_paths(home: Path, sources: dict[str, Path] | None = None) -> dict[str, str]:
+    paths: dict[str, str] = {}
+    for db in sorted(home.glob("state_*.sqlite"), reverse=True):
+        try:
+            conn = open_sqlite_ro(db)
+            try:
+                if {"id", "rollout_path"} <= table_columns(conn, "threads"):
+                    for sid, path in conn.execute("SELECT id, rollout_path FROM threads WHERE rollout_path IS NOT NULL"):
+                        if path:
+                            if str(sid) not in paths:
+                                paths[str(sid)] = path
+                                if sources is not None:
+                                    sources[str(sid)] = db
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise sqlite3.DatabaseError(f"cannot read Codex state database {db}: {exc}") from exc
+    return paths
+
+
+def _codex_state_edges(home: Path) -> dict[str, tuple[str, Path]]:
+    edges: dict[str, tuple[str, Path]] = {}
+    for db in sorted(home.glob("state_*.sqlite"), reverse=True):
+        try:
+            conn = open_sqlite_ro(db)
+            try:
+                if table_exists(conn, "thread_spawn_edges"):
+                    for parent, child in conn.execute("SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges"):
+                        if parent and child:
+                            edges.setdefault(str(child), (str(parent), db))
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise sqlite3.DatabaseError(f"cannot read Codex lineage database {db}: {exc}") from exc
+    return edges
+
+
+def _codex_resolve_stored_path(stored: str | None) -> Path | None:
+    if stored:
+        path = Path(stored)
+        if path.is_file():
+            return path
+        for candidate in _codex_rollout_fallbacks(stored):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+_CODEX_HOME_CACHE: dict[tuple[Path, tuple[Path, ...]], tuple[dict[str, tuple[Path, list[str], str | None]], dict[str, tuple[str, Path]], dict[str, Path], dict[Path, list[Path]]]] = {}
+_CODEX_ROLLOUT_NAME = re.compile(r"^rollout-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(.+)\.jsonl(?:\.zst)?$")
+
+
+def _codex_revision_choices(roots: list[Path], state_paths: dict[str, str], stats: dict[str, int] | None = None,
+                            paths_by_root: dict[Path, list[Path]] | None = None) -> dict[str, tuple[Path, list[str], str | None]]:
+    """Choose one rollout per thread; alternatives remain separate sources."""
+    grouped: dict[str, list[Path]] = {}
+    discovered: set[Path] = set()
+    for root in roots:
+        for pattern in ("rollout-*.jsonl*",):
+            for path in _walk(root, pattern, stats):
+                if not path.name.endswith((".jsonl", ".jsonl.zst")):
+                    continue
+                if path.name.endswith(".zst") and path.with_suffix("").is_file():
+                    continue
+                if paths_by_root is not None:
+                    paths_by_root.setdefault(root, []).append(path)
+                discovered.add(path)
+                match = _CODEX_ROLLOUT_NAME.match(path.name)
+                sid = match.group(5) if match else None
+                if sid is None:
+                    for _, rec in iter_jsonl(path, {}, max_lines=300):
+                        if rec.get("type") == "session_meta":
+                            payload = rec.get("payload") or {}
+                            sid = payload.get("id") or payload.get("session_id")
+                            break
+                if sid:
+                    grouped.setdefault(str(sid), []).append(path)
+    resolved: dict[str, Path | None] = {}
+    for sid, stored in state_paths.items():
+        stored_path = Path(stored)
+        sibling = stored_path.with_name(stored_path.name[:-4] if stored_path.name.endswith(".zst") else stored_path.name + ".zst")
+        candidates = (stored_path, sibling, roots[-1] / stored_path.name, roots[-1] / sibling.name)
+        path = next((candidate for candidate in candidates if candidate in discovered), None)
+        if path is None or (path != stored_path and stored_path.is_file()):
+            path = _codex_resolve_stored_path(stored)
+        resolved[sid] = path
+        if path and path not in grouped.setdefault(sid, []):
+            grouped[sid].append(path)
+    choices = {}
+    for sid, paths in grouped.items():
+        if not paths:
+            continue
+        paths = list(dict.fromkeys(paths))
+        def mtime(path: Path) -> int:
+            try:
+                return path.stat().st_mtime_ns
+            except OSError:
+                return 0
+        if len(paths) > 1:
+            paths.sort(key=lambda p: (mtime(p), str(p)), reverse=True)
+        preferred = resolved.get(sid)
+        chosen = preferred if preferred in paths else paths[0]
+        alternatives = [str(p) for p in paths if p != chosen]
+        choices[sid] = (chosen, alternatives, "ambiguous" if preferred is None and alternatives else None)
+    return choices
+
+
+def _codex_home_data(home: Path, roots: list[Path], stats: dict[str, int] | None = None):
+    """Snapshot discovery metadata once per home and root set, not per store."""
+    key = (home, tuple(roots))
+    if key not in _CODEX_HOME_CACHE:
+        state_sources: dict[str, Path] = {}
+        state_paths = _codex_state_paths(home, state_sources)
+        state_edges = _codex_state_edges(home)
+        paths_by_root: dict[Path, list[Path]] = {}
+        choices = _codex_revision_choices(roots, state_paths, stats, paths_by_root)
+        for paths in paths_by_root.values():
+            paths.sort(key=lambda p: (p.name.endswith(".zst"), str(p)))
+        _CODEX_HOME_CACHE[key] = choices, state_edges, state_sources, paths_by_root
+    return _CODEX_HOME_CACHE[key]
+
+
+def _codex_enrich_ref(ref: SessionRef, path: Path | None = None, *, alternatives: list[str] | None = None,
+                      revision: str | None = None, state_parent: str | None = None,
+                      state_db: Path | None = None, meta: dict[str, Any] | None = None,
+                      delegated: bool = False) -> SessionRef:
+    """Classify using only already-read head or state-row evidence."""
+    meta = meta or {}
+    delegated |= is_delegated_brief(ref.extra.get("first_user_message") or "")
+    status: dict[str, Any] = {"alternates": alternatives or []}
+    if revision:
+        status["revision"] = revision
+    source = meta.get("source") or ref.extra.get("source") or ref.extra.get("source_kind")
+    source_kind, parent, _, _ = _codex_source_kind(source)
+    edge_list = []
+    locator = {"file": str(path)} if path and not ref.locator.get("db") else ref.locator
+    for kind, target, basis, loc in (
+        ("subagent", parent, "thread_spawn.parent_thread_id", locator),
+        ("subagent", state_parent, "thread_spawn_edges", {"db": str(state_db or ref.locator.get("db")), "table": "thread_spawn_edges", "key": ref.session_id}),
+        ("fork", meta.get("forked_from_id"), "forked_from_id", locator),
+    ):
+        if target:
+            edge_list.append({"type": kind, "target_harness": "codex", "target_id": target, "unresolved": None, "basis": basis, "locator": loc})
+    worker = ("codex", ref.session_id) in porch_workers()
+    originator = meta.get("originator") or ref.extra.get("originator")
+    interactive = originator in ("codex-tui", "codex_work_desktop", "Codex Desktop") or (not originator and source_kind == "vscode")
+    is_subagent = source_kind == "subagent" or bool(state_parent)
+    surface = "cli" if originator == "codex-tui" else "app" if originator in ("codex_work_desktop", "Codex Desktop") else "ide" if source_kind == "vscode" else None
+    sources = [{**ref.locator, "role": "metadata"}] if ref.locator.get("db") else []
+    if path:
+        sources.append({"path": str(path), "role": "content"})
+    if state_db:
+        sources.append({"db": str(state_db), "table": "thread_spawn_edges", "key": ref.session_id, "role": "lineage"})
+    sources.extend({"path": alternate, "role": "content"} for alternate in alternatives or [])
+    ref.parent = ref.parent or parent or state_parent or meta.get("forked_from_id")
+    ref.extra.update(native_id=ref.session_id, surface=surface,
+                     launcher_key=launcher_instance("codex", ref.session_id),
+                     session_class="subagent" if is_subagent else "headless" if worker or delegated else "interactive" if interactive else "unknown",
+                     class_basis="thread_spawn" if is_subagent else "porch registry" if worker else "executor-prefix" if delegated else "interactive client" if interactive else "no evidence",
+                     edges=edge_list, native_status=status, sources=sources)
+    if path:
+        ref.extra["selected_rollout"] = str(path)
+    return ref
+
 def codex_iter_sessions(store: Store) -> Iterator[SessionRef]:
     if store.kind == "sqlite":
         yield from _codex_sqlite_sessions(store)
@@ -1062,8 +1527,14 @@ def codex_iter_sessions(store: Store) -> Iterator[SessionRef]:
     if store.name == "history":
         yield from _codex_history_sessions(store)
         return
-    paths = (sorted(_walk(store.path, "rollout-*.jsonl", store.walk_stats))
-             + sorted(_walk(store.path, "rollout-*.jsonl.zst", store.walk_stats)))
+    home = store.path.parent if store.path.name in ("sessions", "archived_sessions") else store.path
+    roots = [home / "sessions", home / "archived_sessions"] if store.path.name in ("sessions", "archived_sessions") else [store.path]
+    try:
+        choices, state_edges, state_sources, paths_by_root = _codex_home_data(home, roots, store.walk_stats)
+    except sqlite3.Error as exc:
+        store.status, store.error = "unavailable", str(exc)
+        return
+    paths = paths_by_root.get(store.path, [])
     for path in paths:
         if path.name.endswith(".zst") and path.with_suffix("").exists():
             continue  # the uncompressed rollout is the canonical copy
@@ -1081,6 +1552,7 @@ def codex_iter_sessions(store: Store) -> Iterator[SessionRef]:
         meta = None
         first_ts = None
         models: list[str] = []
+        delegated = False
         for line_no, rec in iter_jsonl(path, stats, max_lines=300):
             if first_ts is None:
                 first_ts = rec.get("timestamp")
@@ -1091,16 +1563,23 @@ def codex_iter_sessions(store: Store) -> Iterator[SessionRef]:
             elif t == "turn_context" and payload.get("model"):
                 if payload["model"] not in models:
                     models.append(payload["model"])
+            if t == "event_msg" and payload.get("type") == "user_message":
+                delegated |= is_delegated_brief(payload.get("message") or "")
+            elif t == "response_item" and payload.get("type") == "message" and payload.get("role") == "user":
+                delegated |= is_delegated_brief(_codex_message_text(payload))
             if meta is not None and first_ts is not None and models:
                 break
         if stats.get("unreadable"):
             store.status, store.error = "unavailable", f"cannot read session: {path}"
             continue
         meta = meta or {}
-        lineage = meta.get("source", {}).get("subagent", {}).get("thread_spawn") if isinstance(meta.get("source"), dict) else None
+        source_kind, source_parent, _, _ = _codex_source_kind(meta.get("source"))
+        lineage = {"parent_thread_id": source_parent} if source_kind == "subagent" else None
         parent = meta.get("parent_thread_id") or meta.get("forked_from_id") or (lineage or {}).get("parent_thread_id")
-        yield SessionRef(
-            "codex", store.name, str(meta.get("id") or meta.get("session_id") or (name_m.group(5) if name_m else path.stem)),
+        sid = str(meta.get("id") or meta.get("session_id") or (name_m.group(5) if name_m else path.stem))
+        choice = choices.get(sid)
+        ref = SessionRef(
+            "codex", store.name, sid,
             locator={"file": str(path)},
             cwd=meta.get("cwd"), created=first_ts or created_name or meta.get("timestamp"),
             updated=updated,
@@ -1109,14 +1588,29 @@ def codex_iter_sessions(store: Store) -> Iterator[SessionRef]:
             agent=meta.get("agent_nickname") or meta.get("agent_path"),
             extra={k: meta[k] for k in ("originator", "cli_version") if meta.get(k)},
         )
+        state_edge = state_edges.get(sid)
+        _codex_enrich_ref(ref, path, alternatives=choice[1] if choice else [], revision=choice[2] if choice else None,
+                          state_parent=state_edge[0] if state_edge else None, state_db=state_edge[1] if state_edge else None,
+                          meta=meta, delegated=delegated)
+        if choice:
+            ref.extra["selected_rollout"] = str(choice[0])
+            ref.extra["sources"] = [{"path": str(choice[0]), "role": "content"}] + [
+                {"path": p, "role": "content"} for p in choice[1]
+            ] + [s for s in ref.extra["sources"] if s.get("db")]
+        if sid in state_sources:
+            ref.extra["sources"].append({"db": str(state_sources[sid]), "table": "threads", "key": sid, "role": "metadata"})
+        yield ref
 
 
 def _codex_source_kind(src: Any) -> tuple[str, str | None, str | None, str | None]:
     """threads.source / session_meta.source → (kind, parent_thread, nickname, path)."""
     if isinstance(src, dict):
-        sp = (src.get("subagent") or {}).get("thread_spawn") or {}
-        if sp:
+        subagent = src.get("subagent")
+        sp = subagent.get("thread_spawn") or {} if isinstance(subagent, dict) else {}
+        if isinstance(sp, dict) and sp:
             return "subagent", sp.get("parent_thread_id"), sp.get("agent_nickname"), sp.get("agent_path")
+        if subagent is not None:
+            return "subagent", None, None, None
         return "other", None, None, None
     if isinstance(src, str) and src.startswith("{"):
         try:
@@ -1138,6 +1632,8 @@ def _codex_sqlite_sessions(store: Store) -> Iterator[SessionRef]:
                 store.status, store.error = "unsupported", "no threads table"
                 return
             edges: dict[str, str] = {}
+            home = store.path.parent
+            choices, _, state_sources, _ = _codex_home_data(home, [home / "sessions", home / "archived_sessions"])
             if table_exists(conn, "thread_spawn_edges"):
                 try:
                     for p, c in conn.execute("SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges"):
@@ -1156,7 +1652,7 @@ def _codex_sqlite_sessions(store: Store) -> Iterator[SessionRef]:
                 parent = parent or edges.get(rec["id"])
                 title = (rec.get("title") or rec.get("name") or rec.get("preview")
                          or rec.get("first_user_message") or "")[:160] or None
-                yield SessionRef(
+                ref = SessionRef(
                     "codex", store.name, rec["id"],
                     locator={"db": str(store.path), "table": "threads", "key": rec["id"]},
                     title=title, cwd=rec.get("cwd"), created=rec.get("created_at"),
@@ -1169,16 +1665,23 @@ def _codex_sqlite_sessions(store: Store) -> Iterator[SessionRef]:
                            "originator": rec.get("originator"), "project_id": rec.get("project_id"),
                            "first_user_message": rec.get("first_user_message") or None},
                 )
+                choice = choices.get(rec["id"])
+                path = choice[0] if choice else None if rec["id"] in state_sources else _codex_resolve_stored_path(rec.get("rollout_path"))
+                _codex_enrich_ref(ref, path, alternatives=choice[1] if choice else [], revision=choice[2] if choice else None,
+                                  state_parent=edges.get(rec["id"]), meta={"source": rec.get("source"), "originator": rec.get("originator")})
+                yield ref
         elif store.name == "catalog":
             if not table_exists(conn, "local_thread_catalog"):
                 store.status, store.error = "unsupported", "no local_thread_catalog table"
                 return
+            home = store.path.parent.parent
+            choices, _, _, _ = _codex_home_data(home, [home / "sessions", home / "archived_sessions"])
             for row in conn.execute(
                 "SELECT thread_id, display_title, cwd, source_created_at, source_updated_at, "
                 "source_kind, git_branch, model_provider, project_id, conversation_origin, "
                 "missing_candidate, host_id FROM local_thread_catalog"
             ):
-                yield SessionRef(
+                ref = SessionRef(
                     "codex", "catalog", row[0],
                     locator={"db": str(store.path), "table": "local_thread_catalog", "key": row[0]},
                     title=row[1] or None, cwd=row[2], created=row[3], updated=row[4],
@@ -1187,19 +1690,27 @@ def _codex_sqlite_sessions(store: Store) -> Iterator[SessionRef]:
                            "conversation_origin": row[9], "host_id": row[11],
                            "missing_candidate": bool(row[10])},
                 )
+                choice = choices.get(ref.session_id)
+                _codex_enrich_ref(ref, choice[0] if choice else None, alternatives=choice[1] if choice else [], revision=choice[2] if choice else None)
+                yield ref
         elif store.name == "summaries":
             if not table_exists(conn, "thread_turn_summaries"):
                 store.status, store.error = "unsupported", "no thread_turn_summaries table"
                 return
+            home = store.path.parent.parent if store.path.parent.name == "sqlite" else store.path.parent
+            choices, _, _, _ = _codex_home_data(home, [home / "sessions", home / "archived_sessions"])
             for row in conn.execute(
                 "SELECT thread_id, summary, compact_summary, updated_at FROM thread_turn_summaries"
             ):
-                yield SessionRef(
+                ref = SessionRef(
                     "codex", "summaries", row[0],
                     locator={"db": str(store.path), "table": "thread_turn_summaries", "key": row[0]},
                     title=(row[2] or (row[1] or "")[:80]) or None, updated=row[3],
                     extra={"cloud_summary": True},
                 )
+                choice = choices.get(ref.session_id)
+                _codex_enrich_ref(ref, choice[0] if choice else None, alternatives=choice[1] if choice else [], revision=choice[2] if choice else None)
+                yield ref
     except sqlite3.Error as e:
         store.status, store.error = "unavailable", str(e)
     finally:
@@ -1217,8 +1728,9 @@ def _codex_history_sessions(store: Store) -> Iterator[SessionRef]:
         sid = str(rec.get("session_id") or "")
         if not sid:
             continue
-        e = agg.setdefault(sid, {"n": 0, "first": None, "last": None, "title": None})
+        e = agg.setdefault(sid, {"n": 0, "first": None, "last": None, "title": None, "delegated": False})
         e["n"] += 1
+        e["delegated"] |= is_delegated_brief(rec.get("text") or "")
         ts = rec.get("ts")
         if e["first"] is None:
             e["first"] = ts
@@ -1226,12 +1738,17 @@ def _codex_history_sessions(store: Store) -> Iterator[SessionRef]:
         if ts:
             e["last"] = ts
     for sid, e in agg.items():
-        yield SessionRef(
+        ref = SessionRef(
             "codex", "history", sid,
             locator={"file": str(store.path)},
             title=e["title"], created=e["first"], updated=e["last"],
             extra={"prompt_count": e["n"]},
         )
+        _codex_enrich_ref(ref)
+        if e["delegated"] and ref.extra["session_class"] != "headless":
+            ref.extra["session_class"], ref.extra["class_basis"] = "headless", "executor-prefix"
+        ref.extra["sources"] = [{"path": str(store.path), "role": "content"}]
+        yield ref
 
 
 _ROLLOUT_INDEX: dict[Path, list[tuple[dict[str, Path], dict[str, Path]]]] = {}
@@ -1308,6 +1825,9 @@ def _codex_rollout_for(ref: SessionRef) -> str | None:
     file = ref.locator.get("file")
     if file:
         return file
+    selected = ref.extra.get("selected_rollout")
+    if selected and Path(selected).is_file():
+        return selected
     rollout = ref.extra.get("rollout_path")
     if rollout:
         path = Path(rollout)
@@ -1336,6 +1856,7 @@ def _codex_db_only_fragments(store: Store, ref: SessionRef, max_chars: int, stat
         yield frag("codex", store.name, ref.session_id, seq, "prompt", "threads.first_user_message",
                    ref.locator, text=first, ts=ref.created, authorship="unknown", visible=True,
                    basis="index-level first prompt preview; full transcript unavailable",
+                   origin="delegated" if is_delegated_brief(first) else "unknown", origin_basis="executor-prefix" if is_delegated_brief(first) else "threads.first_user_message",
                    max_chars=max_chars)
     sdb = store.path if store.name == "summaries" else None
     if sdb is None:
@@ -1373,6 +1894,7 @@ def codex_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
                        {"file": str(store.path), "line": line_no},
                        text=rec.get("text"), ts=rec.get("ts"), authorship="unknown",
                        visible=True, basis="prompt log entry (no per-record authorship proof)",
+                       origin="delegated" if is_delegated_brief(rec.get("text") or "") else "unknown", origin_basis="executor-prefix" if is_delegated_brief(rec.get("text") or "") else "history.entry",
                        rel={"sessionId": rec.get("session_id")}, max_chars=max_chars)
         return
     file = _codex_rollout_for(ref)
@@ -1386,12 +1908,10 @@ def _codex_record_fragments(store: Store, ref: SessionRef, path: Path,
                             records: Iterable[tuple[int, dict[str, Any]]], max_chars: int) -> Iterator[dict[str, Any]]:
     """Fragments of the given rollout records.
 
-    A record's kind and text depend on that record alone; the state carried
-    across records (event_texts) only changes a prompt's basis wording.
+    Each record is classified independently, including when called by the
+    raw prefilter on a subset of the rollout.
     """
     seq = 0
-    event_texts: set[str] = set()   # event-layer texts; response_item dups marked via membership
-    pending_user_items: dict[str, int] = {}
     for line_no, rec in records:
         seq += 1
         loc = {"file": str(path), "line": line_no}
@@ -1401,7 +1921,8 @@ def _codex_record_fragments(store: Store, ref: SessionRef, path: Path,
         pt = payload.get("type")
 
         if t == "session_meta":
-            lineage = (payload.get("source") or {}).get("subagent", {}).get("thread_spawn") if isinstance(payload.get("source"), dict) else None
+            _, source_parent, _, _ = _codex_source_kind(payload.get("source"))
+            lineage = {"parent_thread_id": source_parent} if source_parent else None
             yield frag("codex", store.name, ref.session_id, seq, "metadata", "session_meta", loc,
                        text={k: payload.get(k) for k in ("id", "cwd", "originator", "cli_version", "model_provider", "thread_source", "agent_nickname", "agent_path") if payload.get(k)},
                        ts=ts, authorship="system", visible=False,
@@ -1424,22 +1945,23 @@ def _codex_record_fragments(store: Store, ref: SessionRef, path: Path,
                     # verbatim human prompts are confirmed by event_msg.user_message;
                     # injections carry known wrappers — anything else is a genuine
                     # (if unverified) user-layer record, not invisible context
-                    injected = any(m in text for m in CODEX_INJECTION_MARKERS) or \
+                    injected = role == "developer" or any(m in text for m in CODEX_INJECTION_MARKERS) or \
                         any(m in text for m in AUTOCONTEXT_MARKERS)
-                    mirrored = text in event_texts
                     if injected:
                         kind, native, auth, vis = "context", "response_item." + role, "system", False
                         basis = "response-layer injection (bootstrap/env/steer)"
                     else:
                         kind, native, auth, vis = "prompt", "response_item." + role, "unknown", None
-                        basis = ("mirrors event_msg.user_message" if mirrored else
-                                 "no event_msg mirror — free text without injection markers")
-                        pending_user_items[text] = seq
+                        basis = "response-layer user text without injection markers"
                 else:
                     kind, native, auth, vis, basis = "metadata", f"response_item.{role}", "system", False, "non-conversational role"
                 yield frag("codex", store.name, ref.session_id, seq, kind, native, loc,
                            text=text, ts=ts, authorship=auth, visible=vis, basis=basis,
-                           cwd=None, rel={"item_id": payload.get("id")}, max_chars=max_chars)
+                           cwd=None, rel={"item_id": payload.get("id")},
+                           origin=("injected" if kind == "context" else "delegated" if is_delegated_brief(text) else "unknown") if role in ("user", "developer") else None,
+                           origin_basis=("injection marker" if kind == "context" else "executor-prefix" if is_delegated_brief(text) else "response_item.user") if role in ("user", "developer") else None,
+                           native={"phase": payload.get("phase"), "turn_id": payload.get("turn_id"), "layer": "response"} if kind == "assistant" else None,
+                           max_chars=max_chars)
             elif pt == "reasoning":
                 yield frag("codex", store.name, ref.session_id, seq, "reasoning", "response_item.reasoning", loc,
                            text=(payload.get("summary") or [{}])[0].get("text") if payload.get("summary") else payload.get("content"),
@@ -1459,22 +1981,28 @@ def _codex_record_fragments(store: Store, ref: SessionRef, path: Path,
                            text=payload, ts=ts, rel={"item_id": payload.get("id")}, max_chars=max_chars)
         elif t == "event_msg":
             if pt == "user_message":
-                event_texts.add(payload.get("message") or "")
                 yield frag("codex", store.name, ref.session_id, seq, "prompt", "event_msg.user_message", loc,
                            text=payload.get("message"), ts=ts, authorship="unknown", visible=True,
                            basis="verbatim submitted prompt (authorship not guaranteed — may be orchestrator-injected)",
-                           rel={"turn_id": payload.get("turn_id")}, max_chars=max_chars)
+                           rel={"turn_id": payload.get("turn_id")}, origin="delegated" if is_delegated_brief(payload.get("message") or "") else "human",
+                           origin_basis="executor-prefix" if is_delegated_brief(payload.get("message") or "") else "event_msg.user_message", max_chars=max_chars)
             elif pt == "agent_message":
                 yield frag("codex", store.name, ref.session_id, seq, "assistant", "event_msg.agent_message", loc,
                            text=payload.get("message"), ts=ts, authorship="agent", visible=True,
-                           phase=payload.get("phase"), rel={"turn_id": payload.get("turn_id")}, max_chars=max_chars)
-            elif pt in ("task_started", "task_complete", "turn_aborted"):
+                           phase=payload.get("phase"), rel={"turn_id": payload.get("turn_id")},
+                           native={"phase": payload.get("phase"), "turn_id": payload.get("turn_id"), "layer": "event"}, max_chars=max_chars)
+            elif pt in ("task_started", "task_complete", "turn_complete", "turn_aborted"):
                 yield frag("codex", store.name, ref.session_id, seq, "boundary", f"event_msg.{pt}", loc,
-                           text={k: payload.get(k) for k in ("turn_id", "reason", "msg") if payload.get(k)},
+                           text={k: payload.get(k) for k in ("turn_id", "reason", "msg", "last_agent_message") if payload.get(k)},
                            ts=ts, authorship="system", visible=False,
-                           status={"task_complete": "completed", "turn_aborted": "aborted"}.get(pt),
+                           status={"task_complete": "completed", "turn_complete": "completed", "turn_aborted": "aborted"}.get(pt),
                            interrupted=(pt == "turn_aborted"),
+                           native={"reason": payload.get("reason")} if pt == "turn_aborted" else None,
                            rel={"turn_id": payload.get("turn_id")}, max_chars=max_chars)
+                if pt in ("task_complete", "turn_complete") and payload.get("last_agent_message"):
+                    yield frag("codex", store.name, ref.session_id, seq, "assistant", f"event_msg.{pt}.last_agent_message", loc,
+                               text=payload["last_agent_message"], ts=ts, authorship="agent", visible=True,
+                               native={"phase": None, "turn_id": payload.get("turn_id"), "layer": pt}, max_chars=max_chars)
             elif pt == "guardian_assessment":
                 yield frag("codex", store.name, ref.session_id, seq, "permission", "event_msg.guardian_assessment", loc,
                            text={k: payload.get(k) for k in ("target_item_id", "status", "decision_source") if payload.get(k)},
@@ -1545,9 +2073,11 @@ def _oc_prompt_origin(text: Any) -> tuple[str, str, str]:
     return "human", "user message", "human"
 
 
-def _oc_session_class(parent_id: Any, first_prompt: str | None) -> tuple[str, str]:
+def _oc_session_class(parent_id: Any, first_prompt: str | None, sid: str) -> tuple[str, str]:
     if parent_id:
         return "subagent", "parent_id"
+    if ("opencode", sid) in porch_workers():
+        return "headless", "porch registry"
     if first_prompt:
         if first_prompt.lstrip().startswith(_OPENCODE_SUBAGENT_PREFIX):
             return "headless", "subagent-spawn prefix"
@@ -1647,7 +2177,7 @@ def _opencode_db_sessions(store: Store) -> Iterator[SessionRef]:
                 except (json.JSONDecodeError, AttributeError):
                     model = model_raw
                 parent_id, fork_id = rec.get("parent_id"), rec.get("fork_session_id")
-                session_class, class_basis = _oc_session_class(parent_id, first_user.get(sid))
+                session_class, class_basis = _oc_session_class(parent_id, first_user.get(sid), sid)
                 yield SessionRef("opencode", store.name, sid,
                     locator={"table": "session_v2", "key": sid, "db": str(store.path)},
                     title=rec.get("title"), cwd=rec.get("directory"),
@@ -1943,7 +2473,7 @@ def _oc_v1_file_sessions(store: Store) -> Iterator[SessionRef]:
         model_info = data.get("model") if isinstance(data.get("model"), dict) else {}
         model = data.get("modelID") or model_info.get("modelID") or model_info.get("id")
         first_prompt = _oc_v1_first_prompt(storage, sid)
-        session_class, class_basis = _oc_session_class(parent_id, first_prompt)
+        session_class, class_basis = _oc_session_class(parent_id, first_prompt, sid)
         edges = []
         if parent_id:
             edges.append({"type": "subagent", "target_harness": "opencode", "target_id": parent_id,
@@ -2075,7 +2605,7 @@ def _oc_legacy_db_sessions(conn: sqlite3.Connection, store: Store,
             model = json.loads(model_raw).get("id") if model_raw else None
         except (json.JSONDecodeError, AttributeError):
             model = model_raw
-        session_class, class_basis = _oc_session_class(parent_id, _oc_v1_first_prompt_db(conn, sid))
+        session_class, class_basis = _oc_session_class(parent_id, _oc_v1_first_prompt_db(conn, sid), sid)
         edges = []
         if parent_id:
             edges.append({"type": "subagent", "target_harness": "opencode", "target_id": parent_id,
@@ -2213,27 +2743,13 @@ def opencode_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats
 def opencode_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """OpenCode turns (v1 file/legacy + v2 share one rule).
 
-    v2: the turn's last completed assistant message (time.completed, finish in
-    stop/length/content-filter); final = its text segment after the last tool
-    part. v1: text parts of the last step whose step-finish reason is stop or
-    length. open = last turn unanswered while the session may still be live.
+    v2 collects completed messages (stop/length/content-filter) after their
+    last tool part. v1 collects text from each stopped or length-limited step.
+    The last candidate remains available as final.
     """
     is_v1 = ref.extra.get("oc_source") in ("file", "legacy") or any(
         f.get("native_type") in ("part.step-start", "part.step-finish") for f in fragments)
-    # Split into turns on genuine prompts.
-    turns: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    for f in fragments:
-        if f.get("kind") == "prompt" and f.get("origin", "unknown") != "injected":
-            if current is not None:
-                turns.append(current)
-            current = {"prompts": [f], "frags": [f],
-                       "ts_start": f.get("ts"), "ts_end": f.get("ts")}
-        elif current is not None:
-            current["frags"].append(f)
-            current["ts_end"] = f.get("ts") or current["ts_end"]
-    if current is not None:
-        turns.append(current)
+    turns = _answer_segments(fragments)
 
     def _join(frags: list[dict[str, Any]]) -> dict[str, Any] | None:
         texts = [f for f in frags if isinstance(f.get("text"), str) and f["text"].strip()]
@@ -2249,6 +2765,7 @@ def opencode_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dic
     last_i = len(turns) - 1
     for i, turn in enumerate(turns):
         final, final_basis = None, "none"
+        finals: list[dict[str, Any]] = []
         if is_v1:
             # Steps bracketed by step-start/step-finish boundary fragments.
             step_texts: list[dict[str, Any]] = []
@@ -2261,8 +2778,11 @@ def opencode_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dic
                 elif nt == "part.step-finish":
                     in_step = False
                     if f.get("status") in ("stop", "length"):
-                        last_reason = f.get("status")
-                        final = _join(step_texts)
+                        candidate = _join(step_texts)
+                        if candidate is not None:
+                            last_reason = f.get("status")
+                            final = candidate
+                            finals.append(candidate)
                     step_texts = []
                 elif in_step and f.get("kind") == "assistant":
                     step_texts.append(f)
@@ -2293,6 +2813,7 @@ def opencode_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dic
                     candidate = _join(texts)
                     if candidate is not None:
                         final = candidate
+                        finals.append(candidate)
                         final_basis = f"native:finish={finish}"
                 last_msg_state = (native.get("completed"), finish)
             session_live = (last_msg_state is None
@@ -2321,7 +2842,9 @@ def opencode_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dic
                 open_ = live
             else:
                 open_ = session_live
-        out.append({"prompts": turn["prompts"], "final": final,
+        if not turn["prompts"] and not finals:
+            continue
+        out.append({"prompts": turn["prompts"], "final": final, "finals": finals,
                     "final_basis": final_basis, "open": open_,
                     "ts_start": turn["ts_start"], "ts_end": turn["ts_end"]})
     return out
@@ -2443,16 +2966,24 @@ def devin_iter_sessions(store: Store) -> Iterator[SessionRef]:
         store.status, store.error = "unavailable", str(e)
         return
     try:
+        workers = porch_workers()
         for row in conn.execute(
             "SELECT id, working_directory, model, agent_mode, created_at, last_activity_at, title, hidden, main_chain_id FROM sessions"
         ):
+            worker = ("devin", row[0]) in workers
+            # subagent_heads are chains within this session; /fork exposes no parent field.
             yield SessionRef(
                 "devin", "sessions.db", row[0],
                 locator={"table": "sessions", "key": row[0], "db": str(store.path)},
                 title=row[6], cwd=row[1], created=row[4], updated=row[5],
                 models=[row[2]] if row[2] else [],
                 hidden=bool(row[7]),
-                extra={"agent_mode": row[3], "main_chain_id": row[8]},
+                extra={"agent_mode": row[3], "main_chain_id": row[8], "native_id": row[0], "surface": "cli",
+                       "session_class": "headless" if worker else "unknown",
+                       "class_basis": "porch registry" if worker else "no discovery evidence", "edges": [],
+                       "native_status": {"hidden": bool(row[7]), "agent_mode": row[3]},
+                       "sources": [{"db": str(store.path), "table": "sessions", "key": row[0], "role": "metadata"},
+                                   {"db": str(store.path), "table": "message_nodes", "key": row[0], "role": "content"}]},
             )
     except sqlite3.Error as e:
         store.status, store.error = "unavailable", str(e)
@@ -2477,8 +3008,9 @@ def devin_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
         return
     conn = open_sqlite_ro(store.path)
     try:
+        node_metadata = "metadata" if "metadata" in table_columns(conn, "message_nodes") else "NULL"
         rows = conn.execute(
-            "SELECT row_id, node_id, parent_node_id, chat_message, created_at FROM message_nodes WHERE session_id=? ORDER BY node_id",
+            f"SELECT row_id, node_id, parent_node_id, chat_message, created_at, {node_metadata} FROM message_nodes WHERE session_id=? ORDER BY node_id",
             (ref.session_id,),
         ).fetchall()
         heads: list[tuple] = []
@@ -2489,8 +3021,27 @@ def devin_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
                 heads = []
     finally:
         conn.close()
+    nodes = {row[1]: row for row in rows}
+    canonical: set[Any] = set()
+    tip = ref.extra.get("main_chain_id")
+    has_chain = tip in nodes
+    pending = [tip] if has_chain else []
+    while pending:
+        node_id = pending.pop()
+        if node_id not in nodes or node_id in canonical:
+            continue
+        canonical.add(node_id)
+        row = nodes[node_id]
+        try:
+            metadata = json.loads(row[5] or "{}") or {}
+        except (ValueError, TypeError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        pending.extend((row[2], metadata.get("summarized_from")))
+        pending.extend((metadata.get("extensions") or {}).get("compact/prior_node_ids") or [])
     seq = 0
-    for row_id, node_id, parent_id, blob, created in rows:
+    for row_id, node_id, parent_id, blob, created, _node_metadata in rows:
         seq += 1
         loc = {"db": str(store.path), "table": "message_nodes", "row_id": row_id, "node_id": node_id}
         try:
@@ -2499,45 +3050,54 @@ def devin_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
             stats["malformed"] = stats.get("malformed", 0) + 1
             continue
         role = msg.get("role")
+        metadata = msg.get("metadata") or {}
+        created = metadata.get("created_at") or created
         rel = {"node_id": node_id, "parent_node_id": parent_id, "message_id": msg.get("message_id")}
+        evidence = {"node_id": node_id, "message_id": msg.get("message_id"), "finish_reason": metadata.get("finish_reason"), "has_tool_calls": bool(msg.get("tool_calls")), "canonical": node_id in canonical if has_chain else None}
         if role == "user":
             yield frag("devin", "sessions.db", ref.session_id, seq, "prompt", "message_nodes.user", loc,
                        text=msg.get("content"), ts=created, authorship="unknown", visible=True,
-                       basis="role=user (may include orchestrator prompts)", rel=rel, max_chars=max_chars)
+                       basis="role=user (may include orchestrator prompts)", rel=rel,
+                       origin=("delegated" if is_delegated_brief(msg.get("content") or "") else "human") if metadata.get("is_user_input") else "injected",
+                       origin_basis="is_user_input absent" if not metadata.get("is_user_input") else "executor-prefix" if is_delegated_brief(msg.get("content") or "") else "is_user_input=1",
+                       native=evidence, max_chars=max_chars)
         elif role == "assistant":
             thinking = (msg.get("thinking") or {}).get("thinking")
             if thinking:
                 yield frag("devin", "sessions.db", ref.session_id, seq, "reasoning", "message_nodes.thinking", loc,
-                           text=thinking, ts=created, authorship="agent", visible=False, rel=rel, max_chars=max_chars)
+                           text=thinking, ts=created, authorship="agent", visible=False, rel=rel, native=evidence, max_chars=max_chars)
                 seq += 1
             if msg.get("content"):
                 yield frag("devin", "sessions.db", ref.session_id, seq, "assistant", "message_nodes.assistant", loc,
                            text=msg.get("content"), ts=created, authorship="agent", visible=True, rel=rel,
-                           status=(msg.get("metadata") or {}).get("finish_reason"), max_chars=max_chars)
+                           status=metadata.get("finish_reason"), native=evidence, max_chars=max_chars)
                 seq += 1
             for call in msg.get("tool_calls") or []:
                 yield frag("devin", "sessions.db", ref.session_id, seq, "tool_call", "message_nodes.tool_call", loc,
                            text=json.dumps({"name": call.get("name"), "arguments": call.get("arguments")}, ensure_ascii=False),
                            ts=created, authorship="agent", visible=False,
-                           rel={**rel, "call_id": call.get("id"), "tool": call.get("name")}, max_chars=max_chars)
+                           rel={**rel, "call_id": call.get("id"), "tool": call.get("name")}, native=evidence, max_chars=max_chars)
                 seq += 1
+            if not thinking and not msg.get("content") and not msg.get("tool_calls"):
+                yield frag("devin", "sessions.db", ref.session_id, seq, "metadata", "message_nodes.assistant_status", loc,
+                           ts=created, authorship="agent", visible=False, rel=rel, native=evidence, max_chars=max_chars)
         elif role == "tool":
             yield frag("devin", "sessions.db", ref.session_id, seq, "tool_result", "message_nodes.tool", loc,
                        text=msg.get("content"), ts=created, authorship="system", visible=False, rel=rel,
-                       max_chars=max_chars)
+                       native=evidence, max_chars=max_chars)
         elif role == "system":
             yield frag("devin", "sessions.db", ref.session_id, seq, "context", "message_nodes.system", loc,
                        text=msg.get("content"), ts=created, authorship="system", visible=False, rel=rel,
-                       max_chars=max_chars)
+                       native=evidence, max_chars=max_chars)
         else:
             yield frag("devin", "sessions.db", ref.session_id, seq, "unknown", f"message_nodes.{role}", loc,
-                       text=msg.get("content") or msg, ts=created, rel=rel, max_chars=max_chars)
+                       text=msg.get("content") or msg, ts=created, rel=rel, native=evidence, max_chars=max_chars)
     for head in heads:
         seq += 1
         yield frag("devin", "sessions.db", ref.session_id, seq, "metadata", "subagent_heads", 
                    {"db": str(store.path), "table": "subagent_heads"},
                    text=json.dumps(head[1:] if isinstance(head, tuple) else head, ensure_ascii=False, default=str),
-                   authorship="system", visible=False, basis="subagent head record — child session linkage",
+                   authorship="system", visible=False, basis="subagent chain head within this session",
                    max_chars=max_chars)
 
 
@@ -2620,6 +3180,20 @@ def _claude_desktop_manifest(store: Store, meta_path: Path, data: dict[str, Any]
     locator: dict[str, Any] = {"file": str(meta_path)}
     if sess_dir.is_dir():
         locator["dir"] = str(sess_dir)
+    edges = []
+    def add_edge(kind: str, harness: str, target: Any, basis: str, attrs: dict[str, Any] | None = None) -> None:
+        if target:
+            edges.append({"type": kind, "target_harness": harness, "target_id": target, "unresolved": None,
+                          "basis": basis, "locator": {"file": str(meta_path), **(attrs or {})}})
+    add_edge("alias", "claude-code", data.get("cliSessionId"), "cliSessionId")
+    spawned = data.get("spawnedFrom")
+    if isinstance(spawned, dict):
+        add_edge("spawned", "claude-desktop", spawned.get("sessionId"), "spawnedFrom.sessionId", spawned)
+    add_edge("fork", "claude-desktop", data.get("forkedFromSessionId"), "forkedFromSessionId",
+             {"forkedAtMessageUuid": data.get("forkedAtMessageUuid")})
+    for prior in data.get("priorCliSessionIds") or []:
+        add_edge("continuation", "claude-code", prior, "priorCliSessionIds")
+    status = {k: data[k] for k in ("interruptedAwaitingPerson", "cleanShutdown", "error", "errorCategory", "errorAt", "completedTurns", "isArchived", "lastAssistantCliSessionId") if k in data}
     return SessionRef(
         "claude-desktop", store.name, sid,
         locator=locator,
@@ -2636,7 +3210,10 @@ def _claude_desktop_manifest(store: Store, meta_path: Path, data: dict[str, Any]
             "permission_mode": data.get("permissionMode"),
             "turns": data.get("completedTurns"),
             "process_name": data.get("processName"),
+            "titleSource": data.get("titleSource"),
             "surface": "code-tab" if store.name == "code-sessions" else "cowork",
+            "native_id": sid, "session_class": "interactive", "class_basis": "desktop manifest",
+            "edges": edges, "native_status": status, "sources": [{"path": str(meta_path), "role": "metadata"}],
         }.items() if v is not None},
     )
 
@@ -2741,7 +3318,7 @@ def claude_desktop_iter_fragments(store: Store, ref: SessionRef, max_chars: int,
         yield frag("claude-desktop", store.name, ref.session_id, seq, "prompt", "manifest.initialMessage",
                    {"file": str(meta_file)} if meta_file else {"dir": sess_dir},
                    text=meta["initialMessage"], ts=meta.get("createdAt"), authorship="human",
-                   visible=True, basis="user-entered first message recorded in the manifest",
+                   visible=True, basis="user-entered first message recorded in the manifest", origin="human", origin_basis="initialMessage",
                    max_chars=max_chars)
     inner = Path(sess_dir) / ".claude" / "projects"
     if inner.is_dir():
@@ -2771,13 +3348,14 @@ def claude_desktop_iter_fragments(store: Store, ref: SessionRef, max_chars: int,
                                error=bool(b.get("is_error")),
                                rel={**rel, "call_id": b.get("tool_use_id")}, max_chars=max_chars)
                 else:
-                    marker = "<system-reminder>" in (b.get("text") or "")
+                    marker = (b.get("text") or "").lstrip().startswith("<system-reminder>")
                     yield frag("claude-desktop", store.name, ref.session_id, seq,
                                "context" if marker else "prompt", "user", loc, text=b.get("text"), ts=ts,
                                authorship="agent" if sidechain else ("system" if marker else "unknown"),
                                visible=False if (sidechain or marker) else True,
                                basis="parent_tool_use_id set → subagent record" if sidechain else None,
-                               rel=rel, max_chars=max_chars)
+                               rel=rel, origin="injected" if sidechain or marker else "human",
+                               origin_basis="parent_tool_use_id" if sidechain else "wrapper" if marker else "audit user", max_chars=max_chars)
         elif t == "assistant" and msg is not None:
             model = msg.get("model")
             for b in msg.get("content") or []:
@@ -2790,6 +3368,7 @@ def claude_desktop_iter_fragments(store: Store, ref: SessionRef, max_chars: int,
                            text=b.get("text") or b.get("thinking") or json.dumps({"name": b.get("name"), "input": b.get("input")}, ensure_ascii=False),
                            ts=ts, authorship="agent", visible=(kind == "assistant"), model=model,
                            rel={**rel, "call_id": b.get("id") if bt == "tool_use" else None, "tool": b.get("name")},
+                           native={"message_id": msg.get("id"), "stop_reason": msg.get("stop_reason"), "parent_tool_use_id": rec.get("parent_tool_use_id")} if kind == "assistant" else None,
                            max_chars=max_chars)
         elif t == "system" and rec.get("subtype") in ("permission_request", "permission_response"):
             yield frag("claude-desktop", store.name, ref.session_id, seq, "permission",
@@ -3408,6 +3987,22 @@ def porch_iter_sessions(store: Store) -> Iterator[SessionRef]:
         if not isinstance(meta, dict):
             continue
         handle = meta.get("session_handle") or {}
+        edges = []
+        locator = {"file": str(run_dir / "meta.json")}
+        def edge(kind: str, harness: str | None, target: str | None, unresolved: str | None, basis: str) -> None:
+            edges.append({"type": kind, "target_harness": harness, "target_id": target,
+                          "unresolved": unresolved, "basis": basis, "locator": locator})
+        launcher = meta.get("launcher_instance")
+        if launcher:
+            edge("caller_run", None, None, launcher, "launcher_instance")
+            if launcher.startswith("run:"):
+                edge("parent_run", "porch", launcher[4:], None, "launcher_instance")
+        worker = meta.get("native_session_id") or handle.get("thread_id")
+        harness = BACKEND_HARNESS.get(meta.get("backend"))
+        if worker and harness:
+            edge("worker_session", harness, worker, None, "native_session_id" if meta.get("native_session_id") else "session_handle.thread_id")
+        if meta.get("continued_from"):
+            edge("continuation", "porch", meta["continued_from"], None, "continued_from")
         yield SessionRef(
             "porch", "runs", str(meta.get("run_id") or run_dir.name),
             locator={"dir": str(run_dir)},
@@ -3424,6 +4019,10 @@ def porch_iter_sessions(store: Store) -> Iterator[SessionRef]:
                 "continued_from": meta.get("continued_from"),
                 "exit_code": meta.get("exit_code"),
                 "finished_at": meta.get("finished_at"),
+                "native_id": str(meta.get("run_id") or run_dir.name),
+                "session_class": "headless", "class_basis": "porch run",
+                "native_status": {k: meta[k] for k in ("status", "exit_code", "finished_at") if k in meta},
+                "edges": edges, "sources": [{"path": str(run_dir / "meta.json"), "role": "metadata"}],
             },
         )
 
@@ -3435,11 +4034,17 @@ def porch_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
     meta = read_json(run_dir / "meta.json")
     meta = meta if isinstance(meta, dict) else {}
     if not files:
-        stats["unreadable"] = stats.get("unreadable", 0) + 1
         if meta.get("artifacts_dir"):
             norm_dir = Path(meta["artifacts_dir"]) / "normalized"
             files = sorted(norm_dir.glob("*.jsonl")) if norm_dir.is_dir() else []
+        if not files:
+            stats["unreadable"] = stats.get("unreadable", 0) + 1
     seq = 0
+    if isinstance(meta.get("task"), str) and meta["task"].strip():
+        seq += 1
+        yield frag("porch", "runs", ref.session_id, seq, "prompt", "meta.task", {"file": str(run_dir / "meta.json")},
+                   text=meta["task"], ts=meta.get("launched_at") or meta.get("started_at"), authorship="agent",
+                   visible=False, origin="delegated", origin_basis="run task", max_chars=max_chars)
     for npath in files:
         for line_no, rec in iter_jsonl(npath, stats):
             seq += 1
@@ -3454,17 +4059,21 @@ def porch_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
                 yield frag("porch", "runs", ref.session_id, seq, "prompt", t, loc,
                            text=rec.get("text") or rec.get("prompt") or rec.get("data"),
                            ts=rec.get("ts") or rec.get("timestamp"), authorship="agent",
-                           visible=False, basis="orchestrator steer/prompt", max_chars=max_chars)
-            elif t in ("tool", "tool_call"):
+                           visible=False, basis="orchestrator steer/prompt", origin="delegated", origin_basis="orchestrator steer/prompt", max_chars=max_chars)
+            elif t in ("tool", "tool_call", "tool_started"):
                 yield frag("porch", "runs", ref.session_id, seq, "tool_call", t, loc,
-                           text=json.dumps({"name": rec.get("name"), "chunks": rec.get("chunks")}, ensure_ascii=False),
+                           text=rec.get("data") if t == "tool_started" else json.dumps({"name": rec.get("name"), "chunks": rec.get("chunks")}, ensure_ascii=False),
                            ts=rec.get("ts") or rec.get("timestamp"), authorship="agent", visible=False,
                            rel={"tool": rec.get("name")}, max_chars=max_chars)
-            elif t in ("text", "answering", "answer", "message"):
+            elif t in ("text", "answering", "answer", "message", "answer_delta"):
                 yield frag("porch", "runs", ref.session_id, seq, "assistant", t, loc,
                            text=rec.get("text") or rec.get("data"), ts=rec.get("ts") or rec.get("timestamp"),
                            authorship="agent", visible=False, max_chars=max_chars)
-            elif t in ("end", "run_finished", "completed"):
+            elif t == "thinking_delta":
+                yield frag("porch", "runs", ref.session_id, seq, "reasoning", t, loc,
+                           text=rec.get("data"), ts=rec.get("ts") or rec.get("timestamp"),
+                           authorship="agent", visible=False, max_chars=max_chars)
+            elif t in ("end", "run_finished", "completed", "turn_started", "turn_completed", "run_completed"):
                 yield frag("porch", "runs", ref.session_id, seq, "boundary", t, loc,
                            text=rec.get("data"), ts=rec.get("ts") or rec.get("timestamp"),
                            authorship="system", status=rec.get("status"),
@@ -3481,7 +4090,7 @@ def porch_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
         yield frag("porch", "runs", ref.session_id, seq, "assistant", "final.txt",
                    {"file": str(path)}, text=text, ts=meta.get("finished_at"),
                    authorship="agent", visible=True,
-                   basis="the run's saved final answer (final.txt)", max_chars=max_chars)
+                   basis="the run's saved final answer (final.txt)", native={"source": "final.txt"}, max_chars=max_chars)
 
 
 def _porch_final_answer(run_dir: Path, meta: dict[str, Any]) -> tuple[Path, str] | None:
@@ -3677,8 +4286,6 @@ def agy_iter_sessions(store: Store) -> Iterator[SessionRef]:
                 if is_delegated_brief(prompt_text):
                     delegated_marker = "executor-prefix"
         preview = summary.get("Preview") or ""
-        if delegated_marker is None and is_delegated_brief(preview):
-            delegated_marker = "executor-prefix"
         ide_row = summary.get("AppDataDir") == "antigravity"
         edge_parent, edge_path, edge_data = parent_edge if parent_edge else (None, None, {})
         if edge_parent is None and sender_parent:
@@ -3693,13 +4300,15 @@ def agy_iter_sessions(store: Store) -> Iterator[SessionRef]:
             })
         if edge_parent:
             session_class, class_basis = "subagent", edges[0]["basis"]
+        elif ("agy", cid) in porch_workers():
+            session_class, class_basis = "headless", "porch registry"
         elif ide_row:
             session_class, class_basis = "interactive", "AppDataDir=antigravity"
         elif delegated_marker:
             session_class, class_basis = "headless", delegated_marker
-        elif has_user_input or preview:
+        elif has_user_input:
             session_class = "interactive"
-            class_basis = "transcript USER_INPUT" if has_user_input else "conversation_metadata"
+            class_basis = "transcript USER_INPUT"
         else:
             session_class, class_basis = "unknown", "no class evidence"
         # Status facts: content availability and staleness vs conversation
@@ -3914,40 +4523,23 @@ def agy_content_stale(ref: SessionRef, fragments: list[dict[str, Any]]) -> bool:
 
 
 def agy_turns(ref: SessionRef, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """agy turns: a turn's final answer is its LAST assistant fragment, and
-    only when that PLANNER_RESPONSE has non-empty content, no tool_calls and
-    status DONE. Anything else at the tail (tool_calls pending, thinking-only
-    or empty response, trailing USER_INPUT) leaves the last turn open — EOF
-    of a live transcript is not a final."""
-    turns: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    for f in fragments:
-        if f.get("kind") == "prompt" and f.get("origin", "unknown") != "injected":
-            if current is not None:
-                turns.append(current)
-            current = {"prompts": [f], "frags": [f],
-                       "ts_start": f.get("ts"), "ts_end": f.get("ts")}
-        elif current is not None:
-            current["frags"].append(f)
-            current["ts_end"] = f.get("ts") or current["ts_end"]
-    if current is not None:
-        turns.append(current)
+    """Collect each text-bearing, tool-free DONE planner response in order."""
+    turns = _answer_segments(fragments)
     out = []
     last_i = len(turns) - 1
     for i, turn in enumerate(turns):
-        final = None
-        last_assistant = next((f for f in reversed(turn["frags"])
-                               if f.get("kind") == "assistant"), None)
-        if last_assistant is not None:
-            native = last_assistant.get("native") or {}
-            if (native.get("has_tool_calls") is False
-                    and native.get("status") == "DONE"
-                    and str(last_assistant.get("text") or "").strip()):
-                final = last_assistant
+        finals = [f for f in turn["frags"] if f.get("kind") == "assistant" and
+                  (f.get("native") or {}).get("has_tool_calls") is False and
+                  (f.get("native") or {}).get("status") == "DONE" and str(f.get("text") or "").strip()]
+        if not turn["prompts"] and not finals:
+            continue
+        final = finals[-1] if finals else None
+        last_assistant = next((f for f in reversed(turn["frags"]) if f.get("kind") == "assistant"), None)
+        last_complete = last_assistant in finals if last_assistant is not None else False
         out.append({
-            "prompts": turn["prompts"], "final": final,
+            "prompts": turn["prompts"], "final": final, "finals": finals,
             "final_basis": "native:PLANNER_RESPONSE" if final is not None else "none",
-            "open": i == last_i and final is None,
+            "open": bool(turn["prompts"]) and i == last_i and not last_complete,
             "ts_start": turn["ts_start"], "ts_end": turn["ts_end"],
         })
     return out
@@ -4516,33 +5108,10 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
         if f.exists():
             return SessionRef("claude-code", store.name, query_id, locator={"file": str(f)})
     elif store.harness == "codex":
-        if store.kind == "sqlite":
-            table = ("threads" if store.name.startswith("state:")
-                     else {"catalog": "local_thread_catalog",
-                           "summaries": "thread_turn_summaries"}.get(store.name))
-            if not table:
-                return None
-            idcol = "id" if table == "threads" else "thread_id"
-            try:
-                conn = open_sqlite_ro(p)
-                row = conn.execute(f"SELECT 1 FROM {table} WHERE {idcol}=? LIMIT 1", (query_id,)).fetchone()
-                conn.close()
-            except sqlite3.Error:
-                row = None
-            if row:
-                return SessionRef("codex", store.name, query_id,
-                                  locator={"db": str(p), "table": table, "key": query_id})
-            return None
-        if store.name == "history":
-            stats: dict[str, int] = {}
-            for _ln, rec in iter_jsonl(p, stats):
-                if str(rec.get("session_id")) == query_id:
-                    return SessionRef("codex", "history", query_id, locator={"file": str(p)})
-            return None
-        hits = (list(_walk(p, f"rollout-*-{query_id}.jsonl", store.walk_stats))
-                + list(_walk(p, f"rollout-*-{query_id}.jsonl.zst", store.walk_stats)))
-        if len(hits) == 1:
-            return SessionRef("codex", store.name, query_id, locator={"file": str(hits[0])})
+        # Revision choice and state lineage require the full store context.
+        return next((ref for ref in codex_iter_sessions(store) if ref.session_id == query_id and
+                     (not ref.extra.get("selected_rollout") or not ref.locator.get("file") or
+                      ref.locator["file"] == ref.extra["selected_rollout"] or store.name == "history")), None)
     elif store.harness == "grok":
         hits = [d for d in p.glob(f"*/{query_id}") if d.is_dir()]
         if len(hits) == 1:
@@ -4624,7 +5193,7 @@ def _hydrate_ref(store: Store, ref: SessionRef) -> SessionRef:
     """Fill title/cwd/models/etc. on a fast-resolved ref by scanning only the
     narrowest enclosing scope (the file's own directory, not the whole store).
     For sqlite stores there is no narrower scope — match on session_id."""
-    if ref.title and ref.cwd:
+    if (store.harness == "codex" and ref.extra.get("native_id")) or (ref.title and ref.cwd):
         return ref
     f = ref.locator.get("file")
     scope = store if not f else Store(store.harness, store.name, Path(f).parent, store.kind)

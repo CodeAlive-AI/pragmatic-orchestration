@@ -127,7 +127,9 @@ def scan(root, min_bytes, top_n, excludes, cross_filesystems):
                 parent["files"] += f["files"]
                 parent["newest"] = max(parent["newest"], f["newest"])
                 parent["errors"] += f["errors"]
-                if f["bytes"] < min_bytes:
+                # A folder with unreadable entries stays visible even below the
+                # node floor: folding it into small_dirs would hide what failed.
+                if f["bytes"] < min_bytes and not f["errors"]:
                     parent["small_count"] += 1
                     parent["small_bytes"] += f["bytes"]
                 else:
@@ -269,6 +271,7 @@ def stock_accounting(data, plain, patterns):
     direct = {}
     assignments = {}
     subtree_outside = {}
+    own_errors = {}
     outside_direct = 0
     stack = [(data["tree"], root, None, False)]
     ordered = []
@@ -279,6 +282,10 @@ def stock_accounting(data, plain, patterns):
             own = node.get("bytes", 0) - child_bytes
             stock = assignments[path]
             direct[path] = own
+            # Errors at this node's own level plus folded descendants': the same
+            # attribution direct bytes get, so a stock sees its unreadable entries.
+            own_errors[path] = max(0, node.get("errors", 0) - sum(
+                c.get("errors", 0) for c in node.get("children", [])))
             subtree_outside[path] = (own if stock is None else 0) + sum(
                 subtree_outside.get(os.path.join(path, c["name"]), 0) for c in node.get("children", []))
             if stock is None:
@@ -306,7 +313,42 @@ def stock_accounting(data, plain, patterns):
         owner = assignments[path]
         if owner is not None:
             by_stock[owner] = by_stock.get(owner, 0) + direct[path]
-    return by_stock, outside_direct, direct, assignments, subtree_outside
+    return by_stock, outside_direct, direct, assignments, subtree_outside, own_errors
+
+
+def emitted_ancestor(index, path):
+    """The deepest tree node at or above path, or None outside the scan."""
+    node_path = path
+    while node_path not in index:
+        parent = os.path.dirname(node_path)
+        if parent == node_path:
+            return None
+        node_path = parent
+    return node_path
+
+
+def folded_stock_owner(path, ancestor, plain, patterns):
+    """The stock whose declared root sits folded between ancestor and path.
+
+    Scans older than the error-node change folded every small folder, so a
+    stock root that could not be read left no tree node; its errors are only
+    in error_samples. The most specific stock root containing the sample path
+    below the nearest emitted ancestor owns that error for the report.
+    """
+    candidates = []
+    for stock_path, info in plain.items():
+        if under(path, stock_path) and stock_path != ancestor and under(stock_path, ancestor):
+            candidates.append((len(stock_path), False, 0, info["stock"]))
+    node_path = path
+    while node_path != ancestor and under(node_path, ancestor):
+        for order, pattern in enumerate(patterns):
+            if (os.path.basename(node_path) == pattern["name"] and node_path != pattern["prefix"]
+                    and under(node_path, pattern["prefix"])):
+                candidates.append((len(pattern["prefix"]), True, -order, pattern["stock"]))
+        node_path = os.path.dirname(node_path)
+    if not candidates:
+        return None
+    return max(candidates)[3]
 
 
 def scan_time(data):
@@ -396,8 +438,53 @@ def trend(args):
     path_indices = {id(data): path_index(data) for _, data in all_scans}
     account = [stock_accounting(data, plain, patterns) for _, data in scans]
     stock_names = list(stock_empties)
+    # Per scan, per stock: measured bytes plus the unreadable entries in its
+    # scope. Emitted nodes carry subtree error totals that own_errors splits
+    # like direct bytes; error_samples covers stock roots that older scans
+    # folded away below the node floor.
+    stock_errors = []
+    for i, (_, data) in enumerate(scans):
+        index = path_indices[id(data)]
+        assignments = account[i][3]
+        own_errors = account[i][5]
+        errs = {}
+        for path, owner in assignments.items():
+            if owner is not None:
+                count = own_errors.get(path, 0)
+                if count:
+                    errs[owner] = errs.get(owner, 0) + count
+        for sample in data.get("error_samples", []):
+            sample_path = sample.get("path")
+            if not sample_path:
+                continue
+            sample_path = os.path.normpath(sample_path)
+            ancestor = emitted_ancestor(index, sample_path)
+            if ancestor is None:
+                continue
+            owner = folded_stock_owner(sample_path, ancestor, plain, patterns)
+            if owner is not None and owner != assignments.get(ancestor):
+                errs[owner] = errs.get(owner, 0) + 1
+        stock_errors.append(errs)
+    histories = []
+    for name in stock_names:
+        history = []
+        for i in range(len(scans)):
+            size = account[i][0].get(name, 0)
+            unreadable = stock_errors[i].get(name, 0)
+            if size == 0 and unreadable:
+                status = "unreadable"
+            elif unreadable:
+                status = "partial"
+            else:
+                status = "measured"
+            history.append({"bytes": size, "status": status, "unreadable_entries": unreadable})
+        histories.append(history)
+    history_by_name = dict(zip(stock_names, histories))
+    latest_status = {name: history[-1]["status"] for name, history in history_by_name.items()}
     absent = [p for p in plain if all(p not in path_indices[id(data)] for _, data in all_scans)]
     for path in absent:
+        if latest_status.get(plain[path]["stock"]) != "measured":
+            continue  # an unreadable stock is missing from the tree, not misspelt
         message = "stock path is in no scan: {} (check the spelling; folders under the node floor are folded into their parent)".format(plain[path]["path"])
         warnings.append(message)
         print(message, file=sys.stderr)
@@ -405,6 +492,8 @@ def trend(args):
         not any(os.path.basename(path) == pattern["name"] and path != pattern["prefix"] and under(path, pattern["prefix"])
                 for path in path_indices[id(data)]) for _, data in all_scans)]
     for pattern in missing_patterns:
+        if latest_status.get(pattern["stock"]) != "measured":
+            continue
         message = "stock pattern matches nothing in any scan: {} (check the spelling)".format(pattern["path"])
         warnings.append(message)
         print(message, file=sys.stderr)
@@ -416,13 +505,41 @@ def trend(args):
                 "per_day_window": (values[-1] - values[0]) / window_days if window_days else None}
     stock_rows = []
     for name in stock_names:
-        values = [a[0].get(name, 0) for a in account]
-        row = {"stock": name, "empties": stock_empties[name], **rates(values),
+        history = history_by_name[name]
+        now = history[-1]
+        # A stock unreadable in either scan behind a rate has no computed change:
+        # the missing bytes would read as a shrink or a growth that never happened.
+        change = None
+        if len(history) > 1 and now["status"] != "unreadable" and history[-2]["status"] != "unreadable":
+            change = now["bytes"] - history[-2]["bytes"]
+        per_day_window = None
+        if window_days and now["status"] != "unreadable" and history[0]["status"] != "unreadable":
+            per_day_window = (now["bytes"] - history[0]["bytes"]) / window_days
+        row = {"stock": name, "empties": stock_empties[name],
+               "status": now["status"],
+               "bytes": None if now["status"] == "unreadable" else now["bytes"],
+               "unreadable_entries": now["unreadable_entries"],
+               "change_last": change,
+               "per_day_last": change / last_days if change is not None and last_days else None,
+               "per_day_window": per_day_window,
+               "scans": [{"scanned_at": scans[i][1].get("scanned_at"), "status": h["status"],
+                          "bytes": None if h["status"] == "unreadable" else h["bytes"],
+                          "unreadable_entries": h["unreadable_entries"]} for i, h in enumerate(history)],
                "paths": [p["path"] for p in plain.values() if p["stock"] == name] + [p["path"] for p in patterns if p["stock"] == name],
                "missing_paths": ([plain[p]["path"] for p in absent if plain[p]["stock"] == name] +
                                  [p["path"] for p in missing_patterns if p["stock"] == name])}
         stock_rows.append(row)
-    stock_rows.sort(key=lambda row: (-row["bytes"], row["stock"]))
+    stock_rows.sort(key=lambda row: (row["bytes"] is None, -(row["bytes"] or 0), row["stock"]))
+    # The unseen delta mixes what the scan cannot read; name the stocks that can
+    # hide space there in either scan behind the change, without inventing a split.
+    unseen_unreadable, unseen_partial = [], []
+    for row in stock_rows:
+        history = history_by_name[row["stock"]]
+        recent = [h["status"] for h in history[-2:]]
+        if "unreadable" in recent:
+            unseen_unreadable.append(row["stock"])
+        elif "partial" in recent:
+            unseen_partial.append(row["stock"])
     outside = rates([a[1] for a in account])
     total = rates([data["total_bytes"] for _, data in scans])
     unseen_delta = None
@@ -486,7 +603,8 @@ def trend(args):
               "last_interval_days": last_days, "window_days": window_days, "volume": vol,
               "pressure": pressure, "pressure_reason": pressure_reason, "stocks": stock_rows,
               "outside": outside, "total": total,
-              "unseen": {"change_last": unseen_delta, "per_day_last": unseen_rate},
+              "unseen": {"change_last": unseen_delta, "per_day_last": unseen_rate,
+                         "includes": {"unreadable": unseen_unreadable, "partial": unseen_partial}},
               "growth_outside": growth_rows, "warnings": warnings}
     if args.json:
         json.dump(result, sys.stdout, ensure_ascii=True, separators=(",", ":"))
@@ -516,16 +634,43 @@ def trend(args):
                 print("Forecast: not filling")
         print("Pressure: {} ({})".format(pressure, pressure_reason))
         print("\n{:>12}  {:>12}  {:>14}  {:>14}  {:7}  {}".format("size", "change", "per day", "window/day", "empties", "stock"))
+
+        def stock_cell(value, suffix, withheld):
+            if value is None:
+                return "—" if withheld else "-"
+            return signed_human(value) + suffix
+
         for row in stock_rows:
-            print("{:>12}  {:>12}  {:>14}  {:>14}  {:7}  {}".format(human(row["bytes"]), "-" if row["change_last"] is None else signed_human(row["change_last"]),
-                "-" if row["per_day_last"] is None else signed_human(row["per_day_last"]) + "/day",
-                "-" if row["per_day_window"] is None else signed_human(row["per_day_window"]) + "/day", row["empties"], row["stock"]))
+            history = row["scans"]
+            now_unreadable = row["status"] == "unreadable"
+            if now_unreadable:
+                size_text = "—"
+                name_text = row["stock"] + " (unreadable)"
+            elif row["status"] == "partial":
+                size_text = "{} ({})".format(human(row["bytes"]), unreadable_entries_text(row["unreadable_entries"]))
+                name_text = row["stock"]
+            else:
+                size_text = human(row["bytes"])
+                name_text = row["stock"]
+            withheld_change = now_unreadable or (len(history) > 1 and history[-2]["status"] == "unreadable")
+            withheld_window = now_unreadable or history[0]["status"] == "unreadable"
+            print("{:>12}  {:>12}  {:>14}  {:>14}  {:7}  {}".format(
+                size_text, stock_cell(row["change_last"], "", withheld_change),
+                stock_cell(row["per_day_last"], "/day", withheld_change),
+                stock_cell(row["per_day_window"], "/day", withheld_window),
+                row["empties"], name_text))
         for label, row in (("(outside stocks)", outside), ("(scan total)", total)):
             print("{:>12}  {:>12}  {:>14}  {:>14}  {:7}  {}".format(human(row["bytes"]), "-" if row["change_last"] is None else signed_human(row["change_last"]),
                 "-" if row["per_day_last"] is None else signed_human(row["per_day_last"]) + "/day",
                 "-" if row["per_day_window"] is None else signed_human(row["per_day_window"]) + "/day", "-", label))
+        unseen_parts = []
+        if unseen_unreadable:
+            unseen_parts.append("includes unreadable: " + ", ".join(unseen_unreadable))
+        if unseen_partial:
+            unseen_parts.append("includes partial: " + ", ".join(unseen_partial))
+        unseen_label = "(not seen by the scan ({}))".format("; ".join(unseen_parts)) if unseen_parts else "(not seen by the scan)"
         print("{:>12}  {:>12}  {:>14}  {:>14}  {:7}  {}".format("", "-" if unseen_delta is None else signed_human(unseen_delta),
-            "-" if unseen_rate is None else signed_human(unseen_rate) + "/day", "", "-", "(not seen by the scan)"))
+            "-" if unseen_rate is None else signed_human(unseen_rate) + "/day", "", "-", unseen_label))
         if len(scans) == 1:
             print("\none scan: no rates yet; take another scan later")
         if growth_rows:
@@ -586,6 +731,10 @@ def human(n):
 
 def signed_human(n):
     return ("+" if n > 0 else "-" if n < 0 else "") + human(abs(n))
+
+
+def unreadable_entries_text(count):
+    return "1 unreadable entry" if count == 1 else "{} unreadable entries".format(count)
 
 
 def query_rows(data, requested, depth, min_bytes, top):

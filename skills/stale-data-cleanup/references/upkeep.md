@@ -105,6 +105,23 @@ it is full; and one word of **pressure**:
 | `now` | Full within the horizon (four days by default) at the current rate | Find the writer. Send the message at once |
 | `unknown` | The latest scan has no free-space record | Say so; scan again with the current `disk_map.py` |
 
+A stock's size has three states:
+
+- **measured**: the scan read everything below the stock's folders; the size is
+  what it shows.
+- **partial**: some entries below could not be read (no access, another user).
+  The shown size is a lower bound and the row says how many entries were
+  unreadable.
+- **unreadable**: the stock's folder itself could not be read, or nothing
+  readable was found under it. The row shows no size and no change — a `0 B`
+  would claim the stock is empty when it was only unmeasurable. A stock
+  unreadable in either of the two scans behind a change has no computed change;
+  the window rate is withheld when the first or last scan of the window is
+  unreadable.
+
+The volume forecast does not depend on any of this: it comes from the volume's
+free space, which the scan reads exactly, not from the stock sizes.
+
 What would restore the target is read off the `empties` column:
 
 - **`rules` stocks:** a cleanup run would free at most their size. Recommend one;
@@ -122,7 +139,9 @@ Four more lines of the result need a look:
   unknown, with its path.
 - **Not seen by the scan.** Space that went where the scan cannot read: no
   access, another volume of the same container, swap. A large value goes into the
-  report.
+  report. The line names the stocks that are unreadable or partial in the scans
+  behind the change, because part of that space can be theirs; how much cannot
+  be measured, so no split is invented.
 - **A stock path in no scan, a pattern that matches nothing.** The place moved,
   was renamed or shrank below the scan's folder floor: the stocks file is stale.
 - **Under `now`: the writer.** Look at the newest files of the fastest-growing

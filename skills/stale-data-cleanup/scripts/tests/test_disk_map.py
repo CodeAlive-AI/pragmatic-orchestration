@@ -709,6 +709,131 @@ class DiskMapTests(unittest.TestCase):
             "many-small")
         self.assertEqual(parent, [{"path": self.root + "/parent", "change_last": 1200 * 1024}])
 
+    def trend_pair(self, first, second, stocks):
+        """Save two scans and run trend in both text and JSON form."""
+        fa = self.save(os.path.join(self.base, "trend-a.json"), first)
+        fb = self.save(os.path.join(self.base, "trend-b.json"), second)
+        text = self.run_cli("trend", fa, fb, "--stocks", stocks)
+        self.assertEqual(text.returncode, 0, text.stderr)
+        js = self.run_cli("trend", fa, fb, "--stocks", stocks, "--json")
+        self.assertEqual(js.returncode, 0, js.stderr)
+        return text.stdout, json.loads(js.stdout)
+
+    @unittest.skipIf(getattr(os, "geteuid", lambda: 1)() == 0, "root can read chmod 000 directories")
+    def test_trend_unreadable_and_partial_stocks_are_not_zero(self):
+        locked = os.path.join(self.root, "locked")
+        partial = os.path.join(self.root, "partial")
+        hidden = os.path.join(partial, "hidden")
+        open_ = os.path.join(self.root, "open")
+        for path in (locked, hidden, open_):
+            os.makedirs(path)
+        for path in (os.path.join(partial, "data"), os.path.join(open_, "data")):
+            with open(path, "wb") as fh:
+                fh.write(b"x" * 4096)
+        os.chmod(hidden, 0)
+        os.chmod(locked, 0)
+        try:
+            data = self.scan("--min-node-mb", "0")
+        finally:
+            os.chmod(hidden, 0o700)
+            os.chmod(locked, 0o700)
+        later = json.loads(json.dumps(data))
+        later["scanned_at"] = "2026-01-03T00:00:00+00:00"
+        self.set_scan_time_volume(data, "2026-01-01T00:00:00+00:00", 900, 1000)
+        self.set_scan_time_volume(later, "2026-01-03T00:00:00+00:00", 800, 1000)
+        stocks = self.stock_file("stock\tpath\tempties\n"
+                                 "locked stock\t{}\towner\n"
+                                 "partial stock\t{}\towner\n"
+                                 "open stock\t{}\trules\n".format(locked, partial, open_))
+        text, result = self.trend_pair(data, later, stocks)
+        rows = {row["stock"]: row for row in result["stocks"]}
+        # Unreadable: no size, no change, explicit status; never a bare 0 B.
+        locked_row = rows["locked stock"]
+        self.assertEqual(locked_row["status"], "unreadable")
+        self.assertIsNone(locked_row["bytes"])
+        self.assertIsNone(locked_row["change_last"])
+        self.assertIsNone(locked_row["per_day_last"])
+        self.assertIsNone(locked_row["per_day_window"])
+        self.assertGreaterEqual(locked_row["unreadable_entries"], 1)
+        self.assertTrue(all(s["status"] == "unreadable" for s in locked_row["scans"]))
+        # Partial: the measured size stays but is flagged as a lower bound.
+        partial_row = rows["partial stock"]
+        self.assertEqual(partial_row["status"], "partial")
+        self.assertGreater(partial_row["bytes"], 0)
+        self.assertEqual(partial_row["unreadable_entries"], 1)
+        self.assertEqual(partial_row["change_last"], 0)  # partial keeps its change
+        # Measured: unchanged behaviour.
+        open_row = rows["open stock"]
+        self.assertEqual(open_row["status"], "measured")
+        self.assertGreater(open_row["bytes"], 0)
+        self.assertEqual(open_row["unreadable_entries"], 0)
+        self.assertEqual(open_row["change_last"], 0)
+        # Text output: dashes for the unreadable stock, never 0 B; partial annotated.
+        self.assertIn("locked stock (unreadable)", text)
+        self.assertIn("—", text)
+        for line in text.splitlines():
+            if "not seen by the scan" in line:
+                continue
+            if "locked stock" in line:
+                cells = line.split()
+                self.assertEqual(cells[:4], ["—"] * 4)
+            if "partial stock" in line:
+                self.assertIn("1 unreadable entry", line)
+                self.assertNotIn("—", line.split("partial stock")[0])
+            if "open stock" in line:
+                self.assertNotIn("unreadable", line)
+        # The not-seen line names the stocks that can hide space there.
+        unseen = result["unseen"]
+        self.assertIn("locked stock", unseen["includes"]["unreadable"])
+        self.assertIn("partial stock", unseen["includes"]["partial"])
+        self.assertIn("includes unreadable: locked stock", text)
+        self.assertIn("includes partial: partial stock", text)
+        locked_lines = [line for line in text.splitlines() if "locked stock" in line and "not seen" not in line]
+        self.assertEqual(len(locked_lines), 1)
+        self.assertNotIn("0 B", locked_lines[0])
+
+    def test_trend_unreadable_stock_detected_from_error_samples(self):
+        # Scans written before erroring folders stayed in the tree only record
+        # them in error_samples; trend must still not report them as 0 B.
+        root = self.root
+        first_tree = node(root, 200, own=50, small={"count": 1, "bytes": 50},
+                          children=[node("partialx", 50, own=50), node("open", 50, own=50)])
+        first_tree["children"][0]["errors"] = 1
+        second_tree = node(root, 200, own=50, small={"count": 1, "bytes": 50},
+                           children=[node("partialx", 50, own=50), node("open", 50, own=50)])
+        second_tree["children"][0]["errors"] = 1
+        first = document(root, first_tree)
+        second = document(root, second_tree)
+        self.set_scan_time_volume(first, "2026-01-01T00:00:00+00:00", 900, 1000)
+        self.set_scan_time_volume(second, "2026-01-03T00:00:00+00:00", 800, 1000)
+        for data in (first, second):
+            data["error_samples"] = [
+                {"path": os.path.join(root, "ghost"), "errno": "EACCES"},
+                {"path": os.path.join(root, "partialx", "inner"), "errno": "EACCES"},
+            ]
+        stocks = self.stock_file("stock\tpath\tempties\n"
+                                 "ghost\t{}\towner\n"
+                                 "partial old\t{}\towner\n"
+                                 "open\t{}\trules\n"
+                                 "tiny\t{}\towner\n".format(
+                                     os.path.join(root, "ghost"), os.path.join(root, "partialx"),
+                                     os.path.join(root, "open"), os.path.join(root, "tiny")))
+        text, result = self.trend_pair(first, second, stocks)
+        rows = {row["stock"]: row for row in result["stocks"]}
+        self.assertEqual(rows["ghost"]["status"], "unreadable")
+        self.assertIsNone(rows["ghost"]["bytes"])
+        self.assertIsNone(rows["ghost"]["change_last"])
+        # partialx has 1 tree error; the sample under it is already tree-attributed.
+        self.assertEqual(rows["partial old"]["status"], "partial")
+        self.assertEqual(rows["partial old"]["bytes"], 50)
+        self.assertEqual(rows["partial old"]["unreadable_entries"], 1)
+        self.assertEqual(rows["open"]["status"], "measured")
+        # A stock absent with no errors stays a measured 0 B with the missing-path warning.
+        self.assertEqual(rows["tiny"]["status"], "measured")
+        self.assertEqual(rows["tiny"]["bytes"], 0)
+        self.assertIn("stock path is in no scan", text + "\n".join(result["warnings"]))
+        self.assertNotIn("ghost", "\n".join(w for w in result["warnings"] if "in no scan" in w))
+
 
 if __name__ == "__main__":
     unittest.main()

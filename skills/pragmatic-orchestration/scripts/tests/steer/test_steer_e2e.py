@@ -906,6 +906,39 @@ def test_oneshot_regression(tmp: Path) -> None:
     assert_true("default steerable /dev/stdin no fcopyfile", "fcopyfile" not in r.stderr, r.stderr)
 
 
+def test_claude_tool_events_e2e(tmp: Path) -> None:
+    print("=== e2e: claude tool events via delegate events ===")
+    reg_root = tmp / "reg-cltools"
+    art = tmp / "art-cltools"
+    art.mkdir(parents=True)
+    reg_root.mkdir(parents=True)
+    cwd = tmp / "cwd-cltools"
+    cwd.mkdir()
+    env = env_base(reg_root, art)
+    env["PORCH_FAKE_CLAUDE_TOOLS"] = "1"
+    proc, run_id, _ = start_steerable("claude-code", "task", env, cwd)
+    wait_proc(proc, timeout=20)
+    r = run_cmd([str(PORCH), "delegate", "events", run_id, "--max-events", "50"], env)
+    assert_true("claude events exit 0", r.returncode == 0, r.stderr)
+    events = json.loads(r.stdout)["events"]
+    tools = [(e["type"], e.get("data")) for e in events if e["type"].startswith("tool_")]
+    assert_true(
+        "claude events expose tool calls and results",
+        tools == [
+            ("tool_started", "Bash: ls -la /tmp"),
+            ("tool_started", "Read: /etc/hosts"),
+            ("tool_started", "completed:Read [error] SECRET FILE BODY"),
+            ("tool_started", "completed:Bash"),
+        ],
+        str(tools),
+    )
+    assert_true("claude events have no empty user_replay",
+                all(e.get("data") for e in events if e["type"] == "user_replay"), str(events))
+    system_progress = [e for e in events if e["type"] == "progress" and str(e.get("data", "")).startswith("system")]
+    assert_true("claude events do not flood system progress", len(system_progress) <= 2, str(system_progress))
+    print("EVENTS:", json.dumps([(e["type"], e.get("data")) for e in events]))
+
+
 def test_claude_interrupt_handover(tmp: Path) -> None:
     print("=== e2e: claude interrupt handover ===")
     reg_root = tmp / "reg-clint"
@@ -3101,6 +3134,7 @@ def main() -> int:
         test_cancel(tmp)
         test_duplicate_idempotency(tmp)
         test_malicious_client_id_e2e(tmp)
+        test_claude_tool_events_e2e(tmp)
         test_claude_interrupt_handover(tmp)
         test_process_cleanup(tmp)
         test_wait_already_terminal(tmp)

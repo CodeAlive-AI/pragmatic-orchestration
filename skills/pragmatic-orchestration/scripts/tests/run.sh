@@ -1512,6 +1512,13 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# Claude Code stream: whole-message tool events, bounded system noise.
+if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$TESTS_DIR/steer/test_claude_events.py"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
 if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$TESTS_DIR/steer/test_orchestration.py"; then
   PASS=$((PASS + 1))
 else

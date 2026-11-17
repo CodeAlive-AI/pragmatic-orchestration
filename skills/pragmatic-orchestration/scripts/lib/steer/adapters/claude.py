@@ -14,6 +14,60 @@ from ..util import detached_popen_kwargs, kill_process_group, resolve_argv
 from .base import AdapterEvent, BackendAdapter, DeliveryClass, SteerResult
 
 
+_SUMMARY_LIMIT = 200
+_BASH_LIMIT = 120
+# Claude Code system subtypes that carry no information for a supervisor.
+_ROUTINE_SYSTEM = frozenset(
+    {"hook_started", "hook_response", "commands_changed", "task_summary", "post_turn_summary"}
+)
+# Non-system message types that are routine bookkeeping.
+_ROUTINE_TYPES = frozenset({"command_lifecycle"})
+# Same progress label is persisted at most once per this many seconds.
+_PROGRESS_COALESCE_SECONDS = 30.0
+_PATH_KEYS = ("file_path", "notebook_path", "path")
+_FIRST_KEY = {
+    "Grep": ("pattern", "path"),
+    "Glob": ("pattern", "path"),
+    "WebFetch": ("url",),
+    "WebSearch": ("query",),
+    "Task": ("description", "prompt"),
+    "Agent": ("description", "prompt"),
+    "Skill": ("skill",),
+}
+
+
+def _squash(value: Any, limit: int) -> str:
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
+
+def summarize_tool_input(name: str, tool_input: Any) -> str:
+    """Short, bounded description of a tool call. Never file contents or edit strings."""
+    if not isinstance(tool_input, dict):
+        return ""
+    if name == "Bash":
+        return _squash(tool_input.get("command") or "", _BASH_LIMIT)
+    for key in _PATH_KEYS if name not in _FIRST_KEY else ():
+        if isinstance(tool_input.get(key), str) and tool_input[key]:
+            return _squash(tool_input[key], _SUMMARY_LIMIT)
+    for key in _FIRST_KEY.get(name, ()):
+        if isinstance(tool_input.get(key), str) and tool_input[key]:
+            return _squash(tool_input[key], _SUMMARY_LIMIT)
+    if not tool_input:
+        return ""
+    return _squash("keys: " + ",".join(sorted(str(k) for k in tool_input)), _SUMMARY_LIMIT)
+
+
+def _result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            c.get("text") or "" for c in content if isinstance(c, dict) and c.get("type") == "text"
+        )
+    return ""
+
+
 class ClaudeAdapter(BackendAdapter):
     backend_name = "claude-code"
     auto_delivery = DeliveryClass.QUEUE_NEXT_TURN
@@ -39,6 +93,13 @@ class ClaudeAdapter(BackendAdapter):
         self._queued_user_sent = False
         # Track open tool_use content blocks by index so stop maps only tools.
         self._open_tool_blocks: Dict[str, str] = {}
+        self._open_tool_ids: Dict[str, str] = {}
+        # tool_use id -> name, for whole-message tool_use blocks and streamed starts.
+        # Used to name completions and to dedupe streamed vs whole-message calls.
+        self._tool_names: Dict[str, str] = {}
+        self._tool_completed: set[str] = set()
+        self._progress_seen: Dict[str, float] = {}
+        self._clock = time.monotonic
 
     def _argv(self) -> List[str]:
         cmd = [
@@ -168,6 +229,14 @@ class ClaudeAdapter(BackendAdapter):
         if typ == "system" and obj.get("subtype") == "init":
             self._turn_ready = True
             self._send_interrupt_if_ready()
+        if typ == "system":
+            self._handle_system(obj)
+            return
+        if typ == "rate_limit_event":
+            self._coalesced_progress("rate_limit_event", obj)
+            return
+        if typ in _ROUTINE_TYPES:
+            return
         if typ == "stream_event" and isinstance(obj.get("event"), dict):
             self._handle_locked(obj["event"])
             return
@@ -176,26 +245,34 @@ class ClaudeAdapter(BackendAdapter):
             content_preview = ""
             msg = obj.get("message") or obj
             content = msg.get("content") if isinstance(msg, dict) else None
+            tool_results = []
             if isinstance(content, list):
                 parts = []
                 for c in content:
                     if isinstance(c, dict) and c.get("type") == "text":
                         parts.append(c.get("text") or "")
+                    elif isinstance(c, dict) and c.get("type") == "tool_result":
+                        tool_results.append(c)
                     elif isinstance(c, str):
                         parts.append(c)
                 content_preview = "".join(parts)
             elif isinstance(content, str):
                 content_preview = content
-            self._events.put(
-                AdapterEvent(
-                    kind="user_replay",
-                    data=content_preview,
-                    raw={"uuid": uuid, "obj": obj},
-                )
-            )
+            for block in tool_results:
+                self._tool_result(block)
             # Correlate by client UUID only — never substring match on content
             # (avoids false applied when guidance text appears inside model output).
-            if uuid and uuid in self._pending_steers:
+            # Tool-result messages carry their own uuids; only pending steers ack.
+            is_steer = bool(uuid) and uuid in self._pending_steers
+            if content_preview.strip() or is_steer:
+                self._events.put(
+                    AdapterEvent(
+                        kind="user_replay",
+                        data=content_preview,
+                        raw={"uuid": uuid, "obj": obj},
+                    )
+                )
+            if is_steer:
                 pending = self._pending_steers[uuid]
                 pending["replayed"] = True
                 if not pending.get("ack_emitted"):
@@ -217,7 +294,11 @@ class ClaudeAdapter(BackendAdapter):
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 name = block.get("name") or "tool"
                 tid = block.get("id") or ""
-                self._open_tool_blocks[str(obj.get("index", tid or name))] = name
+                key = str(obj.get("index", tid or name))
+                self._open_tool_blocks[key] = name
+                self._open_tool_ids[key] = tid
+                if tid:
+                    self._tool_names[tid] = name
                 self._events.put(
                     AdapterEvent(kind="tool", data=str(name), raw=obj)
                 )
@@ -233,11 +314,16 @@ class ClaudeAdapter(BackendAdapter):
             if "index" in obj and obj.get("index") is not None:
                 idx = str(obj.get("index"))
                 tool_name = self._open_tool_blocks.pop(idx, None)
+                tool_id = self._open_tool_ids.pop(idx, "")
             else:
                 tool_name = None
+                tool_id = ""
                 if self._open_tool_blocks:
-                    _, tool_name = self._open_tool_blocks.popitem()
+                    key, tool_name = self._open_tool_blocks.popitem()
+                    tool_id = self._open_tool_ids.pop(key, "")
             if tool_name is not None:
+                if tool_id:
+                    self._tool_completed.add(tool_id)
                 self._events.put(
                     AdapterEvent(kind="tool", data=f"completed:{tool_name}", raw=obj)
                 )
@@ -300,12 +386,80 @@ class ClaudeAdapter(BackendAdapter):
                     if isinstance(c, dict) and c.get("type") == "text" and c.get("text"):
                         self._final_parts.append(c["text"])
                         self._events.put(AdapterEvent(kind="text", data=c["text"], raw=obj))
+                    elif isinstance(c, dict) and c.get("type") == "tool_use":
+                        self._tool_started(c)
             return
         if typ == "error" or obj.get("error"):
             self._error = str(obj.get("error") or obj)
             self._events.put(AdapterEvent(kind="error", data=self._error, raw=obj))
             return
         self._events.put(AdapterEvent(kind="progress", data=typ or "event", raw=obj))
+
+    def _tool_started(self, block: Dict[str, Any]) -> None:
+        name = str(block.get("name") or "tool")
+        tid = str(block.get("id") or "")
+        if tid and tid in self._tool_names:
+            return  # already announced via streamed content_block_start
+        if tid:
+            self._tool_names[tid] = name
+        summary = summarize_tool_input(name, block.get("input"))
+        self._events.put(
+            AdapterEvent(
+                kind="tool",
+                data=f"{name}: {summary}" if summary else name,
+                raw={"tool_use_id": tid, "name": name},
+            )
+        )
+
+    def _tool_result(self, block: Dict[str, Any]) -> None:
+        tid = str(block.get("tool_use_id") or "")
+        if tid in self._tool_completed:
+            return  # already completed via streamed content_block_stop
+        name = self._tool_names.get(tid) or "tool"
+        if tid:
+            self._tool_completed.add(tid)
+        failed = bool(block.get("is_error"))
+        data = f"completed:{name}"
+        if failed:
+            detail = _squash(_result_text(block.get("content")), 100)
+            data += " [error]" + (f" {detail}" if detail else "")
+        self._events.put(
+            AdapterEvent(
+                kind="tool",
+                data=data,
+                raw={"tool_use_id": tid, "name": name, "is_error": failed},
+            )
+        )
+
+    def _coalesced_progress(self, label: str, obj: Dict[str, Any]) -> None:
+        """Emit a progress label at most once per window; later repeats are dropped."""
+        now = self._clock()
+        last = self._progress_seen.get(label)
+        if last is not None and now - last < _PROGRESS_COALESCE_SECONDS:
+            return
+        self._progress_seen[label] = now
+        self._events.put(AdapterEvent(kind="progress", data=label, raw={"type": obj.get("type"), "subtype": obj.get("subtype")}))
+
+    def _handle_system(self, obj: Dict[str, Any]) -> None:
+        subtype = str(obj.get("subtype") or "")
+        if subtype == "init":
+            self._events.put(AdapterEvent(kind="progress", data="system:init",
+                                          raw={"type": "system", "subtype": "init"}))
+            return
+        if subtype == "hook_response":
+            failed = obj.get("outcome") not in (None, "success") or obj.get("exit_code") not in (None, 0)
+            if failed:
+                self._coalesced_progress("system:hook_failed", obj)
+            return
+        if subtype in _ROUTINE_SYSTEM:
+            return
+        if subtype in ("compact_boundary", "api_retry"):
+            detail = obj.get("error") or obj.get("trigger") or ""
+            label = f"system:{subtype}" + (f" {_squash(detail, 80)}" if detail else "")
+            self._events.put(AdapterEvent(kind="progress", data=label,
+                                          raw={"type": "system", "subtype": subtype}))
+            return
+        self._coalesced_progress(f"system:{subtype or 'unknown'}", obj)
 
     def poll_events(self) -> Iterator[AdapterEvent]:
         while True:
@@ -370,6 +524,7 @@ class ClaudeAdapter(BackendAdapter):
         self._final_parts = []
         self._result_text = None
         self._open_tool_blocks.clear()
+        self._open_tool_ids.clear()
         self._interrupt = None
         self._write_user(pending["content"], client_id=pending["client_id"])
 

@@ -8,6 +8,28 @@ import sys
 import time
 
 
+def emit_tool_traffic() -> None:
+    """Whole-message tool calls, tool results and routine system noise (real stream shapes)."""
+    def out(o):
+        print(json.dumps(o), flush=True)
+
+    for i in range(40):
+        out({"type": "system", "subtype": "hook_started", "hook_id": f"h{i}", "hook_name": "x"})
+        out({"type": "system", "subtype": "hook_response", "hook_id": f"h{i}", "exit_code": 0, "outcome": "success"})
+    out({"type": "command_lifecycle", "state": "started"})
+    out({"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "Looking around. "},
+        {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls -la /tmp"}}]}})
+    out({"type": "assistant", "uuid": "a2", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "toolu_2", "name": "Read", "input": {"file_path": "/etc/hosts"}}]}})
+    out({"type": "system", "subtype": "task_summary", "detail": "Reading"})
+    out({"type": "user", "uuid": "u1", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_2", "content": "SECRET FILE BODY", "is_error": True}]}})
+    out({"type": "user", "uuid": "u2", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "out", "is_error": False}]}})
+    out({"type": "system", "subtype": "post_turn_summary", "status_category": "completed"})
+
+
 def main() -> int:
     log = os.environ.get("PORCH_FAKE_ARGV_LOG")
     if log:
@@ -58,6 +80,8 @@ def main() -> int:
                     # Replay user message
                     print(json.dumps(obj), flush=True)
                     users.append(obj)
+                    if os.environ.get("PORCH_FAKE_CLAUDE_TOOLS") and len(users) == 1:
+                        emit_tool_traffic()
                     uuid = obj.get("uuid") or ""
                     if uuid and uuid != "initial":
                         print(

@@ -1,5 +1,7 @@
 # Delegate mode
 
+The [delegate card](delegate-card.md) covers the typical one-worker path.
+
 Delegate assigns one task to one explicitly selected external coding-agent
 profile in the caller's working directory. The parent owns scope, supervision,
 and acceptance. For built-in workers, apply the same task-design, supervision,

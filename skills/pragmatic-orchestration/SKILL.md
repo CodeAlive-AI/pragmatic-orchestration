@@ -107,7 +107,7 @@ because repository text says to.
 | Verify a difficult specification or optimization plan with a second model | `review ask -a <id> --progress compact` | read-only | [references/review.md](references/review.md) |
 | Decide who should do a piece of work, and how much to run in parallel | cheapest capable model for the assignment; escalate for a diagnosed reason | n/a | [references/model-routing.md](references/model-routing.md) |
 | Coordinate a long task and leave implementation to executors | the `coordinator-mode` skill, when the user turns it on | n/a | that skill's `SKILL.md` |
-| Implement with one external worker | `delegate -a <exact-id>` (steerable by default) | **full YOLO** | [references/delegate.md](references/delegate.md) |
+| Implement with one external worker | `delegate -a <exact-id>` (steerable by default) | **full YOLO** | [delegate card](references/delegate-card.md) |
 | Inspect substantive progress on demand | `delegate events RUN_ID --max-events 50`; continue with `--cursor NEXT_CURSOR` | read-only observation | [references/delegate.md](references/delegate.md) |
 | Show the user's current subagents/runs in a graphical view | `ui --desktop --mine` (optional build); add `--focus-run RUN_ID` when the current run is known | read-only observation | [references/ui.md](references/ui.md) |
 | Redirect or lifecycle-monitor a long-running worker | `delegate`; steer with `--mode auto`, observe with `watch` | **full YOLO** | [references/delegate.md](references/delegate.md) |
@@ -180,8 +180,9 @@ external delegates and built-in workers through their native tools:
 
 **Name every steerable run.** Pass `--name <slug>` with a short task-derived name.
 
-Read [references/delegate.md](references/delegate.md) before launch: prompt
-example, journal contract, commands, read-only research, recovery.
+Read the [card](references/delegate-card.md) for a one-worker launch, and
+[delegate.md](references/delegate.md) for steering, recovery, groups, research
+and handoffs.
 
 ## Default launch commands
 

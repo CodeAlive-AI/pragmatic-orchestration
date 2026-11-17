@@ -20,9 +20,14 @@ result and verifying it. A frontier model's output tokens cost several times a
 workhorse model's, so a long brief written by the orchestrator can cost more than
 the work it describes.
 
-- A task that takes longer to explain than to do stays with you. In Coordinator
-  Mode, batch such small items into one assignment instead of doing them one by
-  one yourself.
+- A task that takes longer to explain than to do stays with you. So does a
+  short sequential standalone task you would finish in roughly 10-12 turns with
+  no independent parts: the brief, the wait and the acceptance pass cost about as
+  much as the work, and elapsed time roughly doubles. Delegate when the piece is
+  larger, when independent parts can run in parallel, or when it would fill your
+  context with output you do not need. In Coordinator Mode, batch small items
+  into one assignment instead of doing them one by one yourself; this threshold
+  does not change that mode's default of delegating implementation.
 - A brief that points to files and artifacts is cheaper than one that retells
   them.
 - Subscription quota is a real budget. Check it with `"$PORCH" quota` when it
@@ -56,7 +61,9 @@ Set reasoning effort through the profile or a supported override, not through
 prose such as "think harder". Maximum effort is rarely the economical choice for
 an executor with a clear brief. A budget written into a prompt is guidance, not a
 limit: Porch imposes no deadline or spending cap, so watch long runs and cancel
-them explicitly.
+them explicitly. An orchestrator's effort raises the price of every one of its
+turns, routine supervision included: raise it for the design and acceptance
+decisions that need it, not for the whole session.
 
 ## Escalate for a diagnosed reason
 

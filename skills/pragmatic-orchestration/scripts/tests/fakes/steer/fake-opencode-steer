@@ -30,6 +30,8 @@ class State:
         self.generation = 0
         self.lock = threading.RLock()
         self.slow = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.35"))
+        self.forms = {}
+        self.connections = 0
 
 
 STATE = State()
@@ -40,6 +42,20 @@ def broadcast(kind, data):
     with STATE.lock:
         for q in STATE.queues:
             q.append(frame)
+
+
+def drop_streams():
+    """Close every open event stream, as a network drop would; later events go nowhere."""
+    with STATE.lock:
+        for q in STATE.queues:
+            q.append(None)
+
+
+def log_line(name, obj):
+    path = os.environ.get(name)
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(obj) + "\n")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -81,7 +97,21 @@ class Handler(BaseHTTPRequestHandler):
         if path == f"/api/session/{STATE.session_id}/message":
             with STATE.lock:
                 return self.reply(200, {"data": list(STATE.messages), "cursor": {}})
+        if path == f"/api/session/{STATE.session_id}/form":
+            with STATE.lock:
+                return self.reply(200, {"data": [f for f in STATE.forms.values() if f["state"] == "pending" and f.get("form")]})
+        if path == f"/api/session/{STATE.session_id}/permission":
+            return self.reply(200, {"data": []})
+        if path.startswith(f"/api/session/{STATE.session_id}/message/"):
+            wanted = path.rsplit("/", 1)[1]
+            with STATE.lock:
+                found = next((m for m in STATE.messages if m["id"] == wanted), None)
+            return self.reply(200, {"data": found}) if found else self.reply(404, {"error": "not found"})
         if path == "/api/event":
+            with STATE.lock:
+                STATE.connections += 1
+                number = STATE.connections
+            always = bool(os.environ.get("PORCH_FAKE_OC_DROP_ALWAYS"))
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "close")
@@ -92,11 +122,16 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.wfile.write(b'data: {"type":"server.connected","data":{}}\n\n')
                 self.wfile.flush()
+                if always:
+                    time.sleep(.1)
+                    return
                 while True:
                     with STATE.lock:
                         items = list(q)
                         q.clear()
                     for item in items:
+                        if item is None:
+                            return
                         self.wfile.write(item.encode())
                         self.wfile.flush()
                     time.sleep(.03)
@@ -124,8 +159,20 @@ class Handler(BaseHTTPRequestHandler):
             if was_active:
                 broadcast("session.execution.interrupted", {"sessionID": STATE.session_id, "reason": "user"})
             return self.reply(200, {"interrupted": was_active})
+        if path.startswith(f"/api/session/{STATE.session_id}/form/") and path.endswith("/reply"):
+            form_id = path.split("/")[-2]
+            with STATE.lock:
+                entry = STATE.forms.get(form_id)
+                if not entry or entry["state"] != "pending":
+                    return self.reply(404, {"error": "no pending form"})
+                entry["state"] = "answered"
+                entry["answer"] = body.get("answer")
+            log_line("PORCH_FAKE_OC_FORM_LOG", {"form": form_id, "answer": body.get("answer")})
+            broadcast("form.replied", {"id": form_id, "sessionID": STATE.session_id, "answer": body.get("answer")})
+            return self.reply(200, {"data": {}})
         if path == f"/api/session/{STATE.session_id}/prompt":
             mid = body["id"]
+            log_line("PORCH_FAKE_OC_PROMPT_LOG", {"prompt": mid})
             client = body.get("metadata", {}).get("clientId", "")
             created = int(time.time() * 1000)
             with STATE.lock:
@@ -150,6 +197,49 @@ class Handler(BaseHTTPRequestHandler):
                         "action": "external_directory", "resources": ["/tmp/example/*"],
                         "metadata": {"command": "mkdir /tmp/example"}})
                     return
+                if os.environ.get("PORCH_FAKE_OC_FORM"):
+                    kind = os.environ["PORCH_FAKE_OC_FORM"]
+                    config = {}
+                    try:
+                        config = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
+                    except json.JSONDecodeError:
+                        pass
+                    log_line("PORCH_FAKE_OC_FORM_LOG", {"config_websearch": config.get("websearch", "unset")})
+                    # The real server never asks when config settled web search; PORCH_FAKE_OC_FORM_FORCE asks anyway.
+                    settled = config.get("websearch") is False or isinstance(config.get("websearch"), dict)
+                    if kind != "websearch" or not settled or os.environ.get("PORCH_FAKE_OC_FORM_FORCE"):
+                        form_id = "frm_" + uuid.uuid4().hex[:12]
+                        choice = {"key": "choice", "description": "Allow OpenCode to search the web for up-to-date information?",
+                                  "type": "string", "required": True, "custom": False,
+                                  "options": [{"value": "allow", "label": "Allow search via Exa"},
+                                              {"value": "choose", "label": "Choose another provider"},
+                                              {"value": "disable", "label": "Disable web search"}]}
+                        forms = {
+                            "websearch": {"title": "Web Search", "metadata": {"kind": "websearch.provider"}, "fields": [choice]},
+                            # Same wording, different identifier: must not be treated as consent.
+                            "lookalike": {"title": "Web Search", "metadata": {"kind": "other.kind"}, "fields": [choice]},
+                            # Right identifier, unexpected shape: must not be treated as consent.
+                            "odd-fields": {"title": "Web Search", "metadata": {"kind": "websearch.provider"},
+                                           "fields": [{"key": "token", "type": "string", "required": True, "custom": True}]},
+                            "other": {"title": "Pick a thing", "metadata": {"kind": "some.thing"},
+                                      "fields": [{"key": "pick", "type": "string", "required": True, "custom": True}]},
+                        }
+                        form = {"id": form_id, "sessionID": STATE.session_id, **forms[kind]}
+                        with STATE.lock:
+                            STATE.forms[form_id] = {"state": "pending", "form": form}
+                        broadcast("form.created", {"form": form})
+                        deadline = time.time() + 6
+                        while time.time() < deadline:
+                            with STATE.lock:
+                                if STATE.forms[form_id]["state"] != "pending" or generation != STATE.generation:
+                                    break
+                            time.sleep(.05)
+                        else:
+                            log_line("PORCH_FAKE_OC_FORM_LOG", {"form": form_id, "answer": "timeout"})
+                            return
+                if os.environ.get("PORCH_FAKE_OC_SCRIPT"):
+                    run_script(mid)
+                    return
                 chunk = "FAKE_OC" + (f"+{client[:6]}" if client and client != "initial" else "")
                 msg = "msg_answer_" + mid
                 data = {"sessionID": STATE.session_id, "assistantMessageID": msg, "ordinal": 0}
@@ -171,6 +261,60 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         if self.auth():
             self.reply(204, None)
+
+
+def run_script(mid):
+    """Text, a tool call and more text, with an optional event-stream outage in the middle.
+
+    PORCH_FAKE_OC_SCRIPT=drop        streams close after the tool starts; the tool result and the
+                                     second text arrive while no stream is attached.
+    PORCH_FAKE_OC_SCRIPT=drop-gone   same, then the server process dies.
+    PORCH_FAKE_OC_SCRIPT=plain       no outage (reference run).
+    PORCH_FAKE_OC_SCRIPT=hang        one text, then the session stays active forever.
+    PORCH_FAKE_OC_DROP_ALWAYS=1      every event stream closes right after server.connected.
+    """
+    mode = os.environ["PORCH_FAKE_OC_SCRIPT"]
+    msg = "msg_answer_" + mid
+    sid = STATE.session_id
+    content = []
+    with STATE.lock:
+        STATE.messages.append({"id": msg, "type": "assistant", "content": content})
+
+    def text(ordinal, value):
+        base = {"sessionID": sid, "assistantMessageID": msg, "ordinal": ordinal}
+        broadcast("session.text.delta", {**base, "delta": value})
+        broadcast("session.text.ended", {**base, "text": value})
+        with STATE.lock:
+            content.append({"type": "text", "text": value})
+        time.sleep(.1)
+
+    text(0, "Alpha ")
+    if mode == "hang":
+        time.sleep(30)  # session stays active, never completes
+        return
+    base = {"sessionID": sid, "id": "call-1", "assistantMessageID": msg}
+    broadcast("session.tool.input.started", {**base, "name": "read"})
+    broadcast("session.tool.called", {**base, "input": {"path": "a.txt"}, "executed": True})
+    tool = {"type": "tool", "id": "call-1", "name": "read", "state": {"status": "running", "input": {"path": "a.txt"}}}
+    with STATE.lock:
+        content.append(tool)
+    time.sleep(.2)
+    if mode.startswith("drop"):
+        drop_streams()
+        time.sleep(.2)
+        if mode == "drop-gone":
+            os._exit(0)
+    broadcast("session.tool.success", {**base, "output": "ok"})
+    with STATE.lock:
+        tool["state"] = {"status": "completed", "input": {"path": "a.txt"}, "content": []}
+    text(1, "Beta ")
+    if mode.startswith("drop"):
+        time.sleep(float(os.environ.get("PORCH_FAKE_OC_GAP", "1.6")))
+    text(2, "Gamma")
+    with STATE.lock:
+        STATE.active = False
+        STATE.messages.append({"id": "idle_" + mid, "type": "idle", "outcome": "succeeded"})
+    broadcast("session.execution.succeeded", {"sessionID": sid})
 
 
 def main():

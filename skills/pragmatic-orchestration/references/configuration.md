@@ -26,6 +26,48 @@ models and enabled profiles may differ from the defaults described below.
 | `label` | Human-readable output label |
 | `review_instructions` | Optional profile-specific instructions for non-raw review prompts |
 | `supports_delegate` | Optional; set false for review-only profiles |
+| `web_search` | Optional, OpenCode profiles only: `"decline"` (default) or `"allow"`; see [Web search in OpenCode delegate runs](#web-search-in-opencode-delegate-runs) |
+
+### Web search in OpenCode delegate runs
+
+OpenCode 2 asks the user to consent to its web-search provider the first time
+a worker searches. A delegate run has nobody to answer, so Porch settles it
+before launch, by profile, through the private server's inline configuration
+(`OPENCODE_CONFIG_CONTENT`). That configuration lives only in the run's server
+process: Porch never writes to your OpenCode settings and never answers the
+consent form, because the answer is stored in OpenCode's own state.
+
+- Default (`"web_search": "decline"`, or the key absent): the server starts
+  with `websearch: false`, so the worker continues without web search. The run
+  emits the progress event `websearch_consent_declined via=config` at the start.
+- Opt-in (`"web_search": "allow"`): the server starts with
+  `websearch: {"provider": "random"}`, the same value the consent form's "allow"
+  stores, so a provider is used for this run only. The run emits
+  `websearch_consent_allowed via=config`. This accepts a third-party search
+  provider on your behalf, so no shipped profile sets it; add it only to a
+  profile in your own `config.json`:
+
+```json
+"opencode-go-deepseek-v4-pro-search": {
+  "enabled": false,
+  "backend": "opencode",
+  "model": "opencode-go/deepseek-v4-pro",
+  "effort": "max",
+  "role": "analyst",
+  "web_search": "allow",
+  "label": "DeepSeek V4 Pro with web search"
+}
+```
+
+Every OpenCode form or permission request still fails the run with
+`input_required` or `permission_required`. If the web-search consent form
+appears despite the configuration (recognised by its structured identifiers:
+`metadata.kind` equal to `websearch.provider` and a single `choice` field
+offering `allow` and `disable`, never by wording), the run fails with an
+`input_required` message that names the cause. An inline
+`OPENCODE_CONFIG_CONTENT` that already sets `websearch` is kept as is, and
+content that is not a JSON object is not modified; the message says so. Other
+values of `web_search` are rejected. The legacy `--one-shot` path is unchanged.
 
 List effective profiles with:
 

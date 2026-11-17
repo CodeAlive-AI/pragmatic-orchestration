@@ -244,6 +244,10 @@ class Supervisor:
         signal.signal(signal.SIGINT, _handle_sig)
 
         try:
+            adapter_options: Dict[str, Any] = {}
+            if backend == "opencode":
+                # Privacy default: web-search consent is declined unless the profile opts in.
+                adapter_options["web_search"] = agent.get("web_search") or "decline"
             self.adapter = make_adapter(
                 backend,
                 binary=binary,
@@ -252,6 +256,7 @@ class Supervisor:
                 cwd=self.cwd,
                 artifacts_dir=self.artifacts_dir,
                 agent_id=self.agent_id,
+                **adapter_options,
             )
             if self.persist_session:
                 self._session_lease = SessionLease(self.registry, self.run_id, self.continue_run,

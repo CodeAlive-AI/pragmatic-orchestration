@@ -82,8 +82,25 @@ class OpenCodeAdapter(BackendAdapter):
     backend_name = "opencode"
     auto_delivery = DeliveryClass.STEP_INJECT
 
-    def __init__(self, **kwargs):
+    # Event-stream recovery budget: attempts per outage and the wall-clock cap.
+    _RECONNECT_ATTEMPTS = 3
+    _RECONNECT_BACKOFF = (0.5, 1.0, 2.0)
+    _RECONNECT_TOTAL_SECONDS = 60.0
+    # OpenCode 2 marks the web-search consent form with this metadata kind.
+    _WEBSEARCH_FORM_KIND = "websearch.provider"
+
+    def __init__(self, *, web_search: str = "decline", **kwargs):
         super().__init__(**kwargs)
+        if web_search not in ("decline", "allow"):
+            raise ValueError(f"web_search must be 'decline' or 'allow', got {web_search!r}")
+        self.web_search = web_search
+        self._config_content: Optional[str] = None
+        self._connected_once = False
+        self._stream_recovering = False
+        self._stream_progress = False
+        self._recoveries = 0
+        self._msg_text: Dict[str, str] = {}
+        self._recovered_msgs: set[str] = set()
         self.proc: Optional[subprocess.Popen] = None
         self.base_url: Optional[str] = None
         self._events: queue.Queue[AdapterEvent] = queue.Queue()
@@ -127,7 +144,31 @@ class OpenCodeAdapter(BackendAdapter):
         env = os.environ.copy()
         env.pop("OPENCODE_SERVER_PASSWORD", None)
         env["OPENCODE_PASSWORD"] = self._server_password
+        if self._config_content is not None:
+            env["OPENCODE_CONFIG_CONTENT"] = self._config_content
         return env
+
+    def _websearch_config_content(self) -> Optional[str]:
+        """Inline config that settles web search for this private server only.
+
+        OpenCode 2 reads the `websearch` config key at load: `false` disables
+        search, `{"provider": "random"}` selects a provider (the same value the
+        consent form's "allow" stores). Either way the consent form is never
+        asked, and nothing is written to the user's OpenCode state. An explicit
+        `websearch` key in the caller's own OPENCODE_CONFIG_CONTENT wins;
+        content that is not a JSON object is left alone.
+        """
+        value = {"provider": "random"} if self.web_search == "allow" else False
+        current = os.environ.get("OPENCODE_CONFIG_CONTENT")
+        if not current:
+            return json.dumps({"websearch": value})
+        try:
+            document = json.loads(current)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(document, dict) or "websearch" in document:
+            return None
+        return json.dumps({**document, "websearch": value})
 
     def _model_ref(self) -> Dict[str, str]:
         provider, sep, model = self.model.partition("/")
@@ -176,6 +217,7 @@ class OpenCodeAdapter(BackendAdapter):
                 raise
 
     def start(self, task: str) -> None:
+        self._config_content = self._websearch_config_content()
         self._start_server()
         result = self._http_json("POST", "/api/session", body={
             "location": {"directory": self.cwd}, "agent": "build", "model": self._model_ref(),
@@ -189,6 +231,9 @@ class OpenCodeAdapter(BackendAdapter):
         self._sse_thread.start()
         if not self._ready.wait(30) or self._error:
             raise RuntimeError(self._error or "OpenCode 2 event subscription timed out")
+        if self._config_content is not None:
+            word = "allowed" if self.web_search == "allow" else "declined"
+            self._events.put(AdapterEvent(kind="progress", data=f"websearch_consent_{word} via=config"))
         self._send_prompt(task, "initial", "steer")
 
     def _read_stdio_for_url(self, name: str) -> None:
@@ -320,50 +365,102 @@ class OpenCodeAdapter(BackendAdapter):
         self._events.put(AdapterEvent(kind="done", data="error", raw=raw))
         self._ready.set()
 
+    def _sleep_unless_done(self, seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while not self._done and time.monotonic() < deadline:
+            time.sleep(min(.05, max(.0, deadline - time.monotonic())))
+
     def _sse_loop(self) -> None:
+        """Read the event stream; re-attach it when it drops mid-run.
+
+        OpenCode 2's event stream is volatile and has no resume cursor, so a
+        drop loses events. Recovery re-subscribes only (it never resends the
+        prompt), then rebuilds what was missed from session status and message
+        history. Attempts and time are bounded; exhaustion fails explicitly.
+        """
         assert self.base_url
+        attempts = 0
+        deadline = time.monotonic() + self._RECONNECT_TOTAL_SECONDS
+        while not self._done:
+            if attempts:
+                self._sleep_unless_done(self._RECONNECT_BACKOFF[min(attempts, len(self._RECONNECT_BACKOFF)) - 1])
+                if self._done:
+                    return
+            self._stream_progress = False
+            try:
+                self._read_stream(attempts)
+                reason = "stream closed by server"
+            except Exception as exc:
+                reason = str(exc) or type(exc).__name__
+            if self._done:
+                return
+            if not self._connected_once:
+                # Never attached: nothing to recover from.
+                if reason == "stream closed by server":
+                    self._fail("OpenCode 2 event stream disconnected before completion")
+                else:
+                    self._fail(f"OpenCode 2 event stream failed: {reason}")
+                return
+            self._stream_recovering = True
+            if self._stream_progress:
+                attempts = 0
+                deadline = time.monotonic() + self._RECONNECT_TOTAL_SECONDS
+            if attempts >= self._RECONNECT_ATTEMPTS or time.monotonic() >= deadline:
+                exited = ""
+                if self.proc and self.proc.poll() is not None:
+                    exited = f"; server process exited with code {self.proc.returncode}"
+                self._fail("OpenCode 2 event stream disconnected before completion and could not be "
+                           f"re-established after {attempts} reconnect attempt(s): {reason}{exited}")
+                return
+            attempts += 1
+
+    def _read_stream(self, attempt: int) -> None:
+        """Run one event-stream connection until it ends. `attempt` is 0 for the first connection."""
         url = self.base_url + "/api/event"
         self._assert_loopback_url(url)
+        req = urllib.request.Request(url, headers=self._auth_headers({"Accept": "text/event-stream"}))
+        resp = self._opener.open(req, timeout=30)
         try:
-            req = urllib.request.Request(url, headers=self._auth_headers({"Accept": "text/event-stream"}))
-            resp = self._opener.open(req, timeout=30)
-            try:
-                # A healthy inference can exceed the connection timeout.
-                resp.fp.raw._sock.settimeout(None)
-            except AttributeError:
-                pass
-            lines: List[str] = []
-            try:
-                while not self._done:
-                    line = resp.readline()
-                    if not line:
-                        break
-                    if isinstance(line, bytes):
-                        line = line.decode("utf-8", errors="replace")
-                    line = line.rstrip("\r\n")
-                    if not line:
-                        if lines:
-                            self._handle_sse_block("\n".join(lines))
-                            lines = []
-                    elif line.startswith("data:"):
-                        lines.append(line[5:].lstrip(" "))
-            finally:
-                resp.close()
-            if not self._done:
-                self._fail("OpenCode 2 event stream disconnected before completion")
-        except Exception as exc:
-            if not self._done:
-                self._fail(f"OpenCode 2 event stream failed: {exc}")
+            # A healthy inference can exceed the connection timeout.
+            resp.fp.raw._sock.settimeout(None)
+        except AttributeError:
+            pass
+        lines: List[str] = []
+        try:
+            while not self._done:
+                line = resp.readline()
+                if not line:
+                    break
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                line = line.rstrip("\r\n")
+                if not line:
+                    if lines:
+                        typ = self._handle_sse_block("\n".join(lines))
+                        lines = []
+                        if typ == "server.connected":
+                            self._connected_once = True
+                            if attempt:
+                                self._reconcile_after_reconnect(attempt)
+                        elif typ:
+                            self._stream_progress = True
+                elif line.startswith("data:"):
+                    lines.append(line[5:].lstrip(" "))
+        finally:
+            resp.close()
 
-    def _handle_sse_block(self, block: str) -> None:
+    def _handle_sse_block(self, block: str) -> Optional[str]:
         self._log_raw({"sse": block})
         try:
             obj = json.loads(block)
             if not isinstance(obj, dict):
                 raise ValueError("event is not an object")
             self._handle_event(obj)
+            typ = obj.get("type")
+            return typ if isinstance(typ, str) else None
         except (json.JSONDecodeError, ValueError) as exc:
             self._fail(f"invalid OpenCode 2 event: {exc}")
+            return None
 
     def _handle_event(self, obj: Dict[str, Any]) -> None:
         typ, data = obj.get("type"), obj.get("data")
@@ -381,7 +478,17 @@ class OpenCodeAdapter(BackendAdapter):
             form_session = data["form"].get("sessionID")
             location = obj.get("location") if isinstance(obj.get("location"), dict) else {}
             if form_session == self.session_id or form_session in self._child_sessions or (form_session == "global" and location.get("directory") == self.cwd):
-                self._fail("input_required: " + json.dumps(data, ensure_ascii=False), obj)
+                if self._is_websearch_consent(data["form"]):
+                    self._fail(
+                        "input_required: OpenCode asked for web-search provider consent although "
+                        f"web_search={self.web_search!r} was applied through the server config"
+                        + ("" if self._config_content is not None else
+                           " (not applied: OPENCODE_CONFIG_CONTENT already sets websearch or is not a JSON object)")
+                        + ". Porch never answers this form because the answer is stored in OpenCode's own "
+                        "state. Set websearch in your OpenCode config, or fix OPENCODE_CONFIG_CONTENT, "
+                        "then rerun. " + json.dumps(data, ensure_ascii=False), obj)
+                else:
+                    self._fail("input_required: " + json.dumps(data, ensure_ascii=False), obj)
             return
         if data.get("sessionID") != self.session_id and data.get("sessionID") not in self._child_sessions:
             return
@@ -397,9 +504,18 @@ class OpenCodeAdapter(BackendAdapter):
         if data.get("sessionID") != self.session_id:
             return
         if typ in ("session.text.delta", "session.text.ended"):
-            key = f"{data.get('assistantMessageID')}:{data.get('ordinal')}"
+            message_id = str(data.get("assistantMessageID"))
+            key = f"{message_id}:{data.get('ordinal')}"
             value = data.get("delta") if typ.endswith("delta") else data.get("text")
             if not isinstance(value, str):
+                return
+            with self._lock:
+                resynced = message_id in self._recovered_msgs
+            if resynced:
+                # A stream gap makes ordinal bookkeeping unreliable for this
+                # message: its text now comes from message history only.
+                if typ == "session.text.ended":
+                    self._sync_message(message_id)
                 return
             with self._lock:
                 if key not in self._parts:
@@ -409,6 +525,8 @@ class OpenCodeAdapter(BackendAdapter):
                 self._parts[key] = previous + value if typ.endswith("delta") else value
             delta = value if typ.endswith("delta") else (value[len(previous):] if value.startswith(previous) else "")
             if delta:
+                with self._lock:
+                    self._msg_text[message_id] = self._msg_text.get(message_id, "") + delta
                 self._events.put(AdapterEvent(kind="text", data=delta, raw=obj))
             return
         if typ in ("session.tool.input.started", "session.tool.called", "session.tool.success", "session.tool.failed"):
@@ -418,9 +536,13 @@ class OpenCodeAdapter(BackendAdapter):
                 detail["tool"] = data.get("name")
                 return
             if typ == "session.tool.called":
+                if detail.get("status") in ("running", "completed", "error"):
+                    return  # already reported, e.g. rebuilt from history after a stream gap
                 detail.update({"status": "running", "input": data.get("input")})
                 kind = "tool_started"
             else:
+                if detail.get("status") in ("completed", "error"):
+                    return
                 detail["status"] = "completed" if typ.endswith("success") else "error"
                 kind = "tool_completed"
             self._events.put(AdapterEvent(kind=kind, data=json.dumps(detail, ensure_ascii=False), raw=obj))
@@ -435,14 +557,143 @@ class OpenCodeAdapter(BackendAdapter):
             return
         if typ == "session.execution.succeeded":
             self._events.put(AdapterEvent(kind="turn_completed", data=typ, raw=obj))
-            with self._lock:
-                if self._reconciler_running:
-                    return
-                self._reconciler_running = True
-                self._reconciler_thread = threading.Thread(target=self._reconcile, daemon=True)
-                self._reconciler_thread.start()
+            self._start_reconciler()
             return
         self._events.put(AdapterEvent(kind="progress", data=str(typ or "event"), raw=obj))
+
+    def _start_reconciler(self) -> bool:
+        with self._lock:
+            if self._reconciler_running:
+                return False
+            self._reconciler_running = True
+            self._reconciler_thread = threading.Thread(target=self._reconcile, daemon=True)
+            self._reconciler_thread.start()
+            return True
+
+    def _is_websearch_consent(self, form: Dict[str, Any]) -> bool:
+        """Match the server's own consent form by its structured fields, never by wording."""
+        metadata = form.get("metadata")
+        fields = form.get("fields")
+        if not isinstance(metadata, dict) or metadata.get("kind") != self._WEBSEARCH_FORM_KIND:
+            return False
+        if not isinstance(fields, list) or len(fields) != 1 or not isinstance(fields[0], dict):
+            return False
+        field = fields[0]
+        options = field.get("options")
+        values = {o.get("value") for o in options if isinstance(o, dict)} if isinstance(options, list) else set()
+        return field.get("key") == "choice" and {"allow", "disable"} <= values and isinstance(form.get("id"), str)
+
+    def _assistant_text(self, message: Dict[str, Any]) -> str:
+        return "".join(part["text"] for part in message.get("content") or []
+                       if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str))
+
+    def _backfill_message(self, message: Dict[str, Any]) -> None:
+        """Emit text and tool events for one assistant message that the stream missed."""
+        message_id = message.get("id")
+        if message.get("type") != "assistant" or not isinstance(message_id, str):
+            return
+        history_text = self._assistant_text(message)
+        suffix, mismatch = "", False
+        with self._lock:
+            self._recovered_msgs.add(message_id)
+            emitted = self._msg_text.get(message_id, "")
+            if history_text.startswith(emitted):
+                suffix = history_text[len(emitted):]
+                if suffix:
+                    self._msg_text[message_id] = history_text
+                    key = f"{message_id}:history"
+                    if key not in self._parts:
+                        self._part_order.append(key)
+                        self._parts[key] = ""
+                    self._parts[key] += suffix
+            else:
+                mismatch = True
+        if suffix:
+            self._events.put(AdapterEvent(kind="text", data=suffix))
+        if mismatch:
+            self._events.put(AdapterEvent(kind="progress", data=f"stream_text_mismatch message={message_id}"))
+        for part in message.get("content") or []:
+            if not isinstance(part, dict) or part.get("type") != "tool" or not part.get("id"):
+                continue
+            state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            status = state.get("status")
+            if status not in ("running", "completed", "error"):
+                continue
+            call_id = str(part["id"])
+            out = []
+            with self._lock:
+                detail = self._tools.setdefault(call_id, {"call_id": call_id})
+                if detail.get("status") is None:
+                    detail.update({"tool": part.get("name"), "status": "running", "input": state.get("input")})
+                    out.append(AdapterEvent(kind="tool_started", data=json.dumps(detail, ensure_ascii=False)))
+                if status in ("completed", "error") and detail.get("status") not in ("completed", "error"):
+                    detail["status"] = status
+                    out.append(AdapterEvent(kind="tool_completed", data=json.dumps(detail, ensure_ascii=False)))
+            for event in out:
+                self._events.put(event)
+
+    def _backfill_from_history(self, messages: List[Dict[str, Any]]) -> None:
+        with self._lock:
+            first_prompt = self._first_prompt
+        start = next((i + 1 for i, msg in enumerate(messages) if msg.get("id") == first_prompt), 0)
+        for message in messages[start:]:
+            self._backfill_message(message)
+
+    def _sync_message(self, message_id: str) -> None:
+        """Best effort: the completion check repeats this from full history and fails if it cannot."""
+        try:
+            result = self._http_json("GET", f"/api/session/{quote(self.session_id or '', safe='')}/message/{quote(message_id, safe='')}", timeout=10)
+            message = result.get("data") if isinstance(result, dict) else None
+            if isinstance(message, dict):
+                self._backfill_message(message)
+        except Exception:
+            pass
+
+    def _reconcile_after_reconnect(self, attempt: int) -> None:
+        """Rebuild state the volatile stream lost: events, pending prompts, asks, completion."""
+        assert self.session_id
+        sid = quote(self.session_id, safe="")
+        active = self._http_json("GET", "/api/session/active", timeout=10)
+        if not isinstance(active, dict) or not isinstance(active.get("data"), dict):
+            raise RuntimeError("invalid OpenCode 2 active sessions")
+        with self._lock:
+            children = list(self._child_sessions)
+        is_active = any(child in active["data"] for child in children)
+        messages = self._history()
+        ids = {msg.get("id") for msg in messages}
+        with self._lock:
+            self._pending -= ids  # a prompt present in history was delivered; its event may be lost
+        self._backfill_from_history(messages)
+        for child in children:
+            quoted = quote(child, safe="")
+            forms = self._http_json("GET", f"/api/session/{quoted}/form", timeout=10)
+            permissions = self._http_json("GET", f"/api/session/{quoted}/permission", timeout=10)
+            for form in (forms.get("data") if isinstance(forms, dict) else None) or []:
+                if isinstance(form, dict):
+                    self._handle_event({"type": "form.created", "data": {"form": form}})
+            for request in (permissions.get("data") if isinstance(permissions, dict) else None) or []:
+                if isinstance(request, dict):
+                    self._handle_event({"type": "permission.asked", "data": {"sessionID": child, **request}})
+        if self._done:
+            return
+        with self._lock:
+            last_prompt = self._last_prompt
+            replacing = self._replacement_pending
+        last = next((i for i, msg in enumerate(messages) if msg.get("id") == last_prompt), None)
+        idle = next((msg for msg in reversed(messages[last + 1:]) if msg.get("type") == "idle"), None) if last is not None else None
+        if not idle and not is_active:
+            raise RuntimeError("session is not active on the server and history has no completion record")
+        with self._lock:
+            self._recoveries += 1
+        self._stream_recovering = False
+        self._events.put(AdapterEvent(kind="progress", data=f"stream_reconnected attempt={attempt}"))
+        if idle:
+            outcome = idle.get("outcome")
+            if outcome == "succeeded":
+                if self._start_reconciler():
+                    self._events.put(AdapterEvent(kind="turn_completed", data="session.execution.succeeded (recovered from history)"))
+            elif not (outcome == "interrupted" and replacing):
+                self._fail("OpenCode execution failed: " + json.dumps(idle, ensure_ascii=False))
 
     def _history(self) -> List[Dict[str, Any]]:
         assert self.session_id
@@ -517,6 +768,8 @@ class OpenCodeAdapter(BackendAdapter):
                     continue
                 if idle.get("outcome") != "succeeded":
                     raise RuntimeError("OpenCode 2 recorded unsuccessful completion: " + json.dumps(idle))
+                if self._recoveries:
+                    self._backfill_from_history(messages)
                 final = []
                 for message in relevant:
                     if message.get("type") == "assistant":
@@ -538,7 +791,7 @@ class OpenCodeAdapter(BackendAdapter):
                 self._reconciler_running = False
 
     def poll_events(self) -> Iterator[AdapterEvent]:
-        if self.proc and self.proc.poll() is not None and not self._done:
+        if self.proc and self.proc.poll() is not None and not self._done and not self._stream_recovering:
             self._fail(f"OpenCode 2 server exited unexpectedly: {self.proc.returncode}")
         while True:
             try:

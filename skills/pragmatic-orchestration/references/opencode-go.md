@@ -63,3 +63,11 @@ They are recorded separately because some CLI variants, such as MiniMax M3
 The offline catalog snapshot is in `scripts/tests/fixtures/opencode-go-models.json`.
 Regression coverage checks catalog profiles, review/delegate argv, steerable
 HTTP payloads and representative end-to-end CLI calls with fake backends.
+
+## Web search
+
+Steerable delegate runs decline OpenCode's web-search provider consent by
+default, so a worker never stalls on the prompt; the parent sees
+`websearch_consent_declined`. A profile opts in with `"web_search": "allow"`
+(no shipped profile does). See
+[Web search in OpenCode delegate runs](configuration.md#web-search-in-opencode-delegate-runs).

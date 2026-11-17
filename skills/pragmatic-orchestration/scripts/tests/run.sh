@@ -1519,6 +1519,13 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# OpenCode 2: event-stream recovery and the web-search consent policy.
+if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$TESTS_DIR/steer/test_opencode_resilience.py"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
 if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$TESTS_DIR/steer/test_orchestration.py"; then
   PASS=$((PASS + 1))
 else

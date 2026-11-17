@@ -43,6 +43,12 @@ success/failure/cancellation, lock contention during dead-supervisor observation
 structured results without final text, Codex active-turn status, and streamed
 message completion without duplicate progress text.
 
+`scripts/tests/steer/test_opencode_resilience.py` covers the OpenCode 2 event-stream
+recovery (mid-run drop with no duplicate or lost text/tool events, server gone,
+repeated drops, completion missed during the outage) and the web-search consent
+policy (declined by default, explicit opt-in, other forms still failing fast)
+against `fake-opencode-steer`.
+
 OpenCode regressions exercise a permission-blocked fake server through detached
 launch and wait-any, retained failure details, tool command visibility, nested
 foreign-session filtering, and SSE lines larger than 64 KiB with Unicode content.

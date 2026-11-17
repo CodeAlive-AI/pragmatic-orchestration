@@ -333,6 +333,8 @@ through `/api/session/active`. An unsuccessful or unresolved stop fails the run 
 sends no replacement. Completion is reconciled against the durable inbox, active
 sessions and message history so an earlier execution cannot finish a later prompt.
 
+OpenCode's event stream is volatile and has no resume cursor. When it drops while the run is still going, the adapter re-subscribes (never re-sends the prompt): at most 3 attempts with 0.5/1/2 s backoff, within 60 s per outage. After each reconnect it rebuilds what was missed from session status and message history, deduplicating by assistant message id and tool call id, then emits the progress event `stream_reconnected attempt=N` (also on the supervisor's stderr). A completion that happened during the outage is accepted only from the server's own idle record. If the server is gone or the attempts run out, the run fails with `OpenCode 2 event stream disconnected before completion and could not be re-established after N reconnect attempt(s): <reason>`. Tool events of child (sub-agent) sessions during an outage are not backfilled.
+
 OpenCode's server is loopback-only with redirect revalidation and per-run Basic auth; the password is never logged or stored. Claude's authoritative `result` completes the adapter even while stdin remains open; user replay proves transport acknowledgement, not semantic compliance. Codex interrupt uses a bounded local protocol handshake, not a run deadline.
 
 Porch asks OpenCode for its database path and coordinates server startup across its

@@ -105,8 +105,9 @@ as the signal that an assignment was cut badly, and fix the assignment.
    to it as `pragmatic-orchestration` describes.
 4. **Keep the team busy.** Ask yourself regularly whether everything that could
    run in parallel is running. Parallel writers get separate workspaces.
-5. **Supervise by evidence.** Check each worker's understanding in its first
-   minute, then at intervals that fit the risk. Hours without progress mean stop
+5. **Supervise by evidence.** For long, risky or less capable
+   workers, check understanding in the first minute or two; then check at
+   intervals that fit the risk. Hours without progress mean stop
    and rethink the assignment, not wait longer.
 6. **Accept on evidence.** Read the diff and the test code, not the summary.
    Corrections go back to an executor. Accepted work is integrated and landed

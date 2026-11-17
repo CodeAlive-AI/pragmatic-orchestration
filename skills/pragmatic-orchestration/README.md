@@ -163,8 +163,10 @@ against the source. Legacy multi-review depths and judges have been removed.
 
 ## Long-running delegation
 
-The parent must check the worker within the first minute after launch to verify
-its understanding and initial direction, and correct it when needed. Afterwards,
+For long, risky or hard-to-undo work, and for a less capable worker, the parent
+checks the worker within the first minute or two after launch to verify its
+understanding and initial direction, and corrects it when needed; a short
+bounded task is reviewed when it completes. Afterwards,
 the parent chooses when to check based on the task and observed progress;
 every 5–15 minutes is recommended depending on task scale: closer to 5 for
 smaller tasks, closer to 15 for larger tasks making steady progress. This is

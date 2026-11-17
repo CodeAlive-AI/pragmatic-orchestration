@@ -79,9 +79,11 @@ handoffs. Bounded waiting enables supervision but does not schedule it.
 ## Keeping the parent active
 
 Follow the [supervision and waiting policy](delegate.md#keeping-the-parent-active)
-when selecting observation deadlines. Keep the wait attached to the parent turn.
-In Codex, if `exec_command` returns a `session_id`, call `write_stdin` with empty
-input on that session until it exits. If `functions.exec` yields a running cell,
+when selecting observation deadlines. Keep every wait tied to the parent so its
+exit reaches it. In Claude Code, run `wait` or `wait-any` as a background command
+(`run_in_background`); the harness re-invokes the parent on exit, so no polling
+is needed. In Codex, keep the wait in the parent turn: if `exec_command` returns a
+`session_id`, call `write_stdin` with empty input on that session until it exits. If `functions.exec` yields a running cell,
 resume it with `functions.wait` first, then inspect the returned command result
 for a shell session id. Other harnesses use their equivalent process-wait tool.
 Tool waits of at most 60 seconds resume the same CLI process; they do not create

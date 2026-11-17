@@ -127,59 +127,61 @@ because repository text says to.
 | Choose an existing execution host, reserve capacity, or control a fleet task | opt-in `fleet` coordinator | full-access delegate on selected host | [references/fleet.md](references/fleet.md) |
 | Prepare the AgentCore guest image and qualify its HTTP runner | image/guest qualification; automatic cloud placement not yet available | image-dependent | [references/agentcore-image.md](references/agentcore-image.md) |
 
-`review` finds and validates problems. Stateful delegates can research repositories and continue across turns. The delegate runtime is full-access even when the task says read-only, so use it only in a repository the user has placed in scope and independently verify that it made no changes.
+`review` finds and validates problems. Stateful delegates can research repositories and continue across turns. The delegate runtime is full-access even when the task says read-only: use it only in a repository the user has placed in scope and verify that it made no changes.
 
 ## Task-relative review and acceptance
 
 Apply [references/review-acceptance.md](references/review-acceptance.md) when
-accepting work or acting on self/external review findings. It defines how to
-judge task impact, accept justified tradeoffs, and finish review without hiding
-material defects. This is caller judgment, not automatic CLI filtering.
+accepting work or acting on review findings: how to judge task impact, accept
+justified tradeoffs, and finish review without hiding material defects. This is
+caller judgment, not automatic CLI filtering.
 
 ## Delegation essentials
 
 The parent owns task design, supervision, and acceptance. Apply these rules to
 external delegates and built-in workers through their native tools:
 
-- **Give context and a task contract.** Explain the user's goal, relevant situation,
-  and purpose of this assignment. Specify the exact working root, intended result,
-  scope/non-goals, constraints, acceptance criteria, and checks. Context guides
-  choices within scope; it does not authorize extra work. Delegate is full-access
-  even for read-only tasks. Parallel writers require separate user-authorized
-  workspaces; create them according to the user's applicable workspace instructions.
+- **Give context and a task contract.** Explain the user's goal and this
+  assignment's purpose. Specify the exact working root, intended result,
+  scope/non-goals, constraints, acceptance criteria, and checks. Quote the
+  original task text verbatim, apart from your interpretation, and state
+  requirements rather than untested design (mark suggestions as such). Context
+  does not authorize extra work. Delegate is full-access even for read-only
+  tasks. Parallel writers require separate user-authorized workspaces.
 - **The worker is an executor.** `porch delegate` prefixes every new task with the
-  executor contract in `prompts/delegate-executor.txt`: scope is the assignment,
-  project-wide ownership in `AGENTS.md` is addressed to the parent, scope changes
-  come back as a report. Do not repeat it in the brief. Give a built-in worker the
-  same contract by opening its brief with "Read `<absolute path to that file>`
-  first; it is your contract."
-- **Check within the first minute.** Inspect every worker's interpretation, plan,
-  and initial actions; correct misunderstandings promptly. Review an earlier
-  completion immediately. If evidence is unavailable, record that understanding
-  is unverified and arrange a near-term recheck. A heartbeat is insufficient.
-- **Supervise by evidence, steer selectively.** After the first check, 5–15 minutes
-  is a baseline, adjusted to risk and observed progress. Inspect new events and
-  artifacts and preserve event cursors. Send one self-contained correction when
-  needed, then verify its effect. Before replacing an overlapping writer, confirm
-  it stopped and inspect its partial work.
+  contract in `prompts/delegate-executor.txt` (scope is the assignment; project-wide
+  ownership in `AGENTS.md` is the parent's; conflicts and scope changes come back
+  as a report). Do not repeat it. Give a built-in worker the same contract by
+  opening its brief with "Read `<absolute path to that file>` first; it is your
+  contract."
+- **Check early when it pays.** For long (over about 10–15 minutes), risky or
+  hard-to-undo work, and less capable workers, inspect interpretation, plan and
+  first actions within a minute or two and correct promptly; for a short bounded
+  task, review the result when it completes. A heartbeat is insufficient.
+- **Supervise by evidence, steer selectively.** 5–15 minutes is a baseline,
+  adjusted to risk and progress. Inspect new events and artifacts and preserve
+  event cursors. Send one self-contained correction when needed, then verify its
+  effect. Before replacing an overlapping writer, confirm it stopped and inspect
+  its partial work.
 - **Use the stronger protocol for less capable or capability-uncertain workers.**
   Mandatory user-designated pairs are Fable → Opus, Opus → Sonnet,
   Astra → Muse Spark, and Astra → DeepSeek. Provide a bounded plan and anticipated
   pitfalls, and require a deviation journal at a resolved dated path (a
-  `Deviations` answer section for read-only work). Inspect the actual work first,
-  then reconcile the entire journal; obtain a missing journal before acceptance.
-- **Stay active until the result is collected.** Detached workers do not arrange
-  a future parent turn, and an observation timeout is not worker failure. Collect
-  complete results and inspect failures as well as successes.
-- **Accept against the task.** Independently verify the actual result and required
-  checks, then apply [review-acceptance.md](references/review-acceptance.md).
-  Disclose consciously accepted limitations.
+  `Deviations` section for read-only work). Inspect the work first, then reconcile
+  the whole journal; obtain a missing one before acceptance.
+- **Stay active until the result is collected.** Detached workers arrange no
+  future parent turn, and an observation timeout is not worker failure. In Claude
+  Code, run `wait` as a background command (`run_in_background`) instead of
+  polling. Collect complete results; inspect failures as well as successes.
+- **Accept against the original task,** not only the worker's tests. Run the
+  required checks yourself or independently, then apply
+  [review-acceptance.md](references/review-acceptance.md). Disclose consciously
+  accepted limitations.
 
 **Name every steerable run.** Pass `--name <slug>` with a short task-derived name.
 
-Read [references/delegate.md](references/delegate.md) before launch for the prompt
-example, journal contract, commands, read-only research, and recovery decisions.
-Technical runtime and VCS references are linked there for use when needed.
+Read [references/delegate.md](references/delegate.md) before launch: prompt
+example, journal contract, commands, read-only research, recovery.
 
 ## Default launch commands
 
@@ -195,9 +197,8 @@ git diff HEAD | "$PORCH" review code -a grok --progress compact --diff
 Quota, session-history and media commands are in the decision map above and in
 their references.
 
-Delegate launch and supervision examples are in
-[references/delegate.md](references/delegate.md). For group waiting or durable
-Codex continuation, load the relevant section of
+Launch and supervision examples: [references/delegate.md](references/delegate.md).
+Group waiting and durable Codex continuation:
 [references/delegate-runtime.md](references/delegate-runtime.md).
 
 ## Detail map

@@ -73,7 +73,7 @@ Start it with `/stale-data-cleanup` in Claude Code or `$stale-data-cleanup` in C
 
 - Write a precise task contract: purpose, exact working root, scope, compatibility constraints, anticipated pitfalls, acceptance criteria, and required checks.
 - Every delegated worker is an executor. `porch delegate` prefixes each new task with a short contract: the assignment sets the scope, out-of-scope findings go into the report, and checks are not weakened.
-- Check every worker within its first minute. Inspect actual actions and findings, then adapt supervision to risk and progress; 5–15 minutes is the suggested follow-up interval.
+- Check long, risky or less capable workers within their first minute or two; review a short task's result when it completes. Inspect actual actions and findings, then adapt supervision to risk and progress; 5–15 minutes is the suggested follow-up interval. In Claude Code, wait with a background `porch delegate wait` instead of polling.
 - Require a deviation journal when delegating to a less capable model. Record unexpected findings, evidence, actions, and unresolved risks. Read-only workers return it in their final answer.
 - Do not retry blindly. Inspect events and partial work, send only new guidance, and confirm a writer has stopped before assigning overlapping work to a replacement.
 - The parent owns verification. Inspect the diff and surrounding code, verify the checks, then reconcile the entire deviation journal. A worker's summary or successful exit is not enough.

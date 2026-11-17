@@ -95,6 +95,20 @@
       "role": "lateral",
       "label": "Devin Gemini 4 Argon High"
     },
+    "devin-gemini-4-hydrogen": {
+      "enabled": false,
+      "backend": "devin-cli",
+      "model": "gemini-4-hydrogen-high",
+      "role": "lateral",
+      "label": "Devin Gemini 4 Hydrogen High"
+    },
+    "devin-gemini-4-carbon": {
+      "enabled": false,
+      "backend": "devin-cli",
+      "model": "gemini-4-carbon-high",
+      "role": "lateral",
+      "label": "Devin Gemini 4 Carbon High"
+    },
     "agy-gemini-4-argon": {
       "enabled": false,
       "backend": "antigravity-cli",
@@ -110,6 +124,54 @@
       "effort": "high",
       "role": "lateral",
       "label": "Antigravity Gemini 4 Carbon High (limited access)"
+    },
+    "agy-gemini-4-carbon-medium": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-carbon",
+      "effort": "medium",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Carbon Medium (limited access)"
+    },
+    "agy-gemini-4-carbon-low": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-carbon",
+      "effort": "low",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Carbon Low (limited access)"
+    },
+    "agy-gemini-4-hydrogen": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-hydrogen",
+      "effort": "high",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Hydrogen High"
+    },
+    "agy-gemini-4-hydrogen-xhigh": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-hydrogen",
+      "effort": "xhigh",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Hydrogen XHigh"
+    },
+    "agy-gemini-4-hydrogen-medium": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-hydrogen",
+      "effort": "medium",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Hydrogen Medium"
+    },
+    "agy-gemini-4-hydrogen-low": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-hydrogen",
+      "effort": "low",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Hydrogen Low"
     },
     "agy-gemini-3.8-flash": {
       "enabled": false,

@@ -34,8 +34,8 @@ from typing import Any, Dict, List
 LOG = os.environ.get("PORCH_FAKE_ARGV_LOG")
 MODE = os.environ.get("PORCH_FAKE_AGY_MODE", "ok")
 SLOW = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.45"))
-MODELS = {"gemini-4-argon", "gemini-3.8-flash"}
-LEVELS = {"low", "medium", "high"}
+MODELS = {"gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-3.8-flash"}
+LEVELS = {"low", "medium", "high", "xhigh"}
 
 _send_lock = threading.Lock()
 

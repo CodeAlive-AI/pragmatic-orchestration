@@ -144,6 +144,19 @@ assert_contains "Antigravity Gemini 4 Argon is selectable but disabled by defaul
   'id="agy-gemini-4-argon" label="Antigravity Gemini 4 Argon High" backend="antigravity-cli" model="gemini-4-argon" role="lateral" enabled="false"'
 assert_contains "Antigravity Gemini 4 Carbon is opt-in for accounts with access" "$out" \
   'id="agy-gemini-4-carbon" label="Antigravity Gemini 4 Carbon High (limited access)" backend="antigravity-cli" model="gemini-4-carbon" role="lateral" enabled="false"'
+assert_contains "Antigravity Gemini 4 Carbon Medium and Low are opt-in" "$out" \
+  'id="agy-gemini-4-carbon-medium" label="Antigravity Gemini 4 Carbon Medium (limited access)" backend="antigravity-cli" model="gemini-4-carbon" role="lateral" enabled="false"'
+assert_contains "Antigravity Gemini 4 Carbon Low is opt-in" "$out" \
+  'id="agy-gemini-4-carbon-low" label="Antigravity Gemini 4 Carbon Low (limited access)" backend="antigravity-cli" model="gemini-4-carbon" role="lateral" enabled="false"'
+for level in "" -xhigh -medium -low; do
+  label_level=$(case "$level" in "") echo High;; -xhigh) echo XHigh;; -medium) echo Medium;; -low) echo Low;; esac)
+  assert_contains "Antigravity Gemini 4 Hydrogen$level is selectable but disabled by default" "$out" \
+    "id=\"agy-gemini-4-hydrogen$level\" label=\"Antigravity Gemini 4 Hydrogen $label_level\" backend=\"antigravity-cli\" model=\"gemini-4-hydrogen\" role=\"lateral\" enabled=\"false\""
+done
+assert_contains "Devin Gemini 4 Hydrogen is selectable but disabled by default" "$out" \
+  'id="devin-gemini-4-hydrogen" label="Devin Gemini 4 Hydrogen High" backend="devin-cli" model="gemini-4-hydrogen-high" role="lateral" enabled="false"'
+assert_contains "Devin Gemini 4 Carbon is selectable but disabled by default" "$out" \
+  'id="devin-gemini-4-carbon" label="Devin Gemini 4 Carbon High" backend="devin-cli" model="gemini-4-carbon-high" role="lateral" enabled="false"'
 assert_contains "Antigravity Gemini 3.8 Flash is selectable but disabled by default" "$out" \
   'id="agy-gemini-3.8-flash" label="Antigravity Gemini 3.8 Flash High" backend="antigravity-cli" model="gemini-3.8-flash" role="lateral" enabled="false"'
 assert_contains "Codex Luna is enabled by default" "$out" \
@@ -567,14 +580,19 @@ assert_eq "devin delegate uses bypass mode" "$devin_del_check" "ok"
 
 # Antigravity CLI one-shot: headless stream-json both ways, prompt on stdin.
 # Review adds session-only deny rules that agy enforces over user allow rules.
-for spec in 'agy-gemini-4-argon gemini-4-argon' 'agy-gemini-4-carbon gemini-4-carbon' 'agy-gemini-3.8-flash gemini-3.8-flash'; do
-  read -r profile model <<< "$spec"
+for spec in 'agy-gemini-4-argon gemini-4-argon high' \
+  'agy-gemini-4-carbon gemini-4-carbon high' 'agy-gemini-4-carbon-medium gemini-4-carbon medium' \
+  'agy-gemini-4-carbon-low gemini-4-carbon low' \
+  'agy-gemini-4-hydrogen gemini-4-hydrogen high' 'agy-gemini-4-hydrogen-xhigh gemini-4-hydrogen xhigh' \
+  'agy-gemini-4-hydrogen-medium gemini-4-hydrogen medium' 'agy-gemini-4-hydrogen-low gemini-4-hydrogen low' \
+  'agy-gemini-3.8-flash gemini-3.8-flash high'; do
+  read -r profile model effort <<< "$spec"
   for mode in review delegate; do
     env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/$profile-$mode.json" \
       "$LIB_DIR/backend_run.sh" --mode "$mode" --agent-id "$profile" --raw "hello" >/dev/null
     argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/$profile-$mode.json")
     assert_contains "$profile $mode selects model family" "$argv" "--model $model"
-    assert_contains "$profile $mode selects high effort" "$argv" "--effort high"
+    assert_contains "$profile $mode selects $effort effort" "$argv" "--effort $effort"
     assert_contains "$profile $mode reads stream-json input" "$argv" "--input-format stream-json"
     assert_contains "$profile $mode writes stream-json output" "$argv" "--output-format stream-json"
     assert_contains "$profile $mode never prompts for permission" "$argv" "--dangerously-skip-permissions"

@@ -549,6 +549,22 @@
       "effort": "high",
       "role": "analyst",
       "label": "Codex GPT-6 Astra"
+    },
+    "codex-gpt-6.2-sol": {
+      "enabled": false,
+      "backend": "codex-cli",
+      "model": "gpt-6.2-sol",
+      "effort": "high",
+      "role": "analyst",
+      "label": "Codex GPT-6.2 Sol"
+    },
+    "codex-gpt-6.2-astra": {
+      "enabled": false,
+      "backend": "codex-cli",
+      "model": "gpt-6.2-astra",
+      "effort": "high",
+      "role": "analyst",
+      "label": "Codex GPT-6.2 Astra"
     }
   }
 }

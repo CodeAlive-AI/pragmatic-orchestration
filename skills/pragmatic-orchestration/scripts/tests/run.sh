@@ -138,6 +138,10 @@ assert_contains "Codex GPT-6.1 Sol is explicitly selectable without duplicating 
   'id="codex-gpt-6.1-sol" label="Codex GPT-6.1 Sol" backend="codex-cli" model="gpt-6.1-sol" role="analyst" enabled="false"'
 assert_contains "Codex GPT-6.1 Terra is selectable but disabled by default" "$out" \
   'id="codex-gpt-6.1-terra" label="Codex GPT-6.1 Terra" backend="codex-cli" model="gpt-6.1-terra" role="analyst" enabled="false"'
+assert_contains "Codex GPT-6.2 Sol is selectable but disabled by default" "$out" \
+  'id="codex-gpt-6.2-sol" label="Codex GPT-6.2 Sol" backend="codex-cli" model="gpt-6.2-sol" role="analyst" enabled="false"'
+assert_contains "Codex GPT-6.2 Astra is selectable but disabled by default" "$out" \
+  'id="codex-gpt-6.2-astra" label="Codex GPT-6.2 Astra" backend="codex-cli" model="gpt-6.2-astra" role="analyst" enabled="false"'
 assert_contains "Devin Gemini 4 Argon is selectable but disabled by default" "$out" \
   'id="devin-gemini-4-argon" label="Devin Gemini 4 Argon High" backend="devin-cli" model="gemini-4-argon-high" role="lateral" enabled="false"'
 assert_contains "Antigravity Gemini 4 Argon is selectable but disabled by default" "$out" \
@@ -209,7 +213,7 @@ argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/astra-revi
 assert_contains "Codex production profile launches GPT-6 Astra" "$argv" "--model gpt-6-astra"
 assert_contains "Codex Astra production profile uses high effort" "$argv" 'model_reasoning_effort="high"'
 
-for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex-gpt-6.1-terra gpt-6.1-terra xhigh' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high' 'grok-fast grok-4.7-build-fast high' 'grok-4.5 grok-4.5 high'; do
+for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex-gpt-6.1-terra gpt-6.1-terra xhigh' 'codex-gpt-6.2-sol gpt-6.2-sol high' 'codex-gpt-6.2-astra gpt-6.2-astra high' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high' 'grok-fast grok-4.7-build-fast high' 'grok-4.5 grok-4.5 high'; do
   read -r profile model effort <<< "$spec"
   for mode in review delegate; do
     env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/current-model.json" \

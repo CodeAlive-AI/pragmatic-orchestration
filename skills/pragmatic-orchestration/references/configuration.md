@@ -99,7 +99,13 @@ It requires Codex CLI 0.159.0 or later; see the
 [official OpenAI model guide](https://learn.chatgpt.com/docs/models).
 Copy this profile into existing user-local configs to make the new id available.
 The opt-in `codex-gpt-6-astra` profile retains `gpt-6-astra` at `high` effort. Astra accepts
-`low`, `medium`, `high`, `xhigh`, and `max`; it does not accept `none`. The
+`low`, `medium`, `high`, `xhigh`, and `max`; it does not accept `none`.
+The opt-in `codex-gpt-6.2-sol` and `codex-gpt-6.2-astra` profiles use
+`gpt-6.2-sol` and `gpt-6.2-astra` at `high` effort for review and delegate
+(both ids and the `low`/`medium`/`high`/`xhigh`/`max`/`ultra` levels verified
+with `codex debug models` on Codex CLI 0.169.0). `CODEX_EFFORT` overrides the
+effort. They are disabled by default and do not replace `codex` (GPT-6.1 Sol);
+copy them into existing user-local configs to make the new ids available. The
 default Claude Code profile, `claude-opus`, uses `opus` at
 `medium` effort. `claude-code` is a disabled alias with the same model and
 effort. The opt-in `claude-fable` and `claude-sonnet` profiles use `fable` and

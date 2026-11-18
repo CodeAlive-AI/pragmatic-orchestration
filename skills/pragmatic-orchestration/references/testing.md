@@ -16,7 +16,7 @@ unused stdin for file-based backends. Literal `-` filenames are checked in
 prompt transports and single-profile code review.
 Large file prompts guard against slow shell whitespace validation.
 Run them alone with `python3 scripts/tests/review_input_test.py -v` from the skill
-directory. Current-model checks cover the explicit `codex-gpt-6.1-sol` profile
+directory. Current-model checks cover the explicit `codex-gpt-6.1-sol`, `codex-gpt-6.2-sol` and `codex-gpt-6.2-astra` profiles
 in both review and delegate argv.
 
 Quota parsing is tested offline for Codex multi-bucket limits, Grok `/usage`

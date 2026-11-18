@@ -133,12 +133,12 @@ assert_contains "Grok 4.5 remains selectable" "$out" \
 assert_contains "Codex Astra remains selectable but disabled by default" "$out" \
   'id="codex-gpt-6-astra" label="Codex GPT-6 Astra" backend="codex-cli" model="gpt-6-astra" role="analyst" enabled="false"'
 assert_contains "Codex Sol is enabled by default" "$out" \
-  'id="codex" label="Codex GPT-6.1 Sol" backend="codex-cli" model="gpt-6.1-sol" role="analyst" enabled="true"'
+  'id="codex" label="Codex GPT-6.2 Sol" backend="codex-cli" model="gpt-6.2-sol" role="analyst" enabled="true"'
 assert_contains "Codex GPT-6.1 Sol is explicitly selectable without duplicating the default pool" "$out" \
   'id="codex-gpt-6.1-sol" label="Codex GPT-6.1 Sol" backend="codex-cli" model="gpt-6.1-sol" role="analyst" enabled="false"'
 assert_contains "Codex GPT-6.1 Terra is selectable but disabled by default" "$out" \
   'id="codex-gpt-6.1-terra" label="Codex GPT-6.1 Terra" backend="codex-cli" model="gpt-6.1-terra" role="analyst" enabled="false"'
-assert_contains "Codex GPT-6.2 Sol is selectable but disabled by default" "$out" \
+assert_contains "Codex GPT-6.2 Sol is explicitly selectable" "$out" \
   'id="codex-gpt-6.2-sol" label="Codex GPT-6.2 Sol" backend="codex-cli" model="gpt-6.2-sol" role="analyst" enabled="false"'
 assert_contains "Codex GPT-6.2 Astra is selectable but disabled by default" "$out" \
   'id="codex-gpt-6.2-astra" label="Codex GPT-6.2 Astra" backend="codex-cli" model="gpt-6.2-astra" role="analyst" enabled="false"'
@@ -153,7 +153,12 @@ assert_contains "Antigravity Gemini 4 Carbon Medium and Low are opt-in" "$out" \
 assert_contains "Antigravity Gemini 4 Carbon Low is opt-in" "$out" \
   'id="agy-gemini-4-carbon-low" label="Antigravity Gemini 4 Carbon Low (limited access)" backend="antigravity-cli" model="gemini-4-carbon" role="lateral" enabled="false"'
 for level in "" -xhigh -medium -low; do
-  label_level=$(case "$level" in "") echo High;; -xhigh) echo XHigh;; -medium) echo Medium;; -low) echo Low;; esac)
+  case "$level" in
+    "") label_level=High ;;
+    -xhigh) label_level=XHigh ;;
+    -medium) label_level=Medium ;;
+    -low) label_level=Low ;;
+  esac
   assert_contains "Antigravity Gemini 4 Hydrogen$level is selectable but disabled by default" "$out" \
     "id=\"agy-gemini-4-hydrogen$level\" label=\"Antigravity Gemini 4 Hydrogen $label_level\" backend=\"antigravity-cli\" model=\"gemini-4-hydrogen\" role=\"lateral\" enabled=\"false\""
 done
@@ -213,7 +218,7 @@ argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/astra-revi
 assert_contains "Codex production profile launches GPT-6 Astra" "$argv" "--model gpt-6-astra"
 assert_contains "Codex Astra production profile uses high effort" "$argv" 'model_reasoning_effort="high"'
 
-for spec in 'codex gpt-6.1-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex-gpt-6.1-terra gpt-6.1-terra xhigh' 'codex-gpt-6.2-sol gpt-6.2-sol high' 'codex-gpt-6.2-astra gpt-6.2-astra high' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high' 'grok-fast grok-4.7-build-fast high' 'grok-4.5 grok-4.5 high'; do
+for spec in 'codex gpt-6.2-sol high' 'codex-gpt-6.1-sol gpt-6.1-sol high' 'codex-gpt-6.1-terra gpt-6.1-terra xhigh' 'codex-gpt-6.2-sol gpt-6.2-sol high' 'codex-gpt-6.2-astra gpt-6.2-astra high' 'codex-gpt-6-luna gpt-6-luna low' 'grok grok-4.7 high' 'grok-fast grok-4.7-build-fast high' 'grok-4.5 grok-4.5 high'; do
   read -r profile model effort <<< "$spec"
   for mode in review delegate; do
     env PORCH_CONFIG="$SKILL_DIR/config.example.json" PORCH_DUMP_ARGV="$TMP/current-model.json" \

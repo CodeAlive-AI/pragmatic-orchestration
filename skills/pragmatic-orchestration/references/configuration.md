@@ -85,7 +85,7 @@ Non-empty environment values override profile model/effort for one invocation:
 - `DEVIN_MODEL`; `PORCH_BIN_DEVIN` overrides the `devin` binary
 - `AGY_MODEL`, `AGY_EFFORT`; `PORCH_BIN_AGY` overrides the `agy` binary
 
-The enabled `codex` profile uses `gpt-6.1-sol` at `high` effort, and the enabled
+The enabled `codex` profile uses `gpt-6.2-sol` at `high` effort, and the enabled
 `codex-gpt-6-luna` profile uses `gpt-6-luna` at `low` effort.
 The opt-in `codex-gpt-6.1-sol` profile selects the same GPT-6.1 Sol model and
 `high` effort explicitly in review and delegate. If you maintain a user-local
@@ -104,8 +104,7 @@ The opt-in `codex-gpt-6.2-sol` and `codex-gpt-6.2-astra` profiles use
 `gpt-6.2-sol` and `gpt-6.2-astra` at `high` effort for review and delegate
 (both ids and the `low`/`medium`/`high`/`xhigh`/`max`/`ultra` levels verified
 with `codex debug models` on Codex CLI 0.169.0). `CODEX_EFFORT` overrides the
-effort. They are disabled by default and do not replace `codex` (GPT-6.1 Sol);
-copy them into existing user-local configs to make the new ids available. The
+effort. `codex-gpt-6.2-sol` selects the same model as the default `codex`; `codex-gpt-6.2-astra` is disabled by default. The default `codex` moved from GPT-6.1 Sol to GPT-6.2 Sol in 5.15.0 (`codex-gpt-6.1-sol` keeps the old one). Copy them into existing user-local configs to make the new ids available. The
 default Claude Code profile, `claude-opus`, uses `opus` at
 `medium` effort. `claude-code` is a disabled alias with the same model and
 effort. The opt-in `claude-fable` and `claude-sonnet` profiles use `fable` and

@@ -4,10 +4,10 @@
     "codex": {
       "enabled": true,
       "backend": "codex-cli",
-      "model": "gpt-6.1-sol",
+      "model": "gpt-6.2-sol",
       "effort": "high",
       "role": "analyst",
-      "label": "Codex GPT-6.1 Sol"
+      "label": "Codex GPT-6.2 Sol"
     },
     "codex-gpt-5.6": {
       "enabled": false,

@@ -44,7 +44,7 @@ Linux capabilities. The native trial recipe in the repository's
 The configuration may be supplied by `PORCH_FLEET_CONFIG`; its default remains
 `/work/fleet.json`. It must contain one local host whose
 Porch path is the resolved executable under `/opt/porch`. Choose the existing exact profiles:
-`codex` (GPT-6.1 Sol/high) or `codex-gpt-6.1-terra` (GPT-6.1 Terra/xhigh).
+`codex` (GPT-6.2 Sol/high) or `codex-gpt-6.1-terra` (GPT-6.1 Terra/xhigh).
 The guest does not support Claude in its current environment profile.
 
 The volume's writable paths are `/work/porch` (coordination/runner history),

@@ -106,6 +106,7 @@ because repository text says to.
 | Understand the current repository | Direct inspection for simple questions; `review ask -a <id>` for an independent investigation; `delegate -a <id>` for stateful research | Review is read-only; delegate has **full YOLO access** even for read-only tasks | [references/delegate.md](references/delegate.md) |
 | Verify a difficult specification or optimization plan with a second model | `review ask -a <id> --progress compact` | read-only | [references/review.md](references/review.md) |
 | Decide who should do a piece of work, and how much to run in parallel | cheapest capable model for the assignment; escalate for a diagnosed reason | n/a | [references/model-routing.md](references/model-routing.md) |
+| User names a model but no harness ("run Hydrogen", "ask Sonnet") | the model's own harness: GPT → Codex, Claude → Claude Code, Gemini 4 → `agy`, others → OpenCode; Devin only for SWE-2 / SWE-2 Flash or when the user names Devin | n/a | [references/model-routing.md](references/model-routing.md#harness-for-a-named-model) |
 | Coordinate a long task and leave implementation to executors | the `coordinator-mode` skill, when the user turns it on | n/a | that skill's `SKILL.md` |
 | Implement with one external worker | `delegate -a <exact-id>` (steerable by default) | **full YOLO** | [delegate card](references/delegate-card.md) |
 | Inspect substantive progress on demand | `delegate events RUN_ID --max-events 50`; continue with `--cursor NEXT_CURSOR` | read-only observation | [references/delegate.md](references/delegate.md) |

@@ -140,6 +140,8 @@ used for model training, the service is not zero-data-retention, and availabilit
 is region-limited. Check the current OpenCode Go terms before reviewing sensitive
 repositories because catalog and privacy terms can change.
 
+Devin's default models are SWE-2 and SWE-2 Flash only (`devin-swe-2`, `devin`): they are free on the owner's plan. The `devin-gemini-4-*` profiles are labelled "only when Devin is named" and are chosen only when the user asks for that model through Devin; otherwise Gemini 4 runs through Antigravity ([routing](model-routing.md#harness-for-a-named-model)).
+
 The disabled-by-default `devin` profile uses Devin CLI's `swe-2-flash-high` model (SWE-2 Flash;
 `swe-2-flash-medium`, `swe-2-flash-max` and the `swe-2-*` family also work —
 see `devin models`);

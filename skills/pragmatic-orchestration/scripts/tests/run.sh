@@ -142,8 +142,10 @@ assert_contains "Codex GPT-6.2 Sol is explicitly selectable" "$out" \
   'id="codex-gpt-6.2-sol" label="Codex GPT-6.2 Sol" backend="codex-cli" model="gpt-6.2-sol" role="analyst" enabled="false"'
 assert_contains "Codex GPT-6.2 Astra is selectable but disabled by default" "$out" \
   'id="codex-gpt-6.2-astra" label="Codex GPT-6.2 Astra" backend="codex-cli" model="gpt-6.2-astra" role="analyst" enabled="false"'
+assert_contains "Devin SWE-2 is selectable but disabled by default" "$out" \
+  'id="devin-swe-2" label="Devin SWE-2" backend="devin-cli" model="swe-2-high" role="analyst" enabled="false"'
 assert_contains "Devin Gemini 4 Argon is selectable but disabled by default" "$out" \
-  'id="devin-gemini-4-argon" label="Devin Gemini 4 Argon High" backend="devin-cli" model="gemini-4-argon-high" role="lateral" enabled="false"'
+  'id="devin-gemini-4-argon" label="Devin Gemini 4 Argon High (only when Devin is named)" backend="devin-cli" model="gemini-4-argon-high" role="lateral" enabled="false"'
 assert_contains "Antigravity Gemini 4 Argon is selectable but disabled by default" "$out" \
   'id="agy-gemini-4-argon" label="Antigravity Gemini 4 Argon High" backend="antigravity-cli" model="gemini-4-argon" role="lateral" enabled="false"'
 assert_contains "Antigravity Gemini 4 Carbon is opt-in for accounts with access" "$out" \
@@ -163,9 +165,9 @@ for level in "" -xhigh -medium -low; do
     "id=\"agy-gemini-4-hydrogen$level\" label=\"Antigravity Gemini 4 Hydrogen $label_level\" backend=\"antigravity-cli\" model=\"gemini-4-hydrogen\" role=\"lateral\" enabled=\"false\""
 done
 assert_contains "Devin Gemini 4 Hydrogen is selectable but disabled by default" "$out" \
-  'id="devin-gemini-4-hydrogen" label="Devin Gemini 4 Hydrogen High" backend="devin-cli" model="gemini-4-hydrogen-high" role="lateral" enabled="false"'
+  'id="devin-gemini-4-hydrogen" label="Devin Gemini 4 Hydrogen High (only when Devin is named)" backend="devin-cli" model="gemini-4-hydrogen-high" role="lateral" enabled="false"'
 assert_contains "Devin Gemini 4 Carbon is selectable but disabled by default" "$out" \
-  'id="devin-gemini-4-carbon" label="Devin Gemini 4 Carbon High" backend="devin-cli" model="gemini-4-carbon-high" role="lateral" enabled="false"'
+  'id="devin-gemini-4-carbon" label="Devin Gemini 4 Carbon High (only when Devin is named)" backend="devin-cli" model="gemini-4-carbon-high" role="lateral" enabled="false"'
 assert_contains "Antigravity Gemini 3.8 Flash is selectable but disabled by default" "$out" \
   'id="agy-gemini-3.8-flash" label="Antigravity Gemini 3.8 Flash High" backend="antigravity-cli" model="gemini-3.8-flash" role="lateral" enabled="false"'
 assert_contains "Codex Luna is enabled by default" "$out" \

@@ -88,26 +88,33 @@
       "role": "analyst",
       "label": "Devin SWE-2 Flash"
     },
+    "devin-swe-2": {
+      "enabled": false,
+      "backend": "devin-cli",
+      "model": "swe-2-high",
+      "role": "analyst",
+      "label": "Devin SWE-2"
+    },
     "devin-gemini-4-argon": {
       "enabled": false,
       "backend": "devin-cli",
       "model": "gemini-4-argon-high",
       "role": "lateral",
-      "label": "Devin Gemini 4 Argon High"
+      "label": "Devin Gemini 4 Argon High (only when Devin is named)"
     },
     "devin-gemini-4-hydrogen": {
       "enabled": false,
       "backend": "devin-cli",
       "model": "gemini-4-hydrogen-high",
       "role": "lateral",
-      "label": "Devin Gemini 4 Hydrogen High"
+      "label": "Devin Gemini 4 Hydrogen High (only when Devin is named)"
     },
     "devin-gemini-4-carbon": {
       "enabled": false,
       "backend": "devin-cli",
       "model": "gemini-4-carbon-high",
       "role": "lateral",
-      "label": "Devin Gemini 4 Carbon High"
+      "label": "Devin Gemini 4 Carbon High (only when Devin is named)"
     },
     "agy-gemini-4-argon": {
       "enabled": false,

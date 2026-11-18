@@ -7,6 +7,7 @@ helps only if the whole job still ends in an acceptable result sooner or cheaper
 
 - [Count the whole job](#count-the-whole-job)
 - [Route by uncertainty](#route-by-uncertainty)
+- [Harness for a named model](#harness-for-a-named-model)
 - [Effort and limits](#effort-and-limits)
 - [Escalate for a diagnosed reason](#escalate-for-a-diagnosed-reason)
 - [Parallelism](#parallelism)
@@ -54,6 +55,28 @@ The user's routing decisions win over an estimated saving. In Coordinator Mode
 the executor chosen on entry is the default for implementation; use other models
 for research and review within the user's preferences, and change the primary
 executor only with a reason you can state.
+
+## Harness for a named model
+
+When the user names a model without naming a harness, run it through the
+model's own harness. Pick the profile from `"$PORCH" --list-agents` whose
+`model` is that model; never pick a profile only because its label sounds close.
+
+| Model family | Default harness |
+| --- | --- |
+| GPT (Sol, Terra, Luna, Astra) | Codex (`codex-cli`) |
+| Claude (Fable, Opus, Sonnet, Haiku) | Claude Code (`claude-code`) |
+| Gemini 4 (Argon, Hydrogen, Carbon), Gemini 3.x | Antigravity (`antigravity-cli`, `agy-*`) |
+| Grok | Grok Build (`grok-build`) |
+| Kimi, GLM, DeepSeek, Qwen, MiniMax, Muse Spark and other open or third-party models | OpenCode (`opencode-go-*`) |
+| SWE-2, SWE-2 Flash | Devin (`devin-cli`): `devin`, `devin-swe-2` |
+
+Devin is the default harness only for SWE-2 and SWE-2 Flash, which are free on
+the owner's plan. Its other models (`devin-gemini-4-*`, or any model chosen with
+`DEVIN_MODEL`) are billed or limited and run only when the user names Devin
+for them, for example "run Argon through Devin". "Run Hydrogen" means
+`agy-gemini-4-hydrogen`, not Devin. If the native harness has no profile for the
+model, say so and ask rather than switching harness silently.
 
 ## Effort and limits
 

@@ -13,15 +13,15 @@ not imply that every storage variant has been verified on a live installation.
 | OpenCode 1.x legacy tables + file storage | Conversation, reasoning, tools, metadata | One V1 parser for `session`/`message`/`part` tables and `storage/{session,message,part}` JSON; precedence `session_v2` > legacy > file storage with per-id dedup. Fixture-verified; live store cross-checked read-only. |
 | agy (Antigravity CLI) `~/.gemini/antigravity-cli` | Conversation, reasoning, tool calls/results, metadata, lineage | `conversation_metadata.json` + `brain/<cid>/.../transcript_full.jsonl` + subagent descriptors + annotation titles; all agy SQLite files are never opened. IDE rows (`AppDataDir=antigravity`) are metadata-only. Fixture-verified; live store cross-checked read-only. `content_stale` has a cheap mtime check at discovery plus `agy_content_stale(ref, fragments)` post-read. |
 | Cursor VS Code SQLite | Composer and bubbles | Fixture-verified; installed version coverage is not established. |
-| Cursor ACP SQLite/protobuf | User and assistant text | Synthetic graph and broken-reference fixtures. Tool, shell and reasoning nodes are explicitly reported as unsupported; not live-verified. |
+| Cursor ACP `~/.cursor/acp-sessions/<uuid>/` | Same coverage as CLI chats: prompt and assistant text, reasoning when the JSON reasoning part is empty, tool calls/results | Shares the CLI-chats decoder and graph (root field 1 JSON messages, field 8 turns). Live-checked read-only on Cursor CLI 2026.11.19-f005e9d (2026-11-19): plain and `<user_query>` prompts, shell tool calls/results, a cancelled turn's partial assistant text and interrupted result, a mid-turn steer. Meta-only sessions list empty; one unreadable session does not hide the rest. Indexed by `find`; `store.db-wal/-shm` churn is ignored. Turn-step tool records without a JSON counterpart are reported unsupported. |
 | Cursor CLI chats `~/.cursor/chats/<workspace-hash>/<uuid>/` | Prompt and assistant text; reasoning when the JSON reasoning part is empty; tool calls/results from JSON `tool-call`/`tool-result` parts | `meta.json` plus `store.db` blobs. Live-checked read-only on Cursor CLI 2026.11.19-f005e9d (2026-11-19). Harness evidence stays `spec` because the IDE store is still fixture-only. Turn-step tool records without a JSON counterpart are reported unsupported. Indexed by `find`. |
 | Hermes `state.db` | Conversation, reasoning and tools | Synthetic SQLite fixture and local schema inspection; local database had no sessions. Legacy JSON exports are not covered. |
 | Claude Code; Claude Desktop/Cowork; Grok; Devin; Gemini; Porch | Native stores described in [session history](session-history.md) | Existing adapters previously verified locally; the classification and source-layer caveats there apply. |
 | Qwen Code; Kimi Code; OMP | Native stores described in [session history](session-history.md) | Fixture/spec evidence; live version coverage is not established. |
 
 The `find` index covers Claude Code, Claude Desktop/Cowork, Codex, Devin,
-OpenCode 1.x/2.x, agy and porch. Cursor CLI chats, Cursor IDE/ACP, and the
-remaining harnesses use raw search only.
+OpenCode 1.x/2.x, agy, porch, and the Cursor `chats` and `acp` stores. The
+Cursor IDE store and the remaining harnesses use raw search only.
 
 Trace uses the indexed facts for these harnesses:
 

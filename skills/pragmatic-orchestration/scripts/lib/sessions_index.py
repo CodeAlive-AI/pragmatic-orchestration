@@ -561,7 +561,7 @@ class Unit:
 
 # Cheap per-harness discovery and SQLite snapshot state
 # Version 2 records stable native message anchors for revision-aware navigation.
-EXTRACTOR_VERSIONS = {'claude-code': '9', 'claude-desktop': '9', 'codex': '11', 'devin': '4', 'opencode': '5', 'porch': '8', 'agy': '6', 'cursor': '2'}
+EXTRACTOR_VERSIONS = {'claude-code': '9', 'claude-desktop': '9', 'codex': '11', 'devin': '4', 'opencode': '5', 'porch': '8', 'agy': '6', 'cursor': '3'}
 
 
 def _revision(stat: tuple) -> str:
@@ -1533,11 +1533,11 @@ def extract_cursor_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[
                     raise SessionIndexError('CLI chat has no meta.json')
                 ref = sessions.cursor_cli_ref(store, Path(json.loads(meta_key)[0]).parent)
             else:
-                db_key = next((key for key in unit.sources
-                               if Path(json.loads(key)[0]).name == 'store.db'), None)
-                if db_key is None:
-                    raise SessionIndexError('ACP session has no store.db')
-                ref = sessions.cursor_acp_ref(store, Path(json.loads(db_key)[0]))
+                dir_key = next((key for key in unit.sources
+                                if Path(json.loads(key)[0]).name in ('meta.json', 'store.db')), None)
+                if dir_key is None:
+                    raise SessionIndexError('ACP session has no meta.json or store.db')
+                ref = sessions.cursor_acp_ref(store, Path(json.loads(dir_key)[0]).parent)
         except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, json.JSONDecodeError) as exc:
             raise SessionIndexError(f'cursor session unreadable: {exc}') from exc
         if ref.harness + ':' + str(ref.extra.get('native_id') or ref.session_id) != unit.session_key:

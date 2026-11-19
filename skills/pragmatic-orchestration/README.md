@@ -256,10 +256,11 @@ it is not a shell call to grep or ripgrep. Matching uses the full text, then
 returns a bounded excerpt around the match. Format details and verification
 status are in the [compatibility matrix](references/session-compatibility.md).
 Compressed Codex rollouts require Python 3.14+. Cursor CLI chats live under
-`~/.cursor/chats` (store `chats`, session id `cursor-cli:<uuid>`); `list`,
-`grep`, `show` and `find` read their text, tool calls and tool results. Cursor
-ACP sessions expose conversation text only; their tool and shell nodes are
-reported unsupported and make coverage partial. The binary Porch launches is `cursor-agent`, not
+`~/.cursor/chats` (store `chats`, session id `cursor-cli:<uuid>`) and ACP
+sessions under `~/.cursor/acp-sessions` (store `acp`, session id
+`cursor-acp:<uuid>`); both share one decoder, and `list`, `grep`, `show` and
+`find` read their text, tool calls and tool results — cancelled turns keep
+what Cursor recorded. The binary Porch launches is `cursor-agent`, not
 `agent`.
 
 ### Claude Desktop and Codex app sessions

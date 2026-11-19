@@ -33,8 +33,8 @@ delegate/review runs.
 The index contains titles, genuine prompts with their `human`, `delegated` or
 `unknown` origin, and every completed answer. It does not index tool output,
 reasoning, arbitrary intermediate assistant text, or unfinished answers. Indexed
-harnesses are Claude Code, Claude Desktop/Cowork, Codex, Devin, OpenCode, agy and
-porch. Cursor CLI chats (`cursor` store `chats`), Cursor IDE and ACP, and the
+harnesses are Claude Code, Claude Desktop/Cowork, Codex, Devin, OpenCode, agy,
+porch, and Cursor's `chats` and `acp` stores. The Cursor IDE store and the
 other remaining harnesses use raw `list`, `grep` and `show` only.
 
 ```bash
@@ -189,8 +189,8 @@ data — do not grep before you know which sessions exist.
    confirmed against a live install, `spec` = format documented but only
    fixture-verified, `guess` = best effort). Note which harnesses are absent;
    absence is a fact about the machine, not an error.
-2. **List candidate sessions** — `sessions list`. Metadata scan (Cursor ACP
-   graph validation reads its conversation nodes):
+2. **List candidate sessions** — `sessions list`. Metadata scan (Cursor
+   sessions also read each `store.db` header for title and created):
    session id, title, cwd, created/updated, models. Filter with `--cwd`,
    `--since/--until`, `-a`, `--store`. Session ids are stable addresses —
    keep them verbatim for `show`. `--since` drops a session with no timestamp
@@ -487,17 +487,27 @@ Three generations are read, in precedence order `session_v2` > legacy tables
   JSON still counts as `unsupported_fragments`. A chat with only
   `meta.json` is listed empty. One unreadable chat does not hide the others;
   the store stays `ok` while any chat lists. `sessions find` indexes this
-  store one unit per chat directory. The ACP reader rejects these files
-  (`invalid ACP blob id`) because assistant steps carry inline text, not
-  32-byte blob ids — do not point it at `chats`. Live-checked read-only
+  store one unit per chat directory. Live-checked read-only
   against Cursor CLI 2026.11.19-f005e9d on 2026-11-19. Harness evidence
   stays `spec` because the IDE store is still fixture-only.
-- ACP sessions under `~/.cursor/acp-sessions/<uuid>/store.db` are read as a
-  validated SQLite/protobuf graph. User and assistant text includes blob
-  locators; shell, tool and reasoning nodes are not decoded. When such nodes
-  occur, `unsupported_fragments` makes the scan explicitly incomplete.
-- ACP support is fixture-verified; malformed graphs are reported unavailable,
-  and never produce a partial transcript as a complete result.
+- ACP sessions under `~/.cursor/acp-sessions/<uuid>/` (store `acp`, session id
+  `cursor-acp:<uuid>`) use the same `{meta.json,store.db}` layout minus the
+  workspace-hash level and the exact same graph — one shared decoder serves
+  both stores; only the directory layout, session-id prefix and error labels
+  differ. An ACP prompt may have no `<user_query>` wrapper: the turn's user
+  step (turn field 1) carries the bare prompt text and promotes the JSON user
+  record that only classified as wrapper context. Cancelled turns keep what
+  Cursor recorded — partial assistant text, the tool call, and the recorded
+  tool result such as "Shell command was interrupted" — nothing is invented.
+  A session dir holding only `meta.json` (aborted before the first turn
+  persisted) lists empty. One unreadable session does not hide the rest: it
+  counts in `unreadable_dirs`/`unreadable` while the store stays `ok`.
+  `sessions find` indexes both stores one unit per session directory, skipping
+  `store.db-wal/-shm/-journal` churn. Live-checked read-only against Cursor
+  CLI 2026.11.19-f005e9d on 2026-11-19 — six sessions covering plain and
+  wrapped prompts, assistant text, reasoning, shell tool calls/results, a
+  cancelled turn and a mid-turn steer. Harness evidence stays `spec` because
+  the IDE store is still fixture-only.
 - VS Code KV sqlite (`cursorDiskKV` table). Sessions are `composerData:<id>`
   keys: `name` (title), `createdAt`, `lastUpdatedAt`, `usageData` (per-model
   token counters).

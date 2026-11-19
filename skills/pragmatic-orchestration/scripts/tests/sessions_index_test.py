@@ -367,6 +367,35 @@ class IndexStorageTests(unittest.TestCase):
             self.assertEqual(len(hits),1)
             self.assertIn(sid,str(hits[0]))
 
+    def test_cursor_acp_session_is_indexed_and_found(self):
+        sid='bbbbbbbb-1111-2222-3333-444444444444'
+        root=Path(self.tmp.name)/'acp-sessions'
+        folder=root/sid; folder.mkdir(parents=True)
+        (folder/'meta.json').write_text(json.dumps({'schemaVersion':1,'cwd':'/work/acp','title':'ACP chat'}))
+        def field(n,data): return bytes([n*8+2,len(data)])+data
+        mid=bytes([1])*32; rid=bytes([2])*32; tid=bytes([3])*32; ustep=bytes([4])*32
+        conn=sqlite3.connect(folder/'store.db')
+        conn.executescript('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);'
+                           'CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);')
+        conn.execute("INSERT INTO meta VALUES ('0', ?)",
+                     (json.dumps({'agentId':sid,'latestRootBlobId':rid.hex(),
+                                  'name':'ACP chat','createdAt':1}).encode().hex(),))
+        conn.executemany('INSERT INTO blobs VALUES (?, ?)',
+            [(mid.hex(),json.dumps({'role':'user','content':'<user_query>acp needle phrase</user_query>'}).encode()),
+             (ustep.hex(),field(1,b'acp needle phrase')),
+             (tid.hex(),field(1,field(1,ustep))),
+             (rid.hex(),field(1,mid)+field(8,tid))])
+        conn.commit(); conn.close()
+        store=sessions.Store('cursor','acp',root,'session_dirs')
+        with patch.object(sessions,'stores_for',side_effect=lambda h:[store] if h=='cursor' else []):
+            result=index.sync(self.directory,harnesses=['cursor'])
+        self.assertEqual(result['cursor']['extracted'],1)
+        with contextlib.closing(index.open_reader(self.directory)) as conn:
+            hits,_=index.find_in_snapshot(conn,['acp needle phrase'],kind='prompt')
+            self.assertEqual(len(hits),1)
+            self.assertIn(sid,str(hits[0]))
+            self.assertEqual(conn.execute("SELECT count(*) FROM sessions WHERE content_state='pending'").fetchone()[0],0)
+
     def test_prefixed_native_title_uses_prompt_and_does_not_index_prefix_as_title(self):
         contract=(Path(index.__file__).resolve().parents[2]/'prompts'/'delegate-executor.txt').read_text()
         prefix=sessions.executor_prefix()

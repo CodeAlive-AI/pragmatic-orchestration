@@ -952,62 +952,172 @@ class CursorTests(FixtureMixin, unittest.TestCase):
 
 
 class CursorACPTests(FixtureMixin, unittest.TestCase):
-    def test_graph_and_incomplete_nodes(self):
-        sid = "11111111-2222-3333-4444-555555555555"
-        root = self.root / "acp-sessions"
-        folder = root / sid
-        folder.mkdir(parents=True)
-        write_json(folder / "meta.json", {"schemaVersion": 1, "cwd": "/work"})
-        def field(n, data):
-            self.assertLess(len(data), 128)
-            return bytes([n * 8 + 2, len(data)]) + data
-        ids = [bytes([n]) * 32 for n in range(1, 6)]
-        root_id, turn_id, user_id, step_id, answer_id = ids
-        nodes = {
-            root_id: field(8, turn_id),
-            turn_id: field(1, field(1, user_id) + field(2, step_id)),
-            user_id: field(1, b"user prompt"),
-            step_id: field(1, answer_id),
-            answer_id: field(1, b"assistant response"),
-        }
+    """ACP sessions share the chats graph: JSON message blobs on root field 1,
+    turn blobs on field 8 wrapping {1: user step, 2: agent steps}."""
+
+    @staticmethod
+    def _varint(value: int) -> bytes:
+        out = bytearray()
+        while value > 127:
+            out.append(value & 127 | 128)
+            value >>= 7
+        out.append(value)
+        return bytes(out)
+
+    def _field(self, number: int, data: bytes) -> bytes:
+        self.assertLess(number, 16)
+        return self._varint(number * 8 + 2) + self._varint(len(data)) + data
+
+    def _write_store(self, folder: Path, sid: str, root_id: bytes, nodes: dict,
+                     name: str = "ACP") -> Path:
+        folder.mkdir(parents=True, exist_ok=True)
         db = folder / "store.db"
         conn = sqlite3.connect(db)
-        conn.executescript("CREATE TABLE meta (key TEXT, value TEXT); CREATE TABLE blobs (id TEXT, data BLOB);")
-        meta = {"agentId": sid, "latestRootBlobId": root_id.hex(), "name": "ACP"}
+        conn.executescript(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+            "CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);")
+        meta = {"agentId": sid, "latestRootBlobId": root_id.hex(), "name": name,
+                    "createdAt": 1795101019967}
         conn.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps(meta).encode().hex(),))
-        conn.executemany("INSERT INTO blobs VALUES (?, ?)", [(key.hex(), value) for key, value in nodes.items()])
+        conn.executemany("INSERT INTO blobs VALUES (?, ?)",
+                         [(key.hex(), value) for key, value in nodes.items()])
         conn.commit()
         conn.close()
+        return db
+
+    def test_acp_graph_prompt_tools_and_step_rescue(self):
+        sid = "11111111-2222-3333-4444-555555555555"
+        root = self.root / "acp-sessions"
+        field = self._field
+        ids = [bytes([n]) * 32 for n in range(1, 17)]
+        (root_id, system_id, info_id, query_id, answer_id, result_id,
+         query2_id, answer2_id, turn0, turn1,
+         ustep0, ustep1, rstep, sstep, sstep2, tstep) = ids
+        call_id = "call-abc-0\nfc_def_0"
+        system = b'{"role":"system","content":"bootstrap"}'
+        info = b'{"role":"user","content":"<user_info>hidden</user_info>"}'
+        query = json.dumps({"role": "user", "content": [
+            {"type": "text", "text": "<timestamp>t</timestamp>\n<user_query>\nrun ls\n</user_query>"}
+        ]}).encode()
+        answer = json.dumps({"role": "assistant", "content": [
+            {"type": "reasoning", "text": ""},
+            {"type": "text", "text": "running ls"},
+            {"type": "tool-call", "toolCallId": call_id, "toolName": "Shell",
+             "args": {"command": "ls"}}]}).encode()
+        result = json.dumps({"role": "tool", "content": [
+            {"type": "tool-result", "toolCallId": call_id, "toolName": "Shell",
+             "result": "x.txt\n"}]}).encode()
+        # Second turn's prompt is recorded without <user_query>: the turn user
+        # step carries the bare text and must rescue it from wrapper context.
+        query2 = json.dumps({"role": "user", "content":
+            "<timestamp>t2</timestamp>\nReply with exactly: PLAIN"}).encode()
+        answer2 = (b'{"role":"assistant","content":[{"type":"reasoning","text":""},'
+                   b'{"type":"text","text":"PLAIN"}]}')
+        # Field 57's wire key (57<<3|2 = 458) needs a two-byte varint.
+        tool_record = bytes([458 & 127 | 128, 458 >> 7, len(call_id)]) + call_id.encode()
+        nodes = {
+            system_id: system, info_id: info, query_id: query, answer_id: answer,
+            result_id: result, query2_id: query2, answer2_id: answer2,
+            ustep0: field(1, b"run ls"),
+            ustep1: field(1, b"Reply with exactly: PLAIN"),
+            rstep: field(3, field(1, b"thinking about it")),
+            sstep: field(1, field(1, b"running ls")),
+            sstep2: field(1, field(1, b"PLAIN")),
+            tstep: field(2, tool_record),
+            turn0: field(1, field(1, ustep0) + field(2, rstep) + field(2, sstep) + field(2, tstep)),
+            turn1: field(1, field(1, ustep1) + field(2, sstep2)),
+            root_id: (field(1, system_id) + field(1, info_id) + field(1, query_id)
+                      + field(1, answer_id) + field(1, result_id)
+                      + field(1, query2_id) + field(1, answer2_id)
+                      + field(8, turn0) + field(8, turn1)),
+        }
+        self._write_store(root / sid, sid, root_id, nodes, name="ACP fixture")
+        write_json(root / sid / "meta.json",
+                   {"schemaVersion": 1, "cwd": "/work/acp", "title": "ACP fixture"})
         store = sessions.Store("cursor", "acp", root, "session_dirs")
-        refs = list(sessions.cursor_iter_sessions(store))
-        self.assertEqual(len(refs), 1)
-        self.assertEqual(refs[0].session_id, "cursor-acp:" + sid)
-        fragments = list(sessions.cursor_iter_fragments(store, refs[0], 400, {}))
-        self.assertEqual([f["text"] for f in fragments], ["user prompt", "assistant response"])
-        self.assertEqual(fragments[1]["locator"]["key"], answer_id.hex())
+        refs = {ref.session_id: ref for ref in sessions.cursor_iter_sessions(store)}
+        self.assertEqual(set(refs), {"cursor-acp:" + sid})
+        self.assertEqual(store.status, "ok")
+        ref = refs["cursor-acp:" + sid]
+        self.assertEqual(ref.title, "ACP fixture")
+        self.assertEqual(ref.cwd, "/work/acp")
+        self.assertEqual(ref.store, "acp")
+        stats: dict[str, int] = {}
+        fragments = list(sessions.cursor_iter_fragments(store, ref, 400, stats))
+        visible = [(f["kind"], f["text"]) for f in fragments
+                   if f["kind"] in ("prompt", "assistant", "reasoning")]
+        # Turn-step reasoning lands just before the last assistant message.
+        self.assertEqual(visible, [
+            ("prompt", "run ls"),
+            ("assistant", "running ls"),
+            ("prompt", "Reply with exactly: PLAIN"),
+            ("reasoning", "thinking about it"),
+            ("assistant", "PLAIN"),
+        ])
+        kinds = [f["kind"] for f in fragments]
+        self.assertIn("tool_call", kinds)
+        self.assertIn("tool_result", kinds)
+        self.assertTrue(any(f["kind"] == "context" and "hidden" in f["text"] for f in fragments))
+        self.assertEqual(stats.get("unsupported_fragments", 0), 0)
+        rescued = next(f for f in fragments if f["text"] == "Reply with exactly: PLAIN")
+        self.assertEqual(rescued["authorship"], "human")
+        self.assertTrue(rescued["visible"])
         env = dict(os.environ, PORCH_HISTORY_ROOT_CURSOR=str(root), PYTHONDONTWRITEBYTECODE="1")
-        proc = subprocess.run([sys.executable, str(LIB / "sessions.py"), "show", "cursor:cursor-acp:" + sid],
-                              capture_output=True, text=True, env=env, timeout=30)
+        proc = subprocess.run(
+            [sys.executable, str(LIB / "sessions.py"), "show", "cursor:cursor-acp:" + sid],
+            capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("assistant response", proc.stdout)
-        conn = sqlite3.connect(db)
-        conn.execute("UPDATE blobs SET data=? WHERE id=?", (field(2, b"tool payload"), step_id.hex()))
-        conn.commit()
-        conn.close()
+        self.assertIn("run ls", proc.stdout)
+        self.assertIn("PLAIN", proc.stdout)
+        self.assertNotIn("hidden", proc.stdout)
+        proc = subprocess.run(
+            [sys.executable, str(LIB / "sessions.py"), "show", "--scope", "tools",
+             "cursor:cursor-acp:" + sid],
+            capture_output=True, text=True, env=env, timeout=30)
+        self.assertIn("Shell", proc.stdout)
+        self.assertIn("x.txt", proc.stdout)
+        self.assertNotIn("run ls</user_query>", proc.stdout)
+        proc = subprocess.run(
+            [sys.executable, str(LIB / "sessions.py"), "grep", "-a", "cursor", "PLAIN"],
+            capture_output=True, text=True, env=env, timeout=30)
+        self.assertIn("PLAIN", proc.stdout)
+
+    def test_acp_listing_tolerates_meta_only_and_bad_sessions(self):
+        root = self.root / "acp-sessions"
+        good = "11111111-2222-3333-4444-555555555555"
+        write_json(root / good / "meta.json", {"schemaVersion": 1, "cwd": "/work/acp"})
+        # meta.json without store.db: listed from the sidecar, no fragments.
+        meta_only = "22222222-2222-3333-4444-555555555555"
+        write_json(root / meta_only / "meta.json",
+                   {"schemaVersion": 1, "cwd": "/work/empty", "title": "Empty ACP"})
+        # An unreadable session must not hide the others or fail the store.
+        bad = "33333333-2222-3333-4444-555555555555"
+        write_json(root / bad / "meta.json", {"schemaVersion": 99})
+        store = sessions.Store("cursor", "acp", root, "session_dirs")
+        refs = {ref.session_id: ref for ref in sessions.cursor_iter_sessions(store)}
+        self.assertEqual(set(refs), {"cursor-acp:" + good, "cursor-acp:" + meta_only})
+        self.assertEqual(store.status, "ok")
+        self.assertIn("unsupported ACP metadata version", store.error or "")
+        self.assertGreaterEqual(store.walk_stats.get("unreadable_dirs", 0), 1)
+        self.assertEqual(refs["cursor-acp:" + meta_only].title, "Empty ACP")
+        self.assertEqual(list(sessions.cursor_iter_fragments(
+            store, refs["cursor-acp:" + meta_only], 400, {})), [])
+        stats: dict[str, int] = {}
+        self.assertEqual(list(sessions.cursor_iter_fragments(store, refs["cursor-acp:" + good], 400, stats)), [])
+        # A session whose store.db graph is broken reports per-session, not store-wide.
+        field = self._field
+        root_id, ghost = bytes([1]) * 32, bytes([2]) * 32
+        self._write_store(root / good, good, root_id, {root_id: field(1, ghost)})
         stats = {}
-        fragments = list(sessions.cursor_iter_fragments(store, refs[0], 400, stats))
-        self.assertEqual([f["text"] for f in fragments], ["user prompt"])
-        self.assertEqual(stats["unsupported_fragments"], 1)
-        self.assertFalse(sessions.coverage_summary([store], 1, 1, stats)["scan_complete"])
-        conn = sqlite3.connect(db)
-        conn.execute("UPDATE blobs SET data=? WHERE id=?", (nodes[step_id], step_id.hex()))
-        conn.execute("DELETE FROM blobs WHERE id=?", (answer_id.hex(),))
-        conn.commit()
-        conn.close()
-        stats = {}
-        self.assertEqual(list(sessions.cursor_iter_fragments(store, refs[0], 400, stats)), [])
+        self.assertEqual(list(sessions.cursor_iter_fragments(store, refs["cursor-acp:" + good], 400, stats)), [])
         self.assertEqual(stats["unreadable"], 1)
+        self.assertIn("ACP store", store.error or "")
         self.assertFalse(sessions.coverage_summary([store], 1, 0, stats)["scan_complete"])
+
+    def test_acp_missing_root_marks_store_missing(self):
+        store = sessions.Store("cursor", "acp", self.root / "nowhere", "session_dirs")
+        self.assertEqual(list(sessions.cursor_iter_sessions(store)), [])
+        self.assertEqual(store.status, "missing")
 
 
 class DateFilterTests(unittest.TestCase):

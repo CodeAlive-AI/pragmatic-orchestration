@@ -270,7 +270,7 @@ _BACKEND_CAPS: Dict[str, BackendCapabilities] = {
         final_text_rule="claude_result_over_deltas",
         notes=(
             "Binary is cursor-agent, never the bare agent name (that is Grok "
-            "Build on this machine). One-shot: cursor-agent -p --trust "
+            "Build where it is installed). One-shot: cursor-agent -p --trust "
             "--output-format stream-json --stream-partial-output, prompt on "
             "stdin. Review adds --mode plan, which blocks edit and shell "
             "writes; --mode ask is not used (refused on the Free tier) and "

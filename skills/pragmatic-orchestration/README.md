@@ -10,7 +10,7 @@ For example:
 
 - send a repository investigation to a suitable stateful worker that can be steered and continued;
 - ask Claude Fable to produce an independent plan;
-- delegate an implementation to Codex, Claude, Grok, OpenCode, Devin, or Antigravity (`agy`);
+- delegate an implementation to Codex, Claude, Grok, OpenCode, Devin, Antigravity (`agy`), or Cursor CLI (`cursor-agent`);
 - review the same change with several unrelated model families and compare what they find;
 - transcribe a recording with Antigravity, or generate, edit and animate (GIF) images with Codex or Antigravity (`porch media`).
 
@@ -255,11 +255,11 @@ creates no index or database; every record carries a native locator
 it is not a shell call to grep or ripgrep. Matching uses the full text, then
 returns a bounded excerpt around the match. Format details and verification
 status are in the [compatibility matrix](references/session-compatibility.md).
-Compressed Codex rollouts require Python 3.14+. Cursor ACP and Cursor CLI
-chats expose conversation text; tool and shell nodes are reported unsupported
-and make coverage partial. CLI chats live under `~/.cursor/chats` (store
-`chats`, session id `cursor-cli:<uuid>`). `list`, `grep` and `show` read them;
-`find` does not index them. The binary Porch launches is `cursor-agent`, not
+Compressed Codex rollouts require Python 3.14+. Cursor CLI chats live under
+`~/.cursor/chats` (store `chats`, session id `cursor-cli:<uuid>`); `list`,
+`grep`, `show` and `find` read their text, tool calls and tool results. Cursor
+ACP sessions expose conversation text only; their tool and shell nodes are
+reported unsupported and make coverage partial. The binary Porch launches is `cursor-agent`, not
 `agent`.
 
 ### Claude Desktop and Codex app sessions

@@ -13,6 +13,17 @@ Honest ack ladder: `request_sent` when the JSON-RPC request is in flight;
 No ACP transport event proves semantic compliance, so adapters never claim
 `applied` — they report only wire-observable lifecycle facts.
 
+Background work (opt-in, `tracks_background_work`): some agents end a turn
+with `end_turn` while a tool call they moved to the background is still
+`in_progress`, then continue by themselves through unsolicited
+`session/update`s once it finishes — no new prompt, no new response, no end
+marker. With tracking on, such a stop does not finish the run. The run settles
+when no prompt is in flight, no non-daemon tool call is open, nothing closed
+since the last model call (`usage_update`), the newest update is a
+`usage_update`, and SETTLE seconds passed quietly (`usage_settled`); without
+that marker it settles after IDLE quiet seconds with no open tool call
+(`idle_timeout`). An open background tool call is waited for without a cap.
+
 Subclasses provide the argv, child environment and per-session configuration.
 """
 from __future__ import annotations
@@ -32,6 +43,19 @@ from .base import AdapterEvent, BackendAdapter, DeliveryClass, SteerResult
 _CANCEL_STOP_REASONS = frozenset({"cancelled", "canceled"})
 _SUCCESS_STOP_REASONS = frozenset({"end_turn", "endturn"})
 _INTERRUPT_WAIT_S = 30.0
+# ACP tool call statuses are pending|in_progress|completed|failed; "cancelled"
+# is accepted defensively. An unknown status never closes a call.
+_TOOL_CLOSED_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled"})
+# Capability chatter that is not agent activity.
+_INACTIVE_UPDATES = frozenset({"available_commands_update", "config_option_update",
+                               "session_info_update"})
+
+
+def _env_seconds(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, "") or default))
+    except ValueError:
+        return default
 
 
 def _normalize_stop_reason(value: Any) -> str:
@@ -55,6 +79,8 @@ class AcpTurnAdapter(BackendAdapter):
     backend_name = "acp"
     raw_name = "acp"
     auto_delivery = DeliveryClass.SAME_TURN
+    # Off by default; a subclass turns it on (see the module docstring).
+    tracks_background_work = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -73,8 +99,26 @@ class AcpTurnAdapter(BackendAdapter):
         # Interrupt steers in flight between session/cancel and the successor
         # prompt: the cancelled turn resolving must not terminalize the run.
         self._pending_interrupt = 0
+        self.agent_info: Dict[str, Any] = {}
+        # Background-work tracking (reader thread writes, under _lock).
+        self._open_tools: Dict[str, str] = {}  # toolCallId -> title
+        self._update_seq = 0
+        self._last_close_seq = 0
+        self._last_usage_seq = 0
+        self._last_activity = time.time()
+        self._awaiting_background = False
+        self._continuation_text = False
+        self._settle_s = _env_seconds("PORCH_ACP_BACKGROUND_SETTLE_S", 30.0)
+        self._idle_s = _env_seconds("PORCH_ACP_BACKGROUND_IDLE_S", 300.0)
 
     # ---- backend hooks --------------------------------------------------
+
+    def _is_daemon_tool(self, update: Dict[str, Any]) -> bool:
+        """True for a tool call the agent itself does not wait for."""
+        return False
+
+    def _close_session(self) -> None:
+        """Ask the agent to stop session work before the process is killed."""
 
     def _argv(self) -> List[str]:
         raise NotImplementedError
@@ -120,10 +164,18 @@ class AcpTurnAdapter(BackendAdapter):
         if not isinstance(update, dict):
             update = {}
         utype = update.get("sessionUpdate") or update.get("type") or ""
+        if self.tracks_background_work and utype not in _INACTIVE_UPDATES:
+            self._track_update(utype, update)
         if utype == "agent_message_chunk":
             text = _content_text(update.get("content"))
             if text:
                 with self._lock:
+                    if self._awaiting_background and not self._in_flight \
+                            and not self._continuation_text:
+                        # First answer text of an unsolicited continuation.
+                        self._continuation_text = True
+                        if self._all_text:
+                            self._all_text.append("\n\n")
                     self._all_text.append(text)
                 self._events.put(AdapterEvent(kind="text", data=text,
                                               raw={"update": update, "params": params}))
@@ -145,9 +197,49 @@ class AcpTurnAdapter(BackendAdapter):
         self._events.put(AdapterEvent(kind="progress", data=utype or "session/update",
                                       raw={"update": update, "params": params}))
 
+    def _track_update(self, utype: str, update: Dict[str, Any]) -> None:
+        changed = None
+        with self._lock:
+            self._update_seq += 1
+            self._last_activity = time.time()
+            call_id = str(update.get("toolCallId") or "")
+            status = str(update.get("status") or "").lower()
+            if utype == "usage_update":
+                self._last_usage_seq = self._update_seq
+            elif utype == "tool_call" and call_id:
+                if status in _TOOL_CLOSED_STATUSES:
+                    self._last_close_seq = self._update_seq
+                elif not self._is_daemon_tool(update):
+                    self._open_tools[call_id] = str(update.get("title") or update.get("kind") or "tool")
+                    changed = True
+            elif utype == "tool_call_update" and call_id and status in _TOOL_CLOSED_STATUSES:
+                self._last_close_seq = self._update_seq
+                if self._open_tools.pop(call_id, None) is not None:
+                    changed = True
+            if changed and self._awaiting_background:
+                changed = self._background_summary_locked()
+            else:
+                changed = None
+        if changed:
+            self._events.put(AdapterEvent(kind="progress", data=changed))
+
+    def _background_summary_locked(self) -> str:
+        if not self._open_tools:
+            return "awaiting_background_continuation"
+        names = ", ".join(f"{t} ({cid})" for cid, t in list(self._open_tools.items())[:5])
+        return f"awaiting_background_tools: {names}"
+
+    def _background_pending_locked(self) -> bool:
+        """Work the agent will still do on its own after the last stop."""
+        return bool(self._open_tools) or self._last_close_seq > self._last_usage_seq
+
     def _on_server_request(self, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         method = msg.get("method") or ""
         rid = msg.get("id")
+        if self.tracks_background_work:
+            with self._lock:
+                self._last_activity = time.time()
+                self._update_seq += 1
         if method == "session/request_permission":
             options = (msg.get("params") or {}).get("options") or []
             option_id = None
@@ -187,7 +279,7 @@ class AcpTurnAdapter(BackendAdapter):
         )
         self.rpc.set_raw_out(str(self._raw_path))
         self.rpc.start()
-        self.rpc.request(
+        init = self.rpc.request(
             "initialize",
             {
                 "protocolVersion": 1,
@@ -199,6 +291,8 @@ class AcpTurnAdapter(BackendAdapter):
             },
             timeout=60.0,
         )
+        info = (init or {}).get("agentInfo") if isinstance(init, dict) else None
+        self.agent_info = info if isinstance(info, dict) else {}
         result = self.rpc.request(
             "session/new", {"cwd": self.cwd, "mcpServers": []}, timeout=60.0
         )
@@ -288,7 +382,15 @@ class AcpTurnAdapter(BackendAdapter):
             last_stop = _normalize_stop_reason(
                 (self._prompt_result.get(last_rid) or {}).get("stopReason")
             )
-            if self._cancelled:
+            awaiting = None
+            if (self.tracks_background_work and not self._cancelled
+                    and last_stop in _SUCCESS_STOP_REASONS
+                    and self._background_pending_locked()):
+                # The agent ended its turn but will continue on its own.
+                self._awaiting_background = True
+                self._continuation_text = False
+                awaiting = self._background_summary_locked()
+            elif self._cancelled:
                 exit_code, data = 130, "cancelled"
             elif last_stop in _SUCCESS_STOP_REASONS:
                 exit_code, data = 0, "end_turn"
@@ -296,12 +398,40 @@ class AcpTurnAdapter(BackendAdapter):
                 exit_code, data = 130, "cancelled"
             else:
                 exit_code, data = 1, f"stop:{last_stop or 'missing'}"
-            self._done = True
-            self._exit_code = exit_code
+            if awaiting is None:
+                self._awaiting_background = False
+                self._done = True
+                self._exit_code = exit_code
+        if awaiting is not None:
+            self._events.put(AdapterEvent(kind="progress", data=awaiting))
+            return
         self._events.put(AdapterEvent(kind="done", data=data,
                                       raw={"promptId": last_rid}))
 
+    def _maybe_settle_background(self) -> None:
+        """Finish a run whose agent continued after end_turn and went quiet."""
+        with self._lock:
+            if self._done or not self._awaiting_background:
+                return
+            if self._in_flight or self._pending_interrupt or self._open_tools:
+                return
+            quiet = time.time() - self._last_activity
+            settled = (self._last_close_seq <= self._last_usage_seq
+                       and self._last_usage_seq == self._update_seq)
+            if settled and quiet >= self._settle_s:
+                evidence = "usage_settled"
+            elif quiet >= self._idle_s:
+                evidence = "idle_timeout"
+            else:
+                return
+            self._awaiting_background = False
+            self._done = True
+            self._exit_code = 0
+        self._events.put(AdapterEvent(kind="done", data=f"end_turn:{evidence}",
+                                      raw={"completion_evidence": evidence}))
+
     def poll_events(self) -> Iterator[AdapterEvent]:
+        self._maybe_settle_background()
         if self.rpc:
             rc = self.rpc.poll_exit()
             if rc is not None and not self._done:
@@ -390,6 +520,11 @@ class AcpTurnAdapter(BackendAdapter):
                 self.rpc.notify("session/cancel", {"sessionId": self.session_id})
             except Exception:
                 pass
+            if self.rpc.poll_exit() is None:
+                try:
+                    self._close_session()
+                except Exception:
+                    pass
             pid = self.rpc.pid()
             self.rpc.terminate()
             if pid:

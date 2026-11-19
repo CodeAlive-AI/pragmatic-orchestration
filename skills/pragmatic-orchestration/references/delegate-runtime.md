@@ -262,7 +262,8 @@ Verified against devin 3000.10.27 over real ACP runs:
 
 ### What Antigravity actually does with a steer
 
-Verified against agy 1.5.4 over real `agy acp` runs:
+Verified against agy 1.5.4 over real `agy acp` runs, and again on 1.5.12
+(2026-11-20):
 
 - `auto`/`queue` are `same_turn`: a `session/prompt` sent while a turn runs is
   injected into that turn — the agent sees the guidance without waiting for
@@ -275,6 +276,34 @@ Verified against agy 1.5.4 over real `agy acp` runs:
 - The steerable worker runs `agy acp --dangerously-skip-permissions`. Model and
   thinking level are set per session; ACP sessions start on the account's
   default model, so Porch re-applies them on every launch.
+
+Background commands (agy 1.5.12, live, 2026-11-20). A `run_command` that
+outlasts its `WaitMsBeforeAsync` (at most 10 s) goes to the background and agy
+ends the turn with `end_turn` while that tool call is still `in_progress`.
+From 1.5.10 agy continues by itself once the command ends: unsolicited
+updates bring the tool result, new tool calls and more answer text, with no
+new prompt and no end marker. Porch therefore keeps such a run open:
+
+- The run shows the progress event `awaiting_background_tools: <title> (<id>)`
+  and stays `running` while any non-daemon tool call is open. There is no cap;
+  a forgotten or hung background command keeps the run alive until
+  `delegate cancel`. Tool calls marked `IsDaemon` (dev servers, watchers,
+  standing timers) are not waited for.
+- When nothing is open, it finishes once the newest update is a
+  `usage_update` (the end of a model call) and 30 s pass quietly; the done
+  event reads `end_turn:usage_settled`. Without that marker it finishes after
+  300 s of quiet as `end_turn:idle_timeout`. The continuation's answer text is
+  appended to the final answer after a blank line.
+- `auto`/`queue` during the wait start a new turn; the background command
+  keeps running and agy continues afterwards. `interrupt` during the wait
+  stops the background command (its tool call ends `failed`) before the steer
+  prompt runs.
+- `delegate cancel` and run shutdown send `session/close` before the process
+  is killed, which stops agy's background tasks and subagents.
+- agy older than 1.5.10 held continuations until the next prompt, so for it a
+  run still ends at `end_turn`.
+- One-shot (`--one-shot`, headless stream-json) needs none of this: headless
+  agy itself waits for background tasks before its single `result`.
 
 ## Mailbox lifecycle
 

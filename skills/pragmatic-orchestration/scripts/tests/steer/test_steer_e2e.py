@@ -1933,6 +1933,119 @@ def test_agy_unknown_model_fails_launch(tmp: Path) -> None:
                 not any(e.get("event") == "prompt" for e in entries), str(entries))
 
 
+def _agy_bg_env(tmp: Path, name: str, mode: str, **extra: str):
+    reg_root = tmp / f"reg-{name}"
+    art = tmp / f"art-{name}"
+    cwd = tmp / f"cwd-{name}"
+    for d in (reg_root, art, cwd):
+        d.mkdir(parents=True)
+    env = env_base(reg_root, art)
+    env["PORCH_FAKE_AGY_MODE"] = mode
+    env["PORCH_FAKE_ARGV_LOG"] = str(tmp / f"argv-{name}.jsonl")
+    env["PORCH_ACP_BACKGROUND_SETTLE_S"] = "0.5"
+    env["PORCH_ACP_BACKGROUND_IDLE_S"] = "60"
+    env.update(extra)
+    return env, cwd, tmp / f"argv-{name}.jsonl"
+
+
+def _agy_events(run_id: str, env: dict) -> list:
+    r = run_cmd([str(PORCH), "delegate", "events", run_id, "--max-events", "500"], env)
+    try:
+        return json.loads(r.stdout, strict=False).get("events") or []
+    except ValueError:
+        return []
+
+
+def _fake_log(path: Path) -> list:
+    if not path.is_file():
+        return []
+    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+
+def test_agy_background_continuation(tmp: Path) -> None:
+    """end_turn with a backgrounded tool call must wait for agy's own continuation."""
+    print("=== e2e: agy background continuation ===")
+    env, cwd, _ = _agy_bg_env(tmp, "agy-bg", "background", PORCH_FAKE_AGY_BG_DELAY="2.0")
+    t0 = time.time()
+    proc, run_id, _ = start_steerable("agy", "TASK WITH LONG COMMAND", env, cwd)
+    code, out, err = wait_proc(proc, timeout=60)
+    elapsed = time.time() - t0
+    assert_true("agy bg exit 0", code == 0, f"code={code} err={(err or '')[-400:]}")
+    assert_true("agy bg run outlived the first end_turn", elapsed >= 2.0, f"{elapsed:.1f}s")
+    assert_true("agy bg final keeps first-turn text", "Launched sleep 120" in (out or ""), (out or "")[:300])
+    assert_true("agy bg final has continuation", "FAKE_AGY_BG_DONE" in (out or ""), (out or "")[:300])
+    assert_true("agy bg continuation separated",
+                "background.\n\nFAKE_AGY_BG_DONE" in (out or ""), repr((out or "")[:300]))
+    data = [str(e.get("data") or "") for e in _agy_events(run_id, env)]
+    assert_true("agy bg awaiting progress visible",
+                any(d.startswith("awaiting_background_tools: sleep 120") for d in data), str(data[-12:]))
+    assert_true("agy bg settled by usage marker",
+                any("usage_settled" in d for d in data), str(data[-6:]))
+
+
+def test_agy_background_interrupt(tmp: Path) -> None:
+    """interrupt while agy waits on a background command stops it and runs the steer."""
+    print("=== e2e: agy interrupt during background wait ===")
+    env, cwd, log = _agy_bg_env(tmp, "agy-bgint", "background", PORCH_FAKE_AGY_BG_DELAY="30")
+    proc, run_id, _ = start_steerable("agy", "TASK WITH LONG COMMAND", env, cwd)
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if any(str(e.get("data") or "").startswith("awaiting_background")
+               for e in _agy_events(run_id, env)):
+            break
+        time.sleep(0.2)
+    r = run_cmd([str(PORCH), "delegate", "steer", run_id, "--mode", "interrupt", "STEER stop now"],
+                env, timeout=15)
+    assert_true("agy bg interrupt accepted", r.returncode == 0, r.stderr)
+    code, out, err = wait_proc(proc, timeout=40)
+    assert_true("agy bg interrupt exit 0", code == 0, f"code={code} err={(err or '')[-400:]}")
+    assert_true("agy bg interrupt ran successor", "FAKE_AGY_OK" in (out or ""), (out or "")[:300])
+    assert_true("agy bg interrupt dropped continuation", "FAKE_AGY_BG_DONE" not in (out or ""))
+    cancels = [e for e in _fake_log(log) if e.get("event") == "cancel"]
+    assert_true("agy bg interrupt cancelled with no turn running",
+                any(e.get("turn_active") is False for e in cancels), str(cancels))
+
+
+def test_agy_daemon_tool_not_awaited(tmp: Path) -> None:
+    """An IsDaemon tool call (dev server) never holds the run open."""
+    print("=== e2e: agy daemon tool not awaited ===")
+    env, cwd, _ = _agy_bg_env(tmp, "agy-daemon", "daemon")
+    t0 = time.time()
+    proc, run_id, _ = start_steerable("agy", "START DEV SERVER", env, cwd)
+    code, out, err = wait_proc(proc, timeout=30)
+    assert_true("agy daemon exit 0", code == 0, f"code={code} err={(err or '')[-400:]}")
+    assert_true("agy daemon finishes promptly", time.time() - t0 < 20, f"{time.time() - t0:.1f}s")
+
+
+def test_agy_old_version_keeps_turn_completion(tmp: Path) -> None:
+    """Before 1.5.10 agy held continuations until the next prompt: no waiting."""
+    print("=== e2e: agy < 1.5.10 completes on end_turn ===")
+    env, cwd, _ = _agy_bg_env(tmp, "agy-old", "background", PORCH_FAKE_AGY_VERSION="1.5.9",
+                              PORCH_FAKE_AGY_BG_DELAY="20")
+    t0 = time.time()
+    proc, run_id, _ = start_steerable("agy", "TASK WITH LONG COMMAND", env, cwd)
+    code, out, err = wait_proc(proc, timeout=30)
+    assert_true("agy old exit 0", code == 0, f"code={code} err={(err or '')[-400:]}")
+    assert_true("agy old no continuation", "FAKE_AGY_BG_DONE" not in (out or ""))
+    assert_true("agy old finishes on end_turn", time.time() - t0 < 15, f"{time.time() - t0:.1f}s")
+
+
+def test_agy_open_background_waits_then_cancel_closes(tmp: Path) -> None:
+    """An open background tool is waited for without a cap; cancel sends session/close."""
+    print("=== e2e: agy open background tool + cancel ===")
+    env, cwd, log = _agy_bg_env(tmp, "agy-hang", "hang", PORCH_ACP_BACKGROUND_IDLE_S="0.5")
+    proc, run_id, _ = start_steerable("agy", "TASK WITH LONG COMMAND", env, cwd)
+    time.sleep(4.0)
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout,
+                    strict=False)
+    assert_true("agy hang still running past idle", st.get("status") == "running", str(st.get("status")))
+    run_cmd([str(PORCH), "delegate", "cancel", run_id], env, timeout=10)
+    code, out, err = wait_proc(proc, timeout=30)
+    assert_true("agy hang cancel exit 130", code == 130, f"code={code}")
+    closes = [e for e in _fake_log(log) if e.get("event") == "close"]
+    assert_true("agy cancel sent session/close", bool(closes), str(_fake_log(log)[-5:]))
+
+
 def test_devin_interrupt_steer(tmp: Path) -> None:
     """interrupt = session/cancel then prompt; first turn cancelled, second completes."""
     print("=== e2e: devin interrupt cancel_and_send ===")
@@ -3117,6 +3230,11 @@ def main() -> int:
         test_backend_e2e("agy", "agy", tmp, extra_checks=_agy_e2e_checks)
         test_agy_interrupt_steer(tmp)
         test_agy_unknown_model_fails_launch(tmp)
+        test_agy_background_continuation(tmp)
+        test_agy_background_interrupt(tmp)
+        test_agy_daemon_tool_not_awaited(tmp)
+        test_agy_old_version_keeps_turn_completion(tmp)
+        test_agy_open_background_waits_then_cancel_closes(tmp)
         test_opencode_auth_e2e_password_not_in_artifacts(tmp)
         test_registry_loss_does_not_lose_final(tmp)
         test_save_outputs_zero_no_cwd_artifacts(tmp)

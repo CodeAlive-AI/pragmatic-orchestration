@@ -18,6 +18,15 @@ Two transports, modeled on verified agy 1.5.4 wire facts:
    in-flight request resolves at turn end in request order. Each prompt is
    echoed as user_message_chunk, which is never answer text.
    Turn duration: PORCH_FAKE_STEER_SLOW seconds (default 0.45).
+   Each model call is followed by usage_update, as agy 1.5.12 does.
+   ACP modes: ok | empty | fail | crash | background (the first turn moves its
+   run_command to the background and ends with end_turn; after
+   PORCH_FAKE_AGY_BG_DELAY seconds the agent continues by itself with no new
+   prompt and answers FAKE_AGY_BG_DONE; session/cancel with no turn running
+   fails that tool call instead) | daemon (the tool call carries IsDaemon and
+   never closes) | hang (a background tool call that never closes).
+   session/close stops background work. PORCH_FAKE_AGY_VERSION sets
+   agentInfo.version (default 1.5.12).
 """
 from __future__ import annotations
 
@@ -34,6 +43,8 @@ from typing import Any, Dict, List
 LOG = os.environ.get("PORCH_FAKE_ARGV_LOG")
 MODE = os.environ.get("PORCH_FAKE_AGY_MODE", "ok")
 SLOW = float(os.environ.get("PORCH_FAKE_STEER_SLOW", "0.45"))
+BG_DELAY = float(os.environ.get("PORCH_FAKE_AGY_BG_DELAY", "1.5"))
+VERSION = os.environ.get("PORCH_FAKE_AGY_VERSION", "1.5.12")
 MODELS = {"gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-3.8-flash"}
 LEVELS = {"low", "medium", "high", "xhigh"}
 
@@ -229,10 +240,24 @@ class Session:
         self.steer_texts: "queue.Queue[str]" = queue.Queue()
         self.model = "gemini-4-argon"
         self.level = "medium"
+        self.background: Dict[str, Any] = {}  # call_id -> threading.Event (stop)
+        self.turns = 0
 
     def update(self, update: Dict[str, Any]) -> None:
         send({"jsonrpc": "2.0", "method": "session/update",
               "params": {"sessionId": self.session_id, "update": update}})
+
+    def usage(self) -> None:
+        self.update({"sessionUpdate": "usage_update", "used": 1, "size": 1048576})
+
+    def stop_background(self, status: str) -> None:
+        with self.lock:
+            items = list(self.background.items())
+            self.background.clear()
+        for call_id, stop in items:
+            stop.set()
+            self.update({"sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                         "kind": "execute", "status": status})
 
     def chunk(self, kind: str, text: str) -> None:
         self.update({"sessionUpdate": kind, "content": {"type": "text", "text": text}})
@@ -268,9 +293,56 @@ class Session:
             send({"jsonrpc": "2.0", "id": rid, "result": result})
 
 
+def continue_after_background(sess: Session, call_id: str, stop: threading.Event) -> None:
+    if stop.wait(BG_DELAY):
+        return
+    with sess.lock:
+        if sess.background.pop(call_id, None) is None:
+            return
+    # The backgrounded command finished: agy wakes the agent with no prompt.
+    sess.update({"sessionUpdate": "tool_call_update", "toolCallId": call_id,
+                 "kind": "execute", "status": "completed"})
+    time.sleep(0.05)
+    sess.usage()
+    write_id = "call_" + uuid.uuid4().hex[:12]
+    sess.update({"sessionUpdate": "tool_call", "toolCallId": write_id, "name": "write_file",
+                 "kind": "edit", "title": "File result.txt", "status": "in_progress"})
+    sess.update({"sessionUpdate": "tool_call_update", "toolCallId": write_id,
+                 "kind": "edit", "status": "completed"})
+    sess.usage()
+    sess.chunk("agent_message_chunk", "FAKE_AGY_BG_DONE")
+    sess.usage()
+
+
+def run_background_turn(sess: Session) -> None:
+    call_id = "call_" + uuid.uuid4().hex[:12]
+    daemon = MODE == "daemon"
+    raw = {"CommandLine": "sleep 120", "WaitMsBeforeAsync": 5000}
+    if daemon:
+        raw["IsDaemon"] = True
+    sess.usage()
+    sess.update({"sessionUpdate": "tool_call", "toolCallId": call_id, "name": "run_command",
+                 "kind": "execute", "title": "sleep 120", "status": "in_progress",
+                 "rawInput": raw, "args": raw})
+    stop = threading.Event()
+    if not daemon:
+        with sess.lock:
+            sess.background[call_id] = stop
+    sess.chunk("agent_message_chunk", "Launched sleep 120 in the background.")
+    sess.usage()
+    sess.end_turn("end_turn")
+    if MODE == "background":
+        threading.Thread(target=continue_after_background, args=(sess, call_id, stop),
+                         daemon=True).start()
+
+
 def run_turn(sess: Session) -> None:
     if MODE == "crash":
         os._exit(1)
+    sess.turns += 1
+    if MODE in ("background", "daemon", "hang") and sess.turns == 1:
+        run_background_turn(sess)
+        return
     sess.update({"sessionUpdate": "available_commands_update",
                  "availableCommands": [{"name": "plan", "description": "fake"}]})
     sess.chunk("agent_thought_chunk", "FAKE_THOUGHT_NOT_FINAL")
@@ -288,6 +360,7 @@ def run_turn(sess: Session) -> None:
     sess.drain_steers()
     sess.update({"sessionUpdate": "tool_call_update", "toolCallId": call_id,
                  "kind": "execute", "status": "completed"})
+    sess.usage()
     if cancelled:
         sess.end_turn("cancelled")
         return
@@ -298,6 +371,7 @@ def run_turn(sess: Session) -> None:
         sess.chunk("agent_message_chunk", "FAKE_AGY_")
         sess.chunk("agent_message_chunk", "OK")
         sess.drain_steers()
+        sess.usage()
     sess.end_turn("end_turn")
 
 
@@ -328,7 +402,7 @@ def acp(argv: List[str]) -> int:
             send({"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": 1,
                 "agentCapabilities": {"loadSession": True, "load_session": True},
-                "agentInfo": {"name": "Antigravity ACP Server", "version": "0.0.0-fake"}}})
+                "agentInfo": {"name": "Antigravity ACP Server", "version": VERSION}}})
         elif method == "session/new":
             send({"jsonrpc": "2.0", "id": mid, "result": {
                 "sessionId": sess.session_id,
@@ -361,7 +435,15 @@ def acp(argv: List[str]) -> int:
                        "model": f"{sess.model}-{sess.level}"})
             sess.add_prompt(mid, text)
         elif method == "session/cancel":
-            sess.cancel_flag.set()
+            log_event({"bin": "agy", "event": "cancel", "turn_active": sess.turn_active.is_set()})
+            if sess.turn_active.is_set():
+                sess.cancel_flag.set()
+            else:
+                sess.stop_background("failed")
+        elif method == "session/close":
+            log_event({"bin": "agy", "event": "close", "background": len(sess.background)})
+            sess.stop_background("failed")
+            send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif mid is not None:
             send({"jsonrpc": "2.0", "id": mid,
                   "error": {"code": -32601, "message": f"Method not found: {method}"}})

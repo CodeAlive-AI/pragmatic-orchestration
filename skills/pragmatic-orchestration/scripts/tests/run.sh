@@ -164,6 +164,8 @@ for level in "" -xhigh -medium -low; do
   esac
   assert_contains "Antigravity Gemini 4 Hydrogen$level is selectable but disabled by default" "$out" \
     "id=\"agy-gemini-4-hydrogen$level\" label=\"Antigravity Gemini 4 Hydrogen $label_level\" backend=\"antigravity-cli\" model=\"gemini-4-hydrogen\" role=\"lateral\" enabled=\"false\""
+  assert_contains "Antigravity Gemini 4 Neon$level is selectable but disabled by default" "$out" \
+    "id=\"agy-gemini-4-neon$level\" label=\"Antigravity Gemini 4 Neon $label_level\" backend=\"antigravity-cli\" model=\"gemini-4-neon\" role=\"lateral\" enabled=\"false\""
 done
 assert_contains "Devin Gemini 4 Hydrogen is selectable but disabled by default" "$out" \
   'id="devin-gemini-4-hydrogen" label="Devin Gemini 4 Hydrogen High (only when Devin is named)" backend="devin-cli" model="gemini-4-hydrogen-high" role="lateral" enabled="false"'
@@ -601,6 +603,8 @@ for spec in 'agy-gemini-4-argon gemini-4-argon high' \
   'agy-gemini-4-carbon-low gemini-4-carbon low' \
   'agy-gemini-4-hydrogen gemini-4-hydrogen high' 'agy-gemini-4-hydrogen-xhigh gemini-4-hydrogen xhigh' \
   'agy-gemini-4-hydrogen-medium gemini-4-hydrogen medium' 'agy-gemini-4-hydrogen-low gemini-4-hydrogen low' \
+  'agy-gemini-4-neon gemini-4-neon high' 'agy-gemini-4-neon-xhigh gemini-4-neon xhigh' \
+  'agy-gemini-4-neon-medium gemini-4-neon medium' 'agy-gemini-4-neon-low gemini-4-neon low' \
   'agy-gemini-3.8-flash gemini-3.8-flash high'; do
   read -r profile model effort <<< "$spec"
   for mode in review delegate; do

@@ -66,7 +66,7 @@ model's own harness. Pick the profile from `"$PORCH" --list-agents` whose
 | --- | --- |
 | GPT (Sol, Terra, Luna, Astra) | Codex (`codex-cli`) |
 | Claude (Fable, Opus, Sonnet, Haiku) | Claude Code (`claude-code`) |
-| Gemini 4 (Argon, Hydrogen, Carbon), Gemini 3.x | Antigravity (`antigravity-cli`, `agy-*`) |
+| Gemini 4 (Argon, Hydrogen, Neon, Carbon), Gemini 3.x | Antigravity (`antigravity-cli`, `agy-*`) |
 | Grok | Grok Build (`grok-build`) |
 | Kimi, GLM, DeepSeek, Qwen, MiniMax, Muse Spark and other open or third-party models | OpenCode (`opencode-go-*`) |
 | SWE-2, SWE-2 Flash | Devin (`devin-cli`): `devin`, `devin-swe-2` |

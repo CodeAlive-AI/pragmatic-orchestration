@@ -179,6 +179,10 @@ profile per thinking level: `agy-gemini-4-hydrogen` (`high`),
 `gemini-4-hydrogen-low|medium|high|xhigh` (verified on agy 1.5.10); `--effort`
 accepts `low|medium|high|xhigh|max`, so `xhigh` is Hydrogen's top level.
 
+The opt-in `agy-gemini-4-neon*` profiles select Gemini 4 Neon the same way:
+`agy-gemini-4-neon` (`high`), `agy-gemini-4-neon-xhigh`, `-medium` and `-low`.
+`agy models` lists `gemini-4-neon-low|medium|high|xhigh` (verified on agy 1.5.12).
+
 The opt-in `agy-gemini-4-carbon*` profiles target Gemini 4 Carbon, announced
 on 2026-10-28 ([Google](https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-carbon/))
 and so far available only to selected cyber defenders through Google's

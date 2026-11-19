@@ -180,6 +180,38 @@
       "role": "lateral",
       "label": "Antigravity Gemini 4 Hydrogen Low"
     },
+    "agy-gemini-4-neon": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-neon",
+      "effort": "high",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Neon High"
+    },
+    "agy-gemini-4-neon-xhigh": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-neon",
+      "effort": "xhigh",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Neon XHigh"
+    },
+    "agy-gemini-4-neon-medium": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-neon",
+      "effort": "medium",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Neon Medium"
+    },
+    "agy-gemini-4-neon-low": {
+      "enabled": false,
+      "backend": "antigravity-cli",
+      "model": "gemini-4-neon",
+      "effort": "low",
+      "role": "lateral",
+      "label": "Antigravity Gemini 4 Neon Low"
+    },
     "agy-gemini-3.8-flash": {
       "enabled": false,
       "backend": "antigravity-cli",

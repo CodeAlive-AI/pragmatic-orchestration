@@ -34,7 +34,8 @@ The index contains titles, genuine prompts with their `human`, `delegated` or
 `unknown` origin, and every completed answer. It does not index tool output,
 reasoning, arbitrary intermediate assistant text, or unfinished answers. Indexed
 harnesses are Claude Code, Claude Desktop/Cowork, Codex, Devin, OpenCode, agy and
-porch. Use raw `grep` for the other harnesses or omitted record types.
+porch. Cursor CLI chats (`cursor` store `chats`), Cursor IDE and ACP, and the
+other remaining harnesses use raw `list`, `grep` and `show` only.
 
 ```bash
 porch sessions find 'задач' 'найти|нашел|поиск'
@@ -158,14 +159,25 @@ itself is platform-neutral; only the *default store roots* differ:
 | `omp` | `~/.omp/agent/sessions` | `%USERPROFILE%\.omp\agent\sessions` |
 | `porch` | `~/Library/Caches/pragmatic-orchestration/steer` (macOS), `$XDG_CACHE_HOME/pragmatic-orchestration/steer` (Linux) | `%LOCALAPPDATA%\pragmatic-orchestration\steer` |
 
-Hermes uses `~/.hermes/state.db` (`%USERPROFILE%` on Windows); Cursor also
-checks `~/.cursor/acp-sessions` on every platform.
+Hermes uses `~/.hermes/state.db` (`%USERPROFILE%` on Windows). Cursor also
+checks `~/.cursor/acp-sessions` and `~/.cursor/chats` on every platform,
+including Windows (`%USERPROFILE%\.cursor\…`, not AppData).
 
 `PORCH_HISTORY_ROOT_<HARNESS>` overrides any default (uppercase, `-`→`_`),
-`PORCH_STEER_DIR` overrides the porch root. On Linux `claude-desktop`
-and `cursor` fall back to `~/.config/…`. SQLite stores open read-only via a
-`file:` URI with `mode=ro` + `PRAGMA query_only=ON`; drive-letter paths
-(`C:\…`) are URI-escaped internally — pass them as normal paths.
+`PORCH_STEER_DIR` overrides the porch root. `PORCH_HISTORY_ROOT_CURSOR`
+replaces every Cursor store. Point it at the chats directory
+(`<32-hex workspace hash>/<chat-uuid>/meta.json`), at the acp-sessions
+directory (`<uuid>/`), or at the Cursor config root (`~/.cursor` or a
+`CURSOR_CONFIG_DIR` directory): a root containing `chats/` or
+`acp-sessions/` children is expanded into both stores. A root whose
+children are 32-hex hashes of chat directories is the CLI `chats` store. A
+one-level `<uuid>/` root stays the ACP store. A non-empty override matching
+none of these layouts is reported `unavailable` with an explicit message
+naming the expected shapes instead of silently listing nothing. On Linux
+`claude-desktop` and the Cursor IDE root fall back to `~/.config/…`. SQLite
+stores open read-only via a `file:` URI with `mode=ro` + `PRAGMA query_only=ON`;
+drive-letter paths (`C:\…`) are URI-escaped internally — pass them as normal
+paths.
 
 ## The navigation algorithm
 
@@ -181,7 +193,12 @@ data — do not grep before you know which sessions exist.
    graph validation reads its conversation nodes):
    session id, title, cwd, created/updated, models. Filter with `--cwd`,
    `--since/--until`, `-a`, `--store`. Session ids are stable addresses —
-   keep them verbatim for `show`.
+   keep them verbatim for `show`. `--since` drops a session with no timestamp
+   at all, and drops one whose latest known timestamp (created or updated) is
+   before the bound. `--until` drops a session only when every known timestamp
+   is after the bound; a session with no timestamp still passes an
+   `--until`-only filter. A session created before the window and updated
+   inside it still matches `--since`.
 3. **Search text** — `sessions grep PATTERN`. Runs over decoded fragment text
    (not raw bytes), honors the same filters. Each hit is a fragment with
    `kind`, `authorship`, `ts`, `model`, `seq`, and `locator`. Default
@@ -449,6 +466,32 @@ Three generations are read, in precedence order `session_v2` > legacy tables
 
 ### cursor — `~/Library/Application Support/Cursor/User/{globalStorage,workspaceStorage/*/}state.vscdb`
 
+- CLI chats under `~/.cursor/chats/<32-hex workspace hash>/<uuid>/` (store
+  `chats`, session id `cursor-cli:<uuid>`) on every platform. `meta.json`
+  supplies cwd and created/updated (`createdAtMs` / `updatedAtMs`). `store.db`
+  has `blobs` and `meta`; meta key `0` is hex-encoded JSON with `agentId` and
+  `latestRootBlobId`. The root blob's field 1 lists JSON message blobs. The
+  prompt is the inner text of `<user_query>`, or plain user text with no
+  wrapper. A user `content` given as a list of parts is joined first: text
+  parts (and bare strings) are concatenated with `\n`, then `<user_query>`
+  is extracted from the joined text — `json.dumps` would escape the wrapped
+  newlines. System text, `<user_info>` and reminder wrappers are hidden
+  context. Assistant text comes from JSON `type=text` parts. Reasoning text
+  is read from the turn-step protobuf (root field 8) only when the latest
+  assistant message's JSON reasoning text is empty; an inline assistant step
+  that repeats the JSON answer is not emitted again. Tool calls are the JSON
+  `tool-call` parts (projected as `tool_call` fragments with name and args)
+  and `role=tool` messages' `tool-result` parts (projected as `tool_result`
+  fragments), both visible under `--scope tools`. A turn-step tool record
+  (root field 8, call id at protobuf field 57) whose id never appeared in
+  JSON still counts as `unsupported_fragments`. A chat with only
+  `meta.json` is listed empty. One unreadable chat does not hide the others;
+  the store stays `ok` while any chat lists. `sessions find` indexes this
+  store one unit per chat directory. The ACP reader rejects these files
+  (`invalid ACP blob id`) because assistant steps carry inline text, not
+  32-byte blob ids — do not point it at `chats`. Live-checked read-only
+  against Cursor CLI 2026.11.19-f005e9d on 2026-11-19. Harness evidence
+  stays `spec` because the IDE store is still fixture-only.
 - ACP sessions under `~/.cursor/acp-sessions/<uuid>/store.db` are read as a
   validated SQLite/protobuf graph. User and assistant text includes blob
   locators; shell, tool and reasoning nodes are not decoded. When such nodes

@@ -18,7 +18,7 @@ The repo ships four skills in the Agent Skills layout: `pragmatic-orchestration`
 - **media** — transcribe and describe audio/video (Antigravity) and generate, edit, combine, animate (GIF) or describe images (Codex, Antigravity; description also Claude Code), read-only, with results collected into your output directory.
 - **quota** — read remaining Codex / Grok subscription quota.
 
-Supported worker harnesses: Codex CLI, Claude Code, OpenCode, Grok Build, Devin CLI, Antigravity CLI (`agy`), and Gemini CLI (review only).
+Supported worker harnesses: Codex CLI, Claude Code, OpenCode, Grok Build, Devin CLI, Antigravity CLI (`agy`), Cursor CLI (`cursor-agent`), and Gemini CLI (review only).
 
 The repo also ships **`remote-agents`**: a companion skill for operating dedicated remote Linux/Windows hosts that run these agents — secure VM/OS provisioning, SSH-over-SSM access with no public ingress, the WireGuard/SMB work bridge, `porch` on the remote host, a headless Windows desktop, bounded visual QA, durable worker daemons, and Codex Remote threads. See [skills/remote-agents/SKILL.md](skills/remote-agents/SKILL.md).
 

@@ -76,6 +76,7 @@ You also need Python 3 and at least one supported coding-agent CLI:
 | [Grok Build](https://grok.x.ai) | `grok` | review, delegate |
 | [Devin CLI](https://devin.ai) | `devin` | review, delegate |
 | [Antigravity CLI](https://antigravity.google/docs/cli/reference/) | `agy` | review, delegate |
+| [Cursor CLI](https://cursor.com/docs/cli/overview) | `cursor-agent` | review, delegate |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini` | review only |
 
 Authentication stays with each CLI. If it already works in your terminal, Porch can use it.
@@ -254,8 +255,12 @@ creates no index or database; every record carries a native locator
 it is not a shell call to grep or ripgrep. Matching uses the full text, then
 returns a bounded excerpt around the match. Format details and verification
 status are in the [compatibility matrix](references/session-compatibility.md).
-Compressed Codex rollouts require Python 3.14+. Cursor ACP currently exposes
-conversation text; omitted tool, shell, or reasoning nodes make coverage partial.
+Compressed Codex rollouts require Python 3.14+. Cursor ACP and Cursor CLI
+chats expose conversation text; tool and shell nodes are reported unsupported
+and make coverage partial. CLI chats live under `~/.cursor/chats` (store
+`chats`, session id `cursor-cli:<uuid>`). `list`, `grep` and `show` read them;
+`find` does not index them. The binary Porch launches is `cursor-agent`, not
+`agent`.
 
 ### Claude Desktop and Codex app sessions
 
@@ -385,7 +390,7 @@ CLAUDE_EFFORT=medium scripts/porch review ask \
   -a claude-fable --prompt-file prompt.md
 ```
 
-Available overrides: `CODEX_MODEL` / `CODEX_EFFORT`, `CLAUDE_MODEL` / `CLAUDE_EFFORT`, `OPENCODE_MODEL` / `OPENCODE_EFFORT`, `GROK_MODEL` / `GROK_EFFORT`, `GEMINI_MODEL`, and `DEVIN_MODEL`.
+Available overrides: `CODEX_MODEL` / `CODEX_EFFORT`, `CLAUDE_MODEL` / `CLAUDE_EFFORT`, `OPENCODE_MODEL` / `OPENCODE_EFFORT`, `GROK_MODEL` / `GROK_EFFORT`, `GEMINI_MODEL`, `DEVIN_MODEL`, and `CURSOR_MODEL`. An empty Cursor model omits `--model` and keeps the account default. `PORCH_BIN_CURSOR` overrides the `cursor-agent` binary. On the Free tier an explicit model, including `grok-4.7`, is refused.
 
 ## Safety and output
 

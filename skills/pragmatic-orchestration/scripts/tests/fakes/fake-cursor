@@ -1,0 +1,58 @@
+#!/bin/bash
+# Offline stand-in for cursor-agent. Logs argv and stdin, then emits stream-json.
+# Stream shape mirrors cursor-agent --stream-partial-output: per-token assistant
+# deltas (with timestamp_ms) followed by one full assistant message (without it).
+set -euo pipefail
+LOG="${PORCH_FAKE_ARGV_LOG:-/dev/null}"
+python3 -c '
+import json, os, sys
+print(json.dumps({
+    "bin": "cursor-agent",
+    "argv": sys.argv[1:],
+    "stdin": sys.stdin.read(),
+    "cwd": os.getcwd(),
+    "has_FULL_PROMPT": "FULL_PROMPT" in os.environ,
+    "CURSOR_CONFIG_DIR": os.environ.get("CURSOR_CONFIG_DIR"),
+}))
+' -- "$@" >> "$LOG"
+
+MODE="${PORCH_FAKE_CURSOR_MODE:-ok}"
+DELAY="${PORCH_FAKE_CURSOR_DELAY:-0}"
+if [[ "$DELAY" != "0" && "$DELAY" != "0.0" ]]; then
+  sleep "$DELAY"
+fi
+
+SESSION="11111111-2222-4333-8444-555555555555"
+RESULT="FAKE_CURSOR_RESULT"
+for arg in "$@"; do
+  if [[ "$arg" == "--resume" ]]; then
+    RESULT="FAKE_CURSOR_STEERED"
+    break
+  fi
+done
+
+if printf '%s\n' "$@" | grep -q -- 'stream-json'; then
+  echo '{"type":"system","subtype":"init","model":"default"}'
+  case "$MODE" in
+    is-error)
+      echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"FAKE_CURSOR_DELTA"}]},"timestamp_ms":1}'
+      echo '{"type":"result","subtype":"success","is_error":true,"result":"FAKE_CURSOR_ERROR","session_id":"'"$SESSION"'"}'
+      exit 0
+      ;;
+    stderr-fail)
+      # Real cursor-agent prints the refusal to stderr, nothing to stdout, exit 1.
+      echo 'ActionRequiredError: Model unavailable on Free Free includes Grok 4.7, Grok 4.6, and Auto with fixed settings.' >&2
+      exit 1
+      ;;
+    *)
+      echo '{"type":"thinking","subtype":"delta","text":"FAKE_CURSOR_THOUGHT","timestamp_ms":1}'
+      echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"FAKE_CURSOR_"}]},"timestamp_ms":1}'
+      echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"DELTA"}]},"timestamp_ms":2}'
+      echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"FAKE_CURSOR_DELTA"}]}}'
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"'"$RESULT"'","session_id":"'"$SESSION"'"}'
+      exit 0
+      ;;
+  esac
+fi
+echo "$RESULT"
+exit 0

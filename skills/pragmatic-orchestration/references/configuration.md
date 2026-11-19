@@ -7,6 +7,7 @@
 - Gemini CLI is optional and review-only
 - Devin CLI is optional and opt-in: `devin` v3000.x on PATH, authenticated via `devin auth login`
 - Antigravity CLI is optional and opt-in: `agy` 1.5.4 or newer (ACP and stream-json input) on PATH, signed in through an interactive `agy` login or `agy acp --login`
+- Cursor CLI is optional and opt-in: `cursor-agent` on PATH, signed in. Do not call the bare name `agent` — where Grok Build is installed, that name is Grok Build. An empty model uses the account default.
 
 Authentication stays with each harness.
 
@@ -19,7 +20,7 @@ models and enabled profiles may differ from the defaults described below.
 | Field | Purpose |
 |---|---|
 | `enabled` | Legacy profile flag; review and delegate select an exact profile explicitly |
-| `backend` | `codex-cli`, `claude-code`, `opencode`, `grok-build`, `gemini-cli`, `devin-cli`, or `antigravity-cli` |
+| `backend` | `codex-cli`, `claude-code`, `opencode`, `grok-build`, `gemini-cli`, `devin-cli`, `antigravity-cli`, or `cursor-cli` |
 | `model` | Backend model id |
 | `role` | Analyst, lateral, or specialist role |
 | `effort` | Backend reasoning effort/variant |
@@ -84,6 +85,7 @@ Non-empty environment values override profile model/effort for one invocation:
 - `GEMINI_MODEL`
 - `DEVIN_MODEL`; `PORCH_BIN_DEVIN` overrides the `devin` binary
 - `AGY_MODEL`, `AGY_EFFORT`; `PORCH_BIN_AGY` overrides the `agy` binary
+- `CURSOR_MODEL`; `PORCH_BIN_CURSOR` overrides the `cursor-agent` binary. An empty model omits `--model` so the account default is used.
 
 The enabled `codex` profile uses `gpt-6.2-sol` at `high` effort, and the enabled
 `codex-gpt-6-luna` profile uses `gpt-6-luna` at `low` effort.
@@ -213,6 +215,48 @@ Argon, effort is part of the id: pick another level with `DEVIN_MODEL`.
 - Every Antigravity run passes `--dangerously-skip-permissions`; headless mode
   would otherwise soft-deny each tool call that needs approval and still exit 0.
   Explicit deny rules, including the user's own, still apply.
+
+The disabled-by-default `cursor` profile runs Cursor CLI with an empty model
+(`label`: "Cursor CLI (account default model)"), so `--model` is omitted and
+the account default (Auto) is used. The optional disabled `cursor-grok-4.7`
+profile sets `model` to `grok-4.7` and passes `--model`. Copy either profile
+from `config.example.json` into a user-local `config.json`; that file replaces
+the example and is not merged. `CURSOR_MODEL` overrides the profile model for
+one invocation. An empty value does not force a model.
+
+The binary is `cursor-agent`. Do not call bare `agent`: on a machine that also
+has Grok Build, `agent` is that CLI.
+
+The prompt is written to the child's stdin, not passed as a positional
+argument. Review adds `--mode plan`, which blocks edit and shell writes in
+print mode. `--mode ask` is not the review guard: on the Free tier it is
+refused (`ActionRequiredError: Model unavailable on Free`, or a connection
+reset with no stdout). `--sandbox enabled` does not block writes. Delegate
+adds `--force` and does not pass `--mode plan`.
+
+On the Free tier, any explicit `--model`, including `grok-4.7`, is refused
+even when the error text says Free includes Grok 4.7. Leave the profile model
+empty to use Auto; `cursor-grok-4.7` therefore requires a paid Cursor plan.
+Bare `--model` also rewrites `model.modelId` in `~/.cursor/cli-config.json` —
+it persists the choice even when the run fails. To keep that side effect off
+the user's config, every run (one-shot, review, delegate, and each steered
+`--resume` process) sets `CURSOR_CONFIG_DIR` to a per-run temporary directory
+seeded by `scripts/lib/cursor_config.py`: `cli-config.json` is copied so auth
+and model writes land on the copy, while `chats/`, `acp-sessions/` and other
+entries are symlinked so sessions stay discoverable. The temp dir is removed
+when the run ends; `~/.cursor/cli-config.json` is never written.
+
+Steering is a new `cursor-agent --resume <session_id>` process per queued
+turn; interrupt is not supported. If a turn fails, the stderr reason (for
+example `ActionRequiredError: Model unavailable on Free …`) is appended to
+the run's error and queued steers are acknowledged as failed with
+`turn_failed` rather than dropped. A result with `is_error` or a subtype
+other than `success` fails the run even when the process exits 0. The
+`result` string is the answer; the stream's complete assistant message is
+deduplicated against the deltas already shown, so progress text is emitted
+once.
+
+Verified against Cursor CLI 2026.11.19-f005e9d on the Free tier (2026-11-19).
 
 ## Shell-safe prompts
 

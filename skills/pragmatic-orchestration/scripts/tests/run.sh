@@ -20,6 +20,7 @@ export PORCH_BIN_GROK="$FAKES/fake-grok"
 export PORCH_BIN_GEMINI="$FAKES/fake-gemini"
 export PORCH_BIN_DEVIN="$FAKES/fake-devin"
 export PORCH_BIN_AGY="$FAKES/fake-agy"
+export PORCH_BIN_CURSOR="$FAKES/fake-cursor"
 export PORCH_SUPPRESS_SHELL_WARN=1
 # Parent shells (prior delegate runs, harnesses) must not leak mode wrappers
 # into the offline suite.
@@ -28,7 +29,7 @@ unset PORCH_RAW_PROMPT PORCH_SKIP_OUTPUT_TEMPLATE PORCH_MODE \
 # Per-backend overrides from the caller (Claude Code exports CLAUDE_EFFORT, for
 # example) would replace the fixture's model and effort.
 unset AGY_MODEL AGY_EFFORT CLAUDE_MODEL CLAUDE_EFFORT CODEX_MODEL CODEX_EFFORT DEVIN_MODEL \
-  GEMINI_MODEL GROK_MODEL GROK_EFFORT OPENCODE_MODEL OPENCODE_EFFORT 2>/dev/null || true
+  GEMINI_MODEL GROK_MODEL GROK_EFFORT OPENCODE_MODEL OPENCODE_EFFORT CURSOR_MODEL 2>/dev/null || true
 
 PASS=0
 FAIL=0
@@ -182,6 +183,10 @@ assert_contains "Muse Spark 1.3 Contributor is selectable but disabled by defaul
   'id="opencode-go-muse-spark-1.3-contributor" label="OC-Go Muse Spark 1.3 Contributor" backend="opencode" model="opencode-go/muse-spark-1.3-contributor" role="lateral" enabled="false"'
 assert_contains "DeepSeek V4.1 Flash is selectable but disabled by default" "$out" \
   'id="opencode-go-deepseek-v4.1-flash" label="OC-Go DeepSeek V4.1 Flash" backend="opencode" model="opencode-go/deepseek-v4.1-flash" role="analyst" enabled="false"'
+assert_contains "Cursor CLI account-default profile is disabled and has no model" "$out" \
+  'id="cursor" label="Cursor CLI (account default model)" backend="cursor-cli" model="" role="analyst" enabled="false"'
+assert_contains "Cursor CLI Grok 4.7 profile is disabled by default" "$out" \
+  'id="cursor-grok-4.7" label="Cursor CLI (Grok 4.7)" backend="cursor-cli" model="grok-4.7" role="analyst" enabled="false"'
 
 # Unknown command
 set +e
@@ -722,7 +727,7 @@ export PORCH_FAKE_ARGV_LOG="$TMP/large-prompt-argv.jsonl"
 : > "$PORCH_FAKE_ARGV_LOG"
 # Parent shells may carry a leftover FULL_PROMPT; backend_run must not re-export it.
 unset FULL_PROMPT 2>/dev/null || true
-for agent in codex claude-code opencode gemini-cli grok devin agy; do
+for agent in codex claude-code opencode gemini-cli grok devin agy cursor; do
   export PORCH_RUN_DIR="$TMP/run-large-$agent"
   mkdir -p "$PORCH_RUN_DIR"
   env -u FULL_PROMPT "$LIB_DIR/backend_run.sh" --mode review --agent-id "$agent" --raw \
@@ -734,9 +739,9 @@ import sys
 
 rows = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
 # Primary CLI rows only (ignore grok-prompt-meta helpers and devin ACP event rows).
-primary = [r for r in rows if r.get("bin") in ("codex", "claude", "opencode", "gemini", "grok", "devin", "agy")
+primary = [r for r in rows if r.get("bin") in ("codex", "claude", "opencode", "gemini", "grok", "devin", "agy", "cursor-agent")
            and "argv" in r]
-assert len(primary) == 7, primary
+assert len(primary) == 8, primary
 for row in primary:
     argv = "\0".join(row["argv"])
     assert "BEGIN_LARGE_PROMPT" not in argv
@@ -1289,6 +1294,72 @@ assert_contains "claude is_error norm has run_failed" \
   "$(cat "$PORCH_RUN_DIR/normalized/claude-code.jsonl")" "run_failed"
 export PORCH_FAKE_CLAUDE_MODE=ok
 
+echo "=== Cursor CLI: plan review, force delegate, result over deltas, conditional model ==="
+export PORCH_FAKE_CURSOR_MODE=ok
+unset PORCH_FAKE_CURSOR_DELAY CURSOR_MODEL 2>/dev/null || true
+dump_review cursor "$TMP/cursor-review.json"
+dump_delegate cursor "$TMP/cursor-delegate.json"
+review_argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/cursor-review.json")
+delegate_argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/cursor-delegate.json")
+assert_contains "cursor review uses plan mode" "$review_argv" "--mode plan"
+assert_contains "cursor review trusts the workspace" "$review_argv" "--trust"
+assert_contains "cursor review streams json" "$review_argv" "--output-format stream-json"
+assert_contains "cursor review streams partial output" "$review_argv" "--stream-partial-output"
+assert_contains "cursor review sets workspace" "$review_argv" "--workspace"
+assert_not_contains "cursor review omits --model when unset" "$review_argv" "--model"
+assert_not_contains "cursor review does not force writes" "$review_argv" "--force"
+assert_not_contains "cursor review prompt stays off argv" "$review_argv" "hello"
+assert_contains "cursor delegate forces writes" "$delegate_argv" "--force"
+assert_not_contains "cursor delegate does not pass plan mode" "$delegate_argv" "--mode"
+assert_not_contains "cursor delegate omits --model when unset" "$delegate_argv" "--model"
+CURSOR_MODEL=grok-4.7 dump_review cursor "$TMP/cursor-model.json"
+model_argv=$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["argv"]))' "$TMP/cursor-model.json")
+assert_contains "CURSOR_MODEL passes --model" "$model_argv" "--model grok-4.7"
+cursor_cfg=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("env",{}).get("CURSOR_CONFIG_DIR",""))' "$TMP/cursor-model.json")
+if [[ -n "$cursor_cfg" && "$cursor_cfg" != "$HOME/.cursor" ]]; then
+  assert_eq "cursor run isolates CURSOR_CONFIG_DIR" "isolated" "isolated"
+else
+  assert_eq "cursor run isolates CURSOR_CONFIG_DIR" "missing" "isolated"
+fi
+unset CURSOR_MODEL
+export PORCH_RUN_DIR="$TMP/run-cursor-result"
+mkdir -p "$PORCH_RUN_DIR"
+out=$(PORCH_SINGLE_AGENT=1 "$LIB_DIR/backend_run.sh" \
+  --mode review --agent-id cursor --raw "ping" 2>"$TMP/cursor-result.err")
+assert_eq "cursor backend_run prefers result over delta" "$out" "FAKE_CURSOR_RESULT"
+assert_not_contains "cursor backend_run has no delta text" "$out" "FAKE_CURSOR_DELTA"
+export PORCH_FAKE_CURSOR_MODE=is-error
+export PORCH_RUN_DIR="$TMP/run-cursor-is-error"
+mkdir -p "$PORCH_RUN_DIR"
+set +e
+out=$(PORCH_SINGLE_AGENT=1 "$LIB_DIR/backend_run.sh" \
+  --mode delegate --agent-id cursor --raw "ping" 2>"$TMP/cursor-is-error.err")
+rc=$?
+set -e
+if [[ $rc -ne 0 ]]; then
+  assert_eq "cursor is_error one-shot non-zero" "nonzero" "nonzero"
+else
+  assert_eq "cursor is_error one-shot non-zero" "0" "nonzero"
+fi
+assert_not_contains "cursor is_error no delta on stdout" "$out" "FAKE_CURSOR_DELTA"
+assert_not_contains "cursor is_error no error result on stdout" "$out" "FAKE_CURSOR_ERROR"
+export PORCH_FAKE_CURSOR_MODE=stderr-fail
+export PORCH_RUN_DIR="$TMP/run-cursor-stderr-fail"
+mkdir -p "$PORCH_RUN_DIR"
+set +e
+out=$(PORCH_SINGLE_AGENT=1 "$LIB_DIR/backend_run.sh" \
+  --mode delegate --agent-id cursor --raw "ping" 2>"$TMP/cursor-stderr-fail.err")
+rc=$?
+set -e
+if [[ $rc -ne 0 ]]; then
+  assert_eq "cursor stderr failure non-zero" "nonzero" "nonzero"
+else
+  assert_eq "cursor stderr failure non-zero" "0" "nonzero"
+fi
+assert_contains "cursor stderr reason surfaces" \
+  "$(cat "$TMP/cursor-stderr-fail.err")" "ActionRequiredError"
+export PORCH_FAKE_CURSOR_MODE=ok
+
 echo "=== OpenCode 2 JSON text chunks ==="
 printf '%s\n' \
   '{"type":"text","part":{"type":"text","text":"Hel"}}' \
@@ -1455,6 +1526,13 @@ assert_le "backend stderr banner not duplicated" "$banner_count" "1"
 
 echo "=== Review ask input transport (offline) ==="
 if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/review_input_test.py" -v; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
+echo "=== Cursor CLI adapter (offline) ==="
+if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$TESTS_DIR/cursor_cli_test.py" -v; then
   PASS=$((PASS + 1))
 else
   FAIL=$((FAIL + 1))

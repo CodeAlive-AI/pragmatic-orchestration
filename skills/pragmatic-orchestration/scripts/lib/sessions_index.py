@@ -1,6 +1,7 @@
 """Private session-index storage and incremental synchronization.
 
-The sync registry covers Claude, Codex, Devin, OpenCode, Porch and agy stores.
+The sync registry covers Claude, Codex, Devin, OpenCode, Porch, agy and
+Cursor CLI stores.
 """
 from __future__ import annotations
 
@@ -560,7 +561,7 @@ class Unit:
 
 # Cheap per-harness discovery and SQLite snapshot state
 # Version 2 records stable native message anchors for revision-aware navigation.
-EXTRACTOR_VERSIONS = {'claude-code': '9', 'claude-desktop': '9', 'codex': '11', 'devin': '4', 'opencode': '5', 'porch': '8', 'agy': '6'}
+EXTRACTOR_VERSIONS = {'claude-code': '9', 'claude-desktop': '9', 'codex': '11', 'devin': '4', 'opencode': '5', 'porch': '8', 'agy': '6', 'cursor': '2'}
 
 
 def _revision(stat: tuple) -> str:
@@ -1021,8 +1022,37 @@ def units_agy(store: sessions.Store, prev: DiscoveryState) -> Iterator[Unit]:
     yield from units.values()
 
 
+def units_cursor(store: sessions.Store, prev: dict) -> Iterator[Unit]:
+    """CLI chats and ACP sessions: one unit per session directory."""
+    units: dict[str, Unit] = {}
+    for source in sessions.SOURCES['cursor'](store):
+        if not source.session_id or _inaccessible_source(store, source):
+            continue
+        path = str(source.key[0])
+        if Path(path).name.endswith(('-wal', '-shm', '-journal')):
+            # Volatile sqlite companions of store.db: -shm churns even on
+            # read-only access, so _db_revision (main + WAL) is the only
+            # stable fingerprint and these files are never tracked.
+            continue
+        key = source_key(path)
+        sid = source.session_id  # 'cursor-cli:<uuid>' | 'cursor-acp:<uuid>'
+        unit = units.setdefault(sid, Unit('cursor:' + sid, 'cursor', store.name))
+        if Path(path).suffix in ('.db', '.sqlite', '.sqlite3'):
+            # SQLite stores are fingerprinted by the _db_revision pair
+            # (main + WAL) and verified at the end of extraction.
+            unit.extra_databases.add(key)
+            unit.sources[key] = 'missing' if source.stat is None else _db_revision(Path(path))
+        else:
+            unit.sources[key] = _revision(source.stat)
+        unit.roles[key] = source.role
+        unit.stores[key] = store
+        unit.newest_mtime = max(unit.newest_mtime, source.stat[3])
+    yield from units.values()
+
+
 UNIT_BUILDERS = {'claude-code': units_claude, 'claude-desktop': units_desktop_code, 'codex': units_codex,
-                 'devin': units_devin, 'opencode': units_opencode_v2, 'porch': units_porch, 'agy': units_agy}
+                 'devin': units_devin, 'opencode': units_opencode_v2, 'porch': units_porch, 'agy': units_agy,
+                 'cursor': units_cursor}
 
 
 # Whole-session extraction and source snapshot verification
@@ -1480,9 +1510,49 @@ def _extract_claude_unit(unit: Unit):
 
 
 
+def extract_cursor_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[dict]]:
+    """One chat dir (meta.json + store.db) or ACP session dir under snapshot."""
+    store = next(iter(unit.stores.values()))
+    with FileSnapshot() as snapshot:
+        for key, fingerprint in unit.sources.items():
+            if fingerprint == 'missing':
+                continue
+            path = json.loads(key)[0]
+            if key in unit.extra_databases:
+                if _db_revision(Path(path)) != fingerprint:
+                    raise SourceChanged('source changed after discovery: ' + path)
+                continue
+            snapshot.add(Path(path))
+            if snapshot.revisions()[path] != fingerprint:
+                raise SourceChanged('source changed after discovery: ' + path)
+        try:
+            if unit.store == 'chats':
+                meta_key = next((key for key in unit.sources
+                                 if Path(json.loads(key)[0]).name == 'meta.json'), None)
+                if meta_key is None:
+                    raise SessionIndexError('CLI chat has no meta.json')
+                ref = sessions.cursor_cli_ref(store, Path(json.loads(meta_key)[0]).parent)
+            else:
+                db_key = next((key for key in unit.sources
+                               if Path(json.loads(key)[0]).name == 'store.db'), None)
+                if db_key is None:
+                    raise SessionIndexError('ACP session has no store.db')
+                ref = sessions.cursor_acp_ref(store, Path(json.loads(db_key)[0]))
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, json.JSONDecodeError) as exc:
+            raise SessionIndexError(f'cursor session unreadable: {exc}') from exc
+        if ref.harness + ':' + str(ref.extra.get('native_id') or ref.session_id) != unit.session_key:
+            raise SessionIndexError('session identity changed during extraction')
+        result = extract_session(store, ref, snapshot.revisions())
+        snapshot.verify()
+        _verify_extra_databases(unit)
+        return result
+
+
 def extract_unit(unit: Unit) -> tuple[dict, list[dict], list[dict], list[dict]]:
     if unit.harness == 'agy':
         return extract_agy_unit(unit)
+    if unit.harness == 'cursor':
+        return extract_cursor_unit(unit)
     if unit.harness in ('porch', 'claude-desktop') or (unit.harness == 'opencode' and not any(k.startswith('session:') for k in unit.sources)):
         return extract_file_unit(unit)
     if unit.harness == 'codex':
@@ -1699,6 +1769,10 @@ def _restore_known_sources(conn, previous_details, units, roots, failed_sources,
             path = Path(json.loads(key)[0])
         except (ValueError, IndexError, TypeError):
             continue
+        if harness == 'cursor' and path.name.endswith(('-wal', '-shm', '-journal')):
+            # Companion files of store.db are covered by the db's
+            # _db_revision fingerprint, never tracked as own sources.
+            continue
         if not restore_inside_root and any(harness == root_harness and path.is_relative_to(root) for root_harness, root in roots):
             continue
         errors_found = []
@@ -1754,6 +1828,10 @@ def _store_builder(harness, store):
         return None
     if harness == 'opencode' and store.kind != 'sqlite':
         return units_opencode_files
+    if harness == 'cursor':
+        # Only the CLI chats and ACP session stores are indexed; the desktop
+        # IDE dbs (globalStorage, workspaceStorage) are not.
+        return units_cursor if store.kind == 'session_dirs' else None
     return UNIT_BUILDERS[harness]
 
 
@@ -2017,6 +2095,14 @@ def _remove_obsolete_sessions(conn, old, units, selected, failed_sources, failed
         counts[session_key.split(':', 1)[0]]['deleted'] += 1
     if changed or result['deleted']:
         _gc_sources(conn, previous)
+    # Cursor store.db -wal/-shm/-journal companions are covered by the db's
+    # _db_revision fingerprint and are never tracked as sources. Version 1
+    # recorded some as own sources; sweep the unreferenced leftovers.
+    conn.execute("""DELETE FROM sources WHERE harness='cursor' AND NOT EXISTS
+                    (SELECT 1 FROM session_sources WHERE source_key=sources.source_key)
+                    AND (source_key LIKE '%-wal"]' OR source_key LIKE '%-shm"]'
+                         OR source_key LIKE '%-journal"]')""")
+    conn.commit()
 
 
 def sync(directory: Path, *, deadline: float | None = None, full: bool = False,

@@ -341,6 +341,32 @@ class IndexStorageTests(unittest.TestCase):
             graph=sessions_trace.trace_snapshot(conn,['porch:run_empty'],{'synced':True,'discovery_complete':True})
             self.assertEqual(next(n for n in graph['nodes'] if n['key']=='porch:run_empty')['task']['snippet'],'Worker task')
 
+    def test_cursor_cli_chat_is_indexed_and_found(self):
+        sid='aaaaaaaa-1111-2222-3333-444444444444'
+        root=Path(self.tmp.name)/'chats'
+        chat=root/'0123456789abcdef0123456789abcdef'/sid; chat.mkdir(parents=True)
+        (chat/'meta.json').write_text(json.dumps({'schemaVersion':1,'createdAtMs':0,
+            'hasConversation':True,'cwd':'/work/cursor-cli'}))
+        def field(n,data): return bytes([n*8+2,len(data)])+data
+        mid=bytes([1])*32; rid=bytes([2])*32
+        conn=sqlite3.connect(chat/'store.db')
+        conn.executescript('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);'
+                           'CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);')
+        conn.execute("INSERT INTO meta VALUES ('0', ?)",
+                     (json.dumps({'agentId':sid,'latestRootBlobId':rid.hex()}).encode().hex(),))
+        conn.executemany('INSERT INTO blobs VALUES (?, ?)',
+            [(mid.hex(),json.dumps({'role':'user','content':'<user_query>cursor needle phrase</user_query>'}).encode()),
+             (rid.hex(),field(1,mid))])
+        conn.commit(); conn.close()
+        store=sessions.Store('cursor','chats',root,'session_dirs')
+        with patch.object(sessions,'stores_for',side_effect=lambda h:[store] if h=='cursor' else []):
+            result=index.sync(self.directory,harnesses=['cursor'])
+        self.assertEqual(result['cursor']['extracted'],1)
+        with contextlib.closing(index.open_reader(self.directory)) as conn:
+            hits,_=index.find_in_snapshot(conn,['cursor needle phrase'],kind='prompt')
+            self.assertEqual(len(hits),1)
+            self.assertIn(sid,str(hits[0]))
+
     def test_prefixed_native_title_uses_prompt_and_does_not_index_prefix_as_title(self):
         contract=(Path(index.__file__).resolve().parents[2]/'prompts'/'delegate-executor.txt').read_text()
         prefix=sessions.executor_prefix()

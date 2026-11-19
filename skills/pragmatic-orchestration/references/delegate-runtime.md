@@ -327,6 +327,7 @@ Steerable runs always retain the private service registry and protocol artifacts
 | Grok Build | `queue_next_turn` through concurrent ACP prompt FIFO | Cancel-and-send using `sendNow` and its own prompt id |
 | Devin CLI | `same_turn` through concurrent ACP `session/prompt` merge | Cancel-and-send through `session/cancel` (stopReason `cancelled`) |
 | Antigravity CLI | `same_turn` through concurrent ACP `session/prompt` injection | Cancel-and-send through `session/cancel` (stopReason `cancelled`) |
+| Cursor CLI | `queue_next_turn`: a new `cursor-agent --resume <session_id>` process after the current turn | Rejected; no downgrade |
 
 OpenCode replacement requires both a successful interrupt and confirmation of idle
 through `/api/session/active`. An unsuccessful or unresolved stop fails the run and

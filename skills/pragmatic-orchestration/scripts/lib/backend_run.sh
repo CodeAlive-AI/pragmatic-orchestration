@@ -186,6 +186,11 @@ else
             MODEL="${AGY_MODEL:-$MODEL}"
             EFFORT="${AGY_EFFORT:-$EFFORT}"
             ;;
+        cursor-cli)
+            # Empty stays empty: an explicit model is refused on the Free tier,
+            # and the account default (Auto) is selected by omitting --model.
+            MODEL="${CURSOR_MODEL:-$MODEL}"
+            ;;
     esac
     BIN=""
 fi
@@ -612,6 +617,24 @@ build_cmd_agy() {
     fi
 }
 
+build_cmd_cursor() {
+    # Prompt on stdin, never as a positional argument. Review uses --mode plan,
+    # which blocks edit and shell writes in print mode. --mode ask is refused
+    # on the Free tier, and --sandbox enabled does not block writes. Delegate
+    # adds --force and does not pass a mode. --model is omitted when empty so
+    # the account default (Auto) is used.
+    CMD=("$BIN" -p --trust --output-format stream-json --stream-partial-output)
+    if [[ "$ACCESS_POLICY" == "readonly" ]]; then
+        CMD+=(--mode plan)
+    else
+        CMD+=(--force)
+    fi
+    if [[ -n "$MODEL" ]]; then
+        CMD+=(--model "$MODEL")
+    fi
+    CMD+=(--workspace "$PWD")
+}
+
 case "$BACKEND" in
     codex-cli)   build_cmd_codex ;;
     claude-code) build_cmd_claude ;;
@@ -620,7 +643,25 @@ case "$BACKEND" in
     grok-build)  build_cmd_grok ;;
     devin-cli)   build_cmd_devin ;;
     antigravity-cli) build_cmd_agy ;;
+    cursor-cli)  build_cmd_cursor ;;
 esac
+
+# Prepare temp files
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/porch-backend.XXXXXX")"
+cleanup_backend() {
+    rm -rf "$TMP_DIR"
+    [[ -z "$RUNTIME_SETTINGS_FILE" ]] || rm -f "$RUNTIME_SETTINGS_FILE"
+}
+trap cleanup_backend EXIT
+
+if [[ "$BACKEND" == "cursor-cli" ]]; then
+    # cursor-agent persists --model into cli-config.json even when the run
+    # fails. Give every run an isolated CURSOR_CONFIG_DIR seeded from the
+    # user's real config, so the default model is never rewritten as a side
+    # effect of a porch run (one-shot, review or delegate).
+    CURSOR_CONFIG_DIR="$(python3 "$LIB_DIR/cursor_config.py" --root "$TMP_DIR/cursor-config")"
+    export CURSOR_CONFIG_DIR
+fi
 
 # Argv dump mode for tests — exact safety properties without executing
 if [[ -n "${PORCH_DUMP_ARGV:-}" ]]; then
@@ -641,6 +682,8 @@ obj = {
     "model": os.environ["MODEL"],
     "argv": argv,
 }
+if os.environ.get("CURSOR_CONFIG_DIR"):
+    obj["env"] = {"CURSOR_CONFIG_DIR": os.environ["CURSOR_CONFIG_DIR"]}
 with open(os.environ["DUMP_ARGV_PATH"], "w") as f:
     json.dump(obj, f)
     f.write("\n")
@@ -648,14 +691,6 @@ with open(os.environ["DUMP_ARGV_PATH"], "w") as f:
     [[ -z "$RUNTIME_SETTINGS_FILE" ]] || rm -f "$RUNTIME_SETTINGS_FILE"
     exit $EXIT_OK
 fi
-
-# Prepare temp files
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/porch-backend.XXXXXX")"
-cleanup_backend() {
-    rm -rf "$TMP_DIR"
-    [[ -z "$RUNTIME_SETTINGS_FILE" ]] || rm -f "$RUNTIME_SETTINGS_FILE"
-}
-trap cleanup_backend EXIT
 
 RAW_STREAM="$TMP_DIR/raw.stream"
 NORM_STREAM="$TMP_DIR/normalized.jsonl"
@@ -934,6 +969,73 @@ with open(sys.argv[2], "w", encoding="utf-8") as f:
             else
                 echo "agy CLI missing" >"$BACKEND_ERR"
                 exit_code=4
+            fi
+            ;;
+        cursor-cli)
+            run_streamed "cursor-cli" "$PROMPT_PATH" "${CMD[@]}"
+            exit_code=$BACKEND_RC
+            # result.result is authoritative. is_error or a non-success subtype
+            # fails the run even when cursor-agent exits 0. Do not scrape a
+            # Claude-shaped content_block_delta fallback out of the raw stream.
+            cursor_is_error=0
+            if [[ -s "$NORM_STREAM" ]]; then
+                if python3 -c '
+import json,sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    line=line.strip()
+    if not line: continue
+    try: o=json.loads(line)
+    except Exception: continue
+    if o.get("type")=="run_failed":
+        sys.exit(0)
+sys.exit(1)
+' "$NORM_STREAM" 2>/dev/null; then
+                    cursor_is_error=1
+                fi
+                python3 -c '
+import sys
+sys.path.insert(0, sys.argv[3])
+from events import assemble_final_text, PorchEvent
+import json
+evts=[]
+for line in open(sys.argv[1], encoding="utf-8"):
+    line=line.strip()
+    if not line: continue
+    try:
+        o=json.loads(line)
+        if o.get("type")=="run_failed":
+            continue
+        evts.append(PorchEvent.from_dict(o))
+    except Exception:
+        continue
+text = assemble_final_text(evts)
+if text:
+    open(sys.argv[2],"w",encoding="utf-8").write(text)
+' "$NORM_STREAM" "$FINAL_TEXT" "$LIB_DIR" 2>/dev/null || true
+            elif [[ -s "$RAW_STREAM" ]]; then
+                python3 "$LIB_DIR/normalize_stream.py" \
+                    --backend cursor-cli --agent-id "$AGENT_ID" \
+                    --input "$RAW_STREAM" --extract-text --text-out "$FINAL_TEXT" \
+                    --no-validate >/dev/null 2>/dev/null || true
+                if python3 -c '
+import json,sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    line=line.strip()
+    if not line: continue
+    try: o=json.loads(line)
+    except Exception: continue
+    if o.get("type")!="result":
+        continue
+    subtype=o.get("subtype") or "success"
+    if o.get("is_error") or subtype!="success":
+        sys.exit(0)
+sys.exit(1)
+' "$RAW_STREAM" 2>/dev/null; then
+                    cursor_is_error=1
+                fi
+            fi
+            if [[ "$cursor_is_error" -eq 1 && "$exit_code" -eq 0 ]]; then
+                exit_code=1
             fi
             ;;
     esac

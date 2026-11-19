@@ -13,6 +13,7 @@ import tempfile
 import time
 import tracemalloc
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1009,6 +1010,254 @@ class CursorACPTests(FixtureMixin, unittest.TestCase):
         self.assertFalse(sessions.coverage_summary([store], 1, 0, stats)["scan_complete"])
 
 
+class DateFilterTests(unittest.TestCase):
+    """--since/--until apply to every harness through SessionRef.matches."""
+
+    def ref(self, **kw):
+        return sessions.SessionRef("codex", "sessions", "s", **kw)
+
+    def test_since_and_until_use_known_timestamps(self):
+        # Date-only bounds are local midnight. Keep fixtures a full day away
+        # from that midnight so the assertions do not depend on the host offset.
+        since = sessions.parse_time_bound("2026-11-19")
+        until = sessions.parse_time_bound("2024-06-01")
+        created_only = self.ref(created="2024-01-01T00:00:00Z")
+        undated = self.ref()
+        spanned = self.ref(created="2024-01-01T00:00:00Z", updated="2026-11-20T12:00:00Z")
+        fresh = self.ref(created="2026-11-20T12:00:00Z")
+        self.assertFalse(created_only.matches(None, since, None))
+        self.assertFalse(undated.matches(None, since, None))
+        self.assertTrue(spanned.matches(None, since, None))
+        self.assertTrue(fresh.matches(None, since, None))
+        self.assertTrue(spanned.matches(None, None, until))
+        self.assertFalse(fresh.matches(None, None, until))
+        self.assertTrue(undated.matches(None, None, until))
+        self.assertFalse(undated.matches(None, since, until))
+
+
+class CursorCLITests(FixtureMixin, unittest.TestCase):
+    def _field(self, number: int, data: bytes) -> bytes:
+        self.assertLess(len(data), 128)
+        self.assertLess(number, 16)
+        return bytes([number * 8 + 2, len(data)]) + data
+
+    def test_cli_chats_prompt_answer_and_unsupported(self):
+        sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        root = self.root / "chats"
+        created = int(datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        updated = created + 3_600_000
+        ids = [bytes([n]) * 32 for n in range(1, 10)]
+        root_id, system_id, info_id, query_id, answer_id, turn_id, reason_id, tool_id, step_id = ids
+        field = self._field
+        system = b'{"role":"system","content":"bootstrap"}'
+        info = b'{"role":"user","content":"<user_info>hidden</user_info>"}'
+        query = json.dumps({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "<system_reminder>hidden-reminder</system_reminder>"},
+                {"type": "text", "text": "<timestamp>t</timestamp>\n<user_query>\nask\n</user_query>"},
+            ],
+        }, ensure_ascii=False).encode()
+        answer = (
+            b'{"role":"assistant","content":[{"type":"reasoning","text":""},'
+            b'{"type":"text","text":"answer"},{"type":"mystery"}]}'
+        )
+        self.assertLess(len(answer), 128)
+        nodes = {
+            system_id: system,
+            info_id: info,
+            query_id: query,
+            answer_id: answer,
+            reason_id: field(3, field(1, b"because")),
+            tool_id: field(4, b"tool-payload"),
+            step_id: field(1, field(1, b"answer-from-step")),
+            turn_id: field(1, field(2, reason_id) + field(2, tool_id) + field(2, step_id)),
+            root_id: (field(1, system_id) + field(1, info_id) + field(1, query_id)
+                      + field(1, answer_id) + field(8, turn_id)),
+        }
+        workspace = "0123456789abcdef0123456789abcdef"
+        folder = root / workspace / sid
+        folder.mkdir(parents=True)
+        write_json(folder / "meta.json", {
+            "schemaVersion": 1, "createdAtMs": created, "updatedAtMs": updated,
+            "hasConversation": True, "cwd": "/work/cli",
+        })
+        db = folder / "store.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+            "CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);"
+        )
+        header = {"agentId": sid, "latestRootBlobId": root_id.hex(), "name": "CLI fixture"}
+        conn.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps(header).encode().hex(),))
+        conn.executemany("INSERT INTO blobs VALUES (?, ?)", [(key.hex(), value) for key, value in nodes.items()])
+        conn.commit()
+        conn.close()
+        empty_id = "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"
+        write_json(root / workspace / empty_id / "meta.json", {
+            "schemaVersion": 1, "createdAtMs": created, "cwd": "/work/empty", "hasConversation": False,
+        })
+        old_id = "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee"
+        write_json(root / workspace / old_id / "meta.json", {
+            "schemaVersion": 1, "createdAtMs": 1704067200000, "cwd": "/work/old",
+            "hasConversation": False,
+        })
+        write_json(root / workspace / "dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee" / "meta.json",
+                   {"schemaVersion": 99})
+        store = sessions.Store("cursor", "chats", root, "session_dirs")
+        refs = {ref.session_id: ref for ref in sessions.cursor_iter_sessions(store)}
+        self.assertEqual(set(refs), {
+            "cursor-cli:" + sid, "cursor-cli:" + empty_id, "cursor-cli:" + old_id,
+        })
+        self.assertEqual(store.status, "ok")
+        self.assertGreaterEqual(store.walk_stats.get("unreadable_dirs", 0), 1)
+        good = refs["cursor-cli:" + sid]
+        self.assertEqual(good.title, "CLI fixture")
+        self.assertEqual(good.cwd, "/work/cli")
+        self.assertEqual(good.store, "chats")
+        stats: dict[str, int] = {}
+        fragments = list(sessions.cursor_iter_fragments(store, good, 400, stats))
+        visible = [(item["kind"], item["text"]) for item in fragments if item["kind"] in ("prompt", "assistant", "reasoning")]
+        self.assertEqual(visible, [("prompt", "ask"), ("reasoning", "because"), ("assistant", "answer")])
+        self.assertNotIn("answer-from-step", [item["text"] for item in fragments])
+        self.assertTrue(any(item["kind"] == "context" and "hidden" in item["text"] for item in fragments))
+        self.assertEqual(stats["unsupported_fragments"], 2)
+        self.assertEqual(list(sessions.cursor_iter_fragments(
+            store, refs["cursor-cli:" + empty_id], 400, {})), [])
+        since = sessions.parse_time_bound("2026-11-19")
+        kept = [ref.session_id for ref in refs.values() if ref.matches(None, since, None)]
+        self.assertCountEqual(kept, ["cursor-cli:" + sid, "cursor-cli:" + empty_id])
+        env = dict(os.environ, PORCH_HISTORY_ROOT_CURSOR=str(root), PYTHONDONTWRITEBYTECODE="1")
+        with patch.dict(os.environ, {"PORCH_HISTORY_ROOT_CURSOR": str(root)}):
+            override = sessions.stores_for("cursor")
+        self.assertEqual([item.name for item in override], ["chats"])
+        flat = self.root / "acp-one"
+        (flat / sid).mkdir(parents=True)
+        write_json(flat / sid / "meta.json", {"schemaVersion": 1, "cwd": "/work"})
+        with patch.dict(os.environ, {"PORCH_HISTORY_ROOT_CURSOR": str(flat)}):
+            self.assertEqual(sessions.stores_for("cursor")[0].name, "acp")
+        proc = subprocess.run(
+            [sys.executable, str(LIB / "sessions.py"), "show", "cursor:cursor-cli:" + sid],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        # Unsupported tool/unknown parts make the scan partial; the text is still emitted.
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("ask", proc.stdout)
+        self.assertIn("answer", proc.stdout)
+        self.assertNotIn("hidden", proc.stdout)
+        self.assertNotIn("\\\\n", proc.stdout)
+        self.assertNotIn("answer-from-step", proc.stdout)
+        proc = subprocess.run(
+            [sys.executable, str(LIB / "sessions.py"), "grep", "-a", "cursor", "ask"],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("ask", proc.stdout)
+        proc = subprocess.run(
+            [sys.executable, str(LIB / "sessions.py"), "list", "-a", "cursor", "--since", "2026-11-19"],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        listed = [json.loads(line)["session_id"] for line in proc.stdout.splitlines()
+                  if line.startswith("{") and '"session_id"' in line]
+        self.assertIn("cursor-cli:" + sid, listed)
+        self.assertNotIn("cursor-cli:" + old_id, listed)
+
+    def test_cli_chats_tool_calls_and_config_root_override(self):
+        sid = "aaaaaaaa-1111-2222-3333-444444444444"
+        root = self.root / "chats"
+        created = int(datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        field = self._field
+        call_id = "call-abc-0\nfc_def_0"
+        ids = [bytes([n]) * 32 for n in range(1, 6)]
+        root_id, query_id, answer_id, result_id, step_id = ids
+        query = json.dumps({"role": "user", "content": "<user_query>run ls</user_query>"}).encode()
+        answer = json.dumps({"role": "assistant", "content": [
+            {"type": "tool-call", "toolCallId": call_id, "toolName": "Shell",
+             "args": {"command": "ls"}},
+            {"type": "text", "text": "done"}]}).encode()
+        result = json.dumps({"role": "tool", "content": [
+            {"type": "tool-result", "toolCallId": call_id, "toolName": "Shell",
+             "result": "x.txt\n"}]}).encode()
+        # The protobuf turn step for the same call (field 2, call id at 57):
+        # covered by JSON, so it must NOT count as unsupported.
+        # Field 57's wire key (57<<3|2 = 458) needs a two-byte varint.
+        tool_record = bytes([458 & 127 | 128, 458 >> 7, len(call_id)]) + call_id.encode()
+        tool_step = field(2, tool_record)
+        turn_id = bytes([9]) * 32
+        nodes = {
+            query_id: query, answer_id: answer, result_id: result,
+            step_id: tool_step,
+            turn_id: field(1, field(2, step_id)),
+            root_id: (field(1, query_id) + field(1, answer_id)
+                      + field(1, result_id) + field(8, turn_id)),
+        }
+        workspace = "0123456789abcdef0123456789abcdef"
+        folder = root / workspace / sid
+        folder.mkdir(parents=True)
+        write_json(folder / "meta.json", {
+            "schemaVersion": 1, "createdAtMs": created, "hasConversation": True,
+            "cwd": "/work/tools"})
+        conn = sqlite3.connect(folder / "store.db")
+        conn.executescript(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+            "CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB);")
+        header = {"agentId": sid, "latestRootBlobId": root_id.hex()}
+        conn.execute("INSERT INTO meta VALUES ('0', ?)", (json.dumps(header).encode().hex(),))
+        conn.executemany("INSERT INTO blobs VALUES (?, ?)",
+                         [(k.hex(), v) for k, v in nodes.items()])
+        conn.commit()
+        conn.close()
+
+        store = sessions.Store("cursor", "chats", root, "session_dirs")
+        ref = next(iter(sessions.cursor_iter_sessions(store)))
+        stats: dict[str, int] = {}
+        fragments = list(sessions.cursor_iter_fragments(store, ref, 400, stats))
+        kinds = [f["kind"] for f in fragments]
+        self.assertEqual(kinds, ["prompt", "tool_call", "assistant", "tool_result"])
+        tool_call = fragments[1]
+        self.assertIn("Shell", tool_call["text"])
+        self.assertIn("ls", tool_call["text"])
+        self.assertIn("x.txt", fragments[3]["text"])
+        # Covered tool step: only the unknown shapes count as unsupported.
+        self.assertEqual(stats.get("unsupported_fragments", 0), 0)
+
+        env = dict(os.environ, PORCH_HISTORY_ROOT_CURSOR=str(root),
+                   PYTHONDONTWRITEBYTECODE="1")
+        proc = subprocess.run(
+            [sys.executable, str(LIB / "sessions.py"), "show", "--scope", "tools",
+             "cursor:cursor-cli:" + sid],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertIn("Shell", proc.stdout)
+        self.assertIn("x.txt", proc.stdout)
+        self.assertNotIn("run ls</user_query>", proc.stdout)
+
+        # PORCH_HISTORY_ROOT_CURSOR at the config root discovers chats/ and
+        # acp-sessions/ one level below it instead of silently missing them.
+        config_root = self.root / "config-root"
+        acp = config_root / "acp-sessions"
+        chats = config_root / "chats"
+        acp.mkdir(parents=True)
+        chats.mkdir(parents=True)
+        import shutil as _shutil
+        _shutil.copytree(root / workspace, chats / workspace)
+        acp_sid = "eeeeeeee-1111-2222-3333-444444444444"
+        write_json(acp / acp_sid / "meta.json", {"schemaVersion": 1, "cwd": "/work"})
+        with patch.dict(os.environ, {"PORCH_HISTORY_ROOT_CURSOR": str(config_root)}):
+            stores = sessions.stores_for("cursor")
+        self.assertEqual({s.name for s in stores}, {"chats", "acp"})
+        chats_store = next(s for s in stores if s.name == "chats")
+        self.assertEqual(chats_store.path, chats)
+        # A non-empty override matching no known layout fails explicitly.
+        junk = self.root / "junk-root"
+        (junk / "random").mkdir(parents=True)
+        with patch.dict(os.environ, {"PORCH_HISTORY_ROOT_CURSOR": str(junk)}):
+            stores = sessions.stores_for("cursor")
+        self.assertEqual(stores[0].status, "unavailable")
+        self.assertIn("Cursor layout", stores[0].error)
+
+
 class CodexIndexTests(FixtureMixin, unittest.TestCase):
     """Codex App/Desktop layers: state index, UI catalog, summaries, history."""
 
@@ -1957,6 +2206,9 @@ class WindowsPathTests(FixtureMixin, unittest.TestCase):
         cur = self._stores("cursor", env)
         self.assertEqual(cur[0].path,
                          self.root / "AppData" / "Roaming" / "Cursor" / "User" / "globalStorage" / "state.vscdb")
+        self.assertEqual([item.name for item in cur if item.name in ("acp", "chats")], ["acp", "chats"])
+        self.assertEqual(next(item.path for item in cur if item.name == "chats"),
+                         self.root / ".cursor" / "chats")
         cd = self._stores("claude-desktop", env)
         self.assertTrue(str(cd[0].path).startswith(appdata))
         dev = self._stores("devin", env)

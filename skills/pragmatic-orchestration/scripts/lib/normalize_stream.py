@@ -556,6 +556,86 @@ def normalize_agy(obj: Dict[str, Any]) -> tuple[str, Any]:
     return "event", typ or "agy"
 
 
+def _cursor_tool_name(tool_call: Any) -> str:
+    """createPlanToolCall -> createPlan. The first *ToolCall key is the name."""
+    if not isinstance(tool_call, dict):
+        return "tool"
+    for key in tool_call:
+        if isinstance(key, str) and key.endswith("ToolCall"):
+            return key[: -len("ToolCall")] or "tool"
+    return "tool"
+
+
+def normalize_cursor(obj: Dict[str, Any], state: Dict[str, Any] | None = None) -> tuple[str, Any]:
+    """Map `cursor-agent --output-format stream-json` NDJSON.
+
+    The terminal result.result string is the answer. is_error, or a subtype
+    other than success, is a failure even when the process exits 0. A missing
+    subtype is success. Assistant text is a delta and must not be concatenated
+    with result. Unknown types become progress so one new event cannot fail
+    the process. system/user/interaction_query never enter the answer.
+
+    With --stream-partial-output cursor-agent first streams per-token deltas
+    and then flushes the accumulated buffer as one full assistant message
+    (at turn end and around tool calls). The caller passes one ``state`` dict
+    per stream so the complete message emits only its unseen suffix instead
+    of duplicating the deltas.
+    """
+    typ = str(obj.get("type") or "event")
+    subtype = str(obj.get("subtype") or "")
+    if typ == "system":
+        return "progress", subtype or "system"
+    if typ == "user":
+        return "progress", "user"
+    if typ == "thinking":
+        text = obj.get("text") if isinstance(obj.get("text"), str) else ""
+        if subtype == "delta" and text:
+            return "thought", text
+        return "progress", subtype or "thinking"
+    if typ == "assistant":
+        message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+        parts = message.get("content") if isinstance(message.get("content"), list) else []
+        texts = [
+            part.get("text") for part in parts
+            if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str) and part.get("text")
+        ]
+        if texts:
+            text = "".join(texts)
+            if state is not None:
+                buffered = state.get("assistant_text") or ""
+                if buffered and text.startswith(buffered):
+                    # Complete-message flush of already-streamed deltas.
+                    state["assistant_text"] = ""
+                    text = text[len(buffered):]
+                    if not text:
+                        return "progress", "assistant"
+                else:
+                    state["assistant_text"] = buffered + text
+            return "text", text
+        return "progress", "assistant"
+    if typ == "tool_call":
+        name = _cursor_tool_name(obj.get("tool_call"))
+        if subtype == "completed":
+            return "tool_completed", name
+        return "tool_started", name
+    if typ == "interaction_query":
+        query = obj.get("query_type") or subtype or "interaction_query"
+        return "progress", str(query)
+    if typ == "result":
+        result_subtype = subtype or "success"
+        result = obj.get("result")
+        if obj.get("is_error") or result_subtype != "success":
+            detail = result if isinstance(result, str) and result.strip() else (result_subtype or "cursor result error")
+            return "error", detail
+        if isinstance(result, str):
+            return "result", result
+        return "progress", "result"
+    if typ == "error":
+        message = obj.get("error") or obj.get("message")
+        return "error", message if isinstance(message, str) and message else json.dumps(obj)
+    return "progress", typ
+
+
 def normalize_gemini(obj: Dict[str, Any]) -> tuple[str, Any]:
     """Gemini CLI typically emits plain text; JSON objects map when present."""
     if "_plain" in obj:
@@ -597,7 +677,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Normalize backend streams to porch JSONL")
     ap.add_argument("--backend", required=True, choices=[
         "codex-cli", "claude-code", "opencode", "gemini-cli", "grok-build",
-        "devin-cli", "antigravity-cli", "plain"
+        "devin-cli", "antigravity-cli", "cursor-cli", "plain"
     ])
     ap.add_argument("--agent-id", required=True)
     ap.add_argument("--model", default="")
@@ -667,6 +747,7 @@ def main() -> int:
     error_msg = ""
     final_result_text: Optional[str] = None  # non-empty authoritative only
     collected_for_final = []  # PorchEvent-like for assembly
+    cursor_state: Dict[str, Any] = {}  # per-stream dedup of assistant flushes
     rejected_count = 0
     rejected_types: Dict[str, int] = {}
     # Cap how many distinct unknown types we name on the bounded stderr signal.
@@ -732,6 +813,8 @@ def main() -> int:
                     stream_typ, data = normalize_devin(obj)
                 elif args.backend == "antigravity-cli":
                     stream_typ, data = normalize_agy(obj)
+                elif args.backend == "cursor-cli":
+                    stream_typ, data = normalize_cursor(obj, cursor_state)
                 elif args.backend == "gemini-cli":
                     stream_typ, data = normalize_gemini(obj)
                 else:

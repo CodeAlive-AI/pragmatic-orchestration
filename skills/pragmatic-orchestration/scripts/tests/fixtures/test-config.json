@@ -127,6 +127,20 @@
       "effort": "high",
       "role": "analyst",
       "label": "OpenCode Grok fallback"
+    },
+    "cursor": {
+      "enabled": false,
+      "backend": "cursor-cli",
+      "model": "",
+      "role": "analyst",
+      "label": "Cursor CLI (account default model)"
+    },
+    "cursor-grok-4.7": {
+      "enabled": false,
+      "backend": "cursor-cli",
+      "model": "grok-4.7",
+      "role": "analyst",
+      "label": "Cursor CLI (Grok 4.7)"
     }
   }
 }

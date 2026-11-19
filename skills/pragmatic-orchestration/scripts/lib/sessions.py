@@ -713,13 +713,40 @@ def stores_for(harness: str) -> list[Store]:
         ]
     if harness == "cursor":
         if ov:
-            return [Store(harness, "acp" if ov.is_dir() else "custom", ov,
-                          "session_dirs" if ov.is_dir() else "sqlite")]
+            # One directory replaces every Cursor store. A two-level
+            # <workspace-hash>/<uuid>/ tree is the CLI chats layout; a flat
+            # <uuid>/ tree stays the ACP store the existing override tests use.
+            if ov.is_dir() and _cursor_chats_layout(ov):
+                return [Store(harness, "chats", ov, "session_dirs")]
+            if ov.is_dir() and ((ov / "chats").is_dir() or (ov / "acp-sessions").is_dir()):
+                # The Cursor config root itself (~/.cursor or CURSOR_CONFIG_DIR):
+                # its stores live one level below it.
+                out = []
+                if (ov / "acp-sessions").is_dir():
+                    out.append(Store(harness, "acp", ov / "acp-sessions", "session_dirs"))
+                if (ov / "chats").is_dir():
+                    out.append(Store(harness, "chats", ov / "chats", "session_dirs"))
+                return out
+            store = Store(harness, "acp" if ov.is_dir() else "custom", ov,
+                          "session_dirs" if ov.is_dir() else "sqlite")
+            if ov.is_dir() and any(ov.iterdir()) and not _cursor_acp_layout(ov):
+                # An override that silently matches nothing is a data-loss trap:
+                # name the layouts porch recognizes instead of reporting zero
+                # sessions.
+                store.status = "unavailable"
+                store.error = (
+                    "PORCH_HISTORY_ROOT_CURSOR does not match any Cursor layout: "
+                    "expected a chats root (<32-hex>/<uuid>/meta.json), an "
+                    "acp-sessions root (<uuid>/store.db), or a config root "
+                    "containing chats/ or acp-sessions/"
+                )
+            return [store]
         base = (_win_appdata() / "Cursor" / "User" if IS_WINDOWS
                 else HOME / ".config" / "Cursor" / "User" if not IS_MACOS
                 else HOME / "Library" / "Application Support" / "Cursor" / "User")
         out = [Store(harness, "globalStorage", base / "globalStorage" / "state.vscdb", "sqlite")]
         out.append(Store(harness, "acp", HOME / ".cursor" / "acp-sessions", "session_dirs"))
+        out.append(Store(harness, "chats", HOME / ".cursor" / "chats", "session_dirs"))
         ws = base / "workspaceStorage"
         if ws.is_dir():
             for sub in sorted(ws.iterdir()):
@@ -796,7 +823,7 @@ def _store_sources(store: Store) -> Iterator[Source]:
         return
     # One traversal per store retains _walk's symlink and error semantics.
     for path in _walk(root, "*", store.walk_stats, include_dirs=False):
-        rel = path.relative_to(root).parts if h in ('opencode', 'agy', 'porch') else ()
+        rel = path.relative_to(root).parts if h in ('opencode', 'agy', 'porch', 'cursor') else ()
         role, sid = None, None
         if h == "claude-code" and path.suffix == ".jsonl":
             role, sid = "content", path.stem
@@ -829,6 +856,13 @@ def _store_sources(store: Store) -> Iterator[Source]:
             if len(rel) == 2 and path.name == "meta.json": role = "metadata"
             elif len(rel) == 2 and path.name == "final.txt": role = "content"
             elif len(rel) == 3 and rel[1] == "normalized" and path.suffix == ".jsonl": role = "content"
+        elif h == "cursor" and store.kind == "session_dirs":
+            # CLI chats <workspace-hash>/<chat-uuid>/{meta.json,store.db};
+            # ACP sessions <uuid>/... directly under the store root.
+            if len(rel) >= 3 and _CURSOR_CHAT_UUID.match(rel[1]):
+                role, sid = "content", "cursor-cli:" + rel[1]
+            elif len(rel) >= 2 and _CURSOR_CHAT_UUID.match(rel[0]):
+                role, sid = "content", "cursor-acp:" + rel[0]
         elif h not in ("claude-code", "codex", "claude-desktop", "opencode", "devin", "agy", "porch"):
             role = "content"
         if role:
@@ -904,10 +938,17 @@ class SessionRef:
     def matches(self, cwd: str | None, since: float | None, until: float | None) -> bool:
         if cwd and not (self.cwd and cwd in self.cwd):
             return False
+        # Interval overlap on the timestamps the store actually recorded.
+        # A missing bound is unknown, not "infinitely old" or "infinitely new":
+        # --since drops a session with no timestamp at all, and a created-only
+        # session is judged on that created time. --until drops a session only
+        # when every known timestamp is after the bound, so an undated session
+        # still passes an until-only filter.
         created, updated = ts_epoch(self.created), ts_epoch(self.updated)
-        if since and updated is not None and updated < since:
+        known = [stamp for stamp in (created, updated) if stamp is not None]
+        if since is not None and (not known or max(known) < since):
             return False
-        if until and created is not None and created > until:
+        if until is not None and known and min(known) > until:
             return False
         return True
 
@@ -3794,13 +3835,18 @@ def _cursor_acp_read(path: Path) -> tuple[dict[str, Any], dict[str, Any], list[t
         conn.close()
 
 
+def cursor_acp_ref(store: Store, db_path: Path) -> SessionRef:
+    """SessionRef for one <uuid>/store.db ACP session (index extraction)."""
+    sidecar, meta, _, _ = _cursor_acp_read(db_path)
+    sid = "cursor-acp:" + str(uuid.UUID(db_path.parent.name))
+    return SessionRef("cursor", "acp", sid, locator={"db": str(db_path), "table": "meta", "key": "0"},
+                      title=meta.get("name"), cwd=sidecar.get("cwd"), created=meta.get("createdAt"))
+
+
 def cursor_acp_sessions(store: Store) -> Iterator[SessionRef]:
     for path in sorted(store.path.glob("*/store.db")):
         try:
-            sidecar, meta, _, _ = _cursor_acp_read(path)
-            sid = "cursor-acp:" + str(uuid.UUID(path.parent.name))
-            yield SessionRef("cursor", "acp", sid, locator={"db": str(path), "table": "meta", "key": "0"},
-                             title=meta.get("name"), cwd=sidecar.get("cwd"), created=meta.get("createdAt"))
+            yield cursor_acp_ref(store, path)
         except (OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
             store.status, store.error = "unavailable", f"ACP store {path}: {exc}"
 
@@ -3820,6 +3866,419 @@ def cursor_acp_fragments(store: Store, ref: SessionRef, max_chars: int, stats: d
                    authorship="unknown" if kind == "prompt" else "agent", visible=True,
                    basis="Cursor ACP text projection", cwd=ref.cwd, max_chars=max_chars)
 
+
+# Cursor CLI chats are ~/.cursor/chats/<workspace-hash>/<uuid>/{meta.json,store.db}.
+# The SQLite envelope matches ACP (meta key '0' is hex JSON; blobs are protobuf),
+# but the graph does not: message bodies are JSON blobs, and assistant/reasoning
+# steps carry inline text rather than 32-byte blob ids. Do not send these files
+# through _cursor_acp_read — that reader rejects them as "invalid ACP blob id".
+_CURSOR_CHAT_UUID = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+# Cursor CLI groups chats as <32-hex workspace hash>/<uuid>/. ACP sessions are
+# <uuid>/ directly under acp-sessions, so a parent named acp-sessions must not
+# count as this layout. Pointing PORCH_HISTORY_ROOT_CURSOR at ~/.cursor is
+# neither layout: CLI chats are three levels down there.
+_CURSOR_WORKSPACE_HASH = re.compile(r"^[0-9a-fA-F]{32}$")
+_CURSOR_USER_QUERY = re.compile(r"<user_query>(.*?)</user_query>", re.DOTALL)
+
+
+def _cursor_chats_layout(path: Path) -> bool:
+    """True when path is <workspace-hash>/<chat-uuid>/meta.json, two levels down."""
+    if not path.is_dir():
+        return False
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if not child.is_dir() or child.is_symlink():
+            continue
+        try:
+            grands = list(child.iterdir())
+        except OSError:
+            continue
+        if not _CURSOR_WORKSPACE_HASH.match(child.name):
+            continue
+        for grand in grands:
+            if (grand.is_dir() and not grand.is_symlink()
+                    and _CURSOR_CHAT_UUID.match(grand.name)
+                    and (grand / "meta.json").is_file()):
+                return True
+    return False
+
+
+def _cursor_acp_layout(path: Path) -> bool:
+    """True when path holds flat ACP session dirs <uuid>/{meta.json,store.db}."""
+    if not path.is_dir():
+        return False
+    try:
+        children = list(path.iterdir())
+    except OSError:
+        return False
+    return any(
+        child.is_dir() and not child.is_symlink() and _CURSOR_CHAT_UUID.match(child.name)
+        for child in children
+    )
+
+
+def _cursor_cli_user_text(text: str) -> tuple[str, str]:
+    """Split a CLI user message into a real prompt or hidden wrapper context.
+
+    The CLI stores the typed request inside <user_query> and surrounds it with
+    injected <user_info>, system-reminder and timestamp blocks. A user message
+    with no wrapper is the prompt itself.
+    """
+    found = _CURSOR_USER_QUERY.search(text)
+    if found:
+        return "prompt", found.group(1).strip()
+    stripped = text.strip()
+    if (stripped.startswith("<user_info>")
+            or stripped.startswith("<system_reminder>")
+            or stripped.startswith("&lt;system_reminder>")
+            or (stripped.startswith("<timestamp>") and "<user_query>" not in text)):
+        return "context", text
+    if not stripped:
+        return "context", text
+    return "prompt", text
+
+
+def _cursor_cli_inline_text(payload: bytes) -> str | None:
+    """Text from an inline step message {field 1: utf-8 text}. Not a blob id."""
+    try:
+        fields = _proto_fields(payload)
+    except ValueError:
+        return None
+    chunks = fields.get(1) or []
+    if len(chunks) != 1:
+        return None
+    try:
+        text = chunks[0].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if not text or "\x00" in text:
+        return None
+    return text
+
+
+def _cursor_cli_turn_fields(payload: bytes) -> dict[int, list[bytes]]:
+    """The turn blob's message. It may be the blob itself or its only nested field."""
+    fields = _proto_fields(payload)
+    if any(len(item) == 32 for item in fields.get(2, [])):
+        return fields
+    if len(fields) == 1:
+        only = next(iter(fields.values()))
+        if len(only) == 1:
+            try:
+                return _proto_fields(only[0])
+            except ValueError:
+                return fields
+    return fields
+
+
+def _cursor_cli_tool_call_id(payload: bytes) -> str | None:
+    """The 'call-...\\nfc_...' id a turn-step tool record carries at field 57."""
+    try:
+        ids = _proto_fields(payload).get(57) or []
+        return ids[0].decode("utf-8") if ids else None
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def _cursor_cli_sidecar(meta_path: Path) -> dict[str, Any]:
+    if meta_path.is_symlink():
+        raise ValueError("symlinked CLI metadata")
+    sidecar = json.loads(meta_path.read_text(encoding="utf-8"))
+    if not isinstance(sidecar, dict) or sidecar.get("schemaVersion") != 1:
+        raise ValueError("unsupported CLI metadata version")
+    return sidecar
+
+
+def _cursor_cli_ref(store: Store, chat_dir: Path, sidecar: dict[str, Any], title: str | None) -> SessionRef:
+    sid = "cursor-cli:" + str(uuid.UUID(chat_dir.name))
+    db = chat_dir / "store.db"
+    locator: dict[str, Any] = {"dir": str(chat_dir), "meta": str(chat_dir / "meta.json")}
+    if db.is_file() and not db.is_symlink():
+        locator["db"] = str(db)
+    cwd = sidecar.get("cwd") if isinstance(sidecar.get("cwd"), str) else None
+    return SessionRef(
+        "cursor", store.name, sid, locator=locator, title=title, cwd=cwd,
+        created=sidecar.get("createdAtMs"), updated=sidecar.get("updatedAtMs"),
+        extra={
+            "has_conversation": bool(sidecar.get("hasConversation")),
+            "workspace": chat_dir.parent.name,
+        },
+    )
+
+
+def _cursor_cli_title(db: Path, sidecar_agent: str) -> str | None:
+    """Name from meta key 0. Failure leaves the session listable from the sidecar."""
+    if not db.is_file() or db.is_symlink():
+        return None
+    try:
+        conn = open_sqlite_ro(db)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='0'").fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row or not isinstance(row[0], str):
+        return None
+    try:
+        metadata = json.loads(bytes.fromhex(row[0]))
+    except (ValueError, json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    if metadata.get("agentId") and str(metadata.get("agentId")) != sidecar_agent:
+        return None
+    name = metadata.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def cursor_cli_ref(store: Store, chat_dir: Path) -> SessionRef:
+    """SessionRef for one <workspace-hash>/<uuid>/ chat dir (index extraction)."""
+    sidecar = _cursor_cli_sidecar(chat_dir / "meta.json")
+    title = _cursor_cli_title(chat_dir / "store.db", chat_dir.name)
+    return _cursor_cli_ref(store, chat_dir, sidecar, title)
+
+
+def cursor_cli_sessions(store: Store) -> Iterator[SessionRef]:
+    if not store.path.is_dir():
+        store.status = "missing"
+        return
+    try:
+        metas = sorted(store.path.glob("*/*/meta.json"))
+    except OSError as exc:
+        store.status, store.error = "unavailable", str(exc)
+        return
+    failures: list[str] = []
+    yielded = 0
+    for meta_path in metas:
+        chat_dir = meta_path.parent
+        if not _CURSOR_CHAT_UUID.match(chat_dir.name):
+            continue
+        if chat_dir.is_symlink() or chat_dir.parent.is_symlink():
+            failures.append(f"{chat_dir}: symlink")
+            continue
+        try:
+            yield cursor_cli_ref(store, chat_dir)
+            yielded += 1
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            failures.append(f"{meta_path}: {exc}")
+    if failures and yielded == 0:
+        store.status, store.error = "unavailable", "; ".join(failures[:3])
+    elif failures:
+        # One bad chat must not hide the rest or mark the whole store unreadable.
+        store.walk_stats["unreadable_dirs"] = store.walk_stats.get("unreadable_dirs", 0) + len(failures)
+        store.error = "; ".join(failures[:3])
+
+
+def _cursor_cli_read(chat_dir: Path) -> tuple[list[tuple[str, str, str, str]], int]:
+    """Return (kind, text, blob_id, basis) rows and an unsupported-fragment count.
+
+    JSON message blobs on the root are the conversation. System text and wrapper
+    user text are context. Assistant text comes from JSON so the inline assistant
+    step is not emitted again. Reasoning is taken from the turn step only when
+    the JSON reasoning text is empty. Tool calls and results are the JSON
+    tool-call / tool-result parts; a turn-step tool record whose call id never
+    appeared in JSON counts as unsupported instead of dropping silently.
+    """
+    if chat_dir.is_symlink() or chat_dir.parent.is_symlink():
+        raise ValueError("symlinked CLI session path")
+    session_id = str(uuid.UUID(chat_dir.name))
+    db = chat_dir / "store.db"
+    if not db.is_file():
+        return [], 0
+    if db.is_symlink():
+        raise ValueError("symlinked CLI store")
+    conn = open_sqlite_ro(db)
+    try:
+        conn.execute("BEGIN")
+        row = conn.execute("SELECT value FROM meta WHERE key='0'").fetchone()
+        if not row or not isinstance(row[0], str):
+            raise ValueError("missing CLI root")
+        metadata = json.loads(bytes.fromhex(row[0]))
+        if not isinstance(metadata, dict):
+            raise ValueError("invalid CLI root metadata")
+        if str(uuid.UUID(str(metadata.get("agentId")))) != session_id:
+            raise ValueError("CLI session identity mismatch")
+        root_id = bytes.fromhex(str(metadata.get("latestRootBlobId")))
+
+        def blob(key: bytes) -> bytes:
+            if len(key) != 32:
+                raise ValueError("invalid CLI blob id")
+            found = conn.execute("SELECT data FROM blobs WHERE id=?", (key.hex(),)).fetchone()
+            if not found or not isinstance(found[0], bytes):
+                raise ValueError("missing CLI blob")
+            return found[0]
+
+        root = _proto_fields(blob(root_id))
+        records: list[tuple[str, str, str, str]] = []
+        omitted = 0
+        json_tool_ids: set[str] = set()
+        last_assistant: int | None = None
+        # None: the latest assistant message had no reasoning part.
+        # True: its reasoning text was empty. False: JSON already carried the text.
+        latest_reasoning_empty: bool | None = None
+        for message_id in root.get(1, []):
+            payload = blob(message_id)
+            if payload[:1:] not in (b"{", b"["):
+                omitted += 1
+                continue
+            try:
+                message = json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                omitted += 1
+                continue
+            if not isinstance(message, dict):
+                omitted += 1
+                continue
+            role = message.get("role")
+            key = message_id.hex()
+            content = message.get("content")
+            if role == "system":
+                text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+                records.append(("context", text, key, "CLI system message"))
+                continue
+            if role == "user":
+                # A list of parts is the live shape. json.dumps would turn the
+                # newlines inside <user_query> into the two characters \n.
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    chunks: list[str] = []
+                    for part in content:
+                        if isinstance(part, str):
+                            chunks.append(part)
+                        elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                            chunks.append(part["text"])
+                        elif part not in (None, "", {}):
+                            omitted += 1
+                    text = "\n".join(chunks)
+                else:
+                    omitted += 1
+                    continue
+                kind, extracted = _cursor_cli_user_text(text)
+                basis = ("text inside <user_query>" if kind == "prompt" and extracted != text.strip()
+                         else "CLI user message" if kind == "prompt"
+                         else "CLI injected user wrapper")
+                records.append((kind, extracted, key, basis))
+                continue
+            if role == "tool":
+                # One tool-result part per part entry; the protobuf turn step
+                # for the same call is skipped below (JSON is authoritative).
+                parts = content if isinstance(content, list) else [{"type": "tool-result", "result": content}]
+                for part in parts:
+                    if not isinstance(part, dict) or part.get("type") != "tool-result":
+                        omitted += 1
+                        continue
+                    call_id = part.get("toolCallId")
+                    if isinstance(call_id, str):
+                        json_tool_ids.add(call_id)
+                    result = part.get("result")
+                    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+                    name = part.get("toolName")
+                    records.append(("tool_result", text, key,
+                                    "CLI tool-result" + (f" ({name})" if isinstance(name, str) and name else "")))
+                continue
+            if role != "assistant":
+                omitted += 1
+                continue
+            parts = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            texts: list[str] = []
+            message_reasoning_empty: bool | None = None
+            for part in parts:
+                if not isinstance(part, dict):
+                    omitted += 1
+                    continue
+                part_type = part.get("type")
+                part_text = part.get("text") if isinstance(part.get("text"), str) else ""
+                if part_type == "text" and part_text:
+                    texts.append(part_text)
+                elif part_type == "tool-call":
+                    call_id = part.get("toolCallId")
+                    if isinstance(call_id, str):
+                        json_tool_ids.add(call_id)
+                    records.append(("tool_call", json.dumps(
+                        {"name": part.get("toolName"), "input": part.get("args")},
+                        ensure_ascii=False), key, "CLI tool-call part"))
+                elif part_type == "reasoning":
+                    if part_text.strip():
+                        message_reasoning_empty = False
+                        records.append(("reasoning", part_text, key, "CLI JSON reasoning text"))
+                    elif message_reasoning_empty is None:
+                        message_reasoning_empty = True
+                elif part_type == "text":
+                    continue
+                else:
+                    omitted += 1
+            latest_reasoning_empty = message_reasoning_empty
+            if texts:
+                records.append(("assistant", "".join(texts), key, "CLI assistant text"))
+                last_assistant = len(records) - 1
+        step_reasoning: list[tuple[str, str, str, str]] = []
+        for turn_id in root.get(8, []):
+            turn = _cursor_cli_turn_fields(blob(turn_id))
+            for step_id in turn.get(2, []):
+                if len(step_id) != 32:
+                    omitted += 1
+                    continue
+                step = _proto_fields(blob(step_id))
+                reasoning_payloads = step.get(3) or []
+                assistant_payloads = step.get(1) or []
+                if reasoning_payloads:
+                    decoded = _cursor_cli_inline_text(reasoning_payloads[0])
+                    if latest_reasoning_empty is False:
+                        omitted += 1
+                    elif decoded and decoded.strip():
+                        step_reasoning.append((
+                            "reasoning", decoded, step_id.hex(),
+                            "CLI turn-step reasoning (JSON reasoning text empty)",
+                        ))
+                    else:
+                        omitted += 1
+                    continue
+                if assistant_payloads and _cursor_cli_inline_text(assistant_payloads[0]) is not None:
+                    # The same answer is already on the JSON message. Do not emit it twice.
+                    continue
+                tool_payloads = step.get(2) or []
+                if tool_payloads and _cursor_cli_tool_call_id(tool_payloads[0]) in json_tool_ids:
+                    # The call is already projected from the JSON message layer.
+                    continue
+                omitted += 1
+        if step_reasoning:
+            insert_at = last_assistant if last_assistant is not None else len(records)
+            records[insert_at:insert_at] = step_reasoning
+        return records, omitted
+    finally:
+        conn.close()
+
+
+def cursor_cli_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
+    chat_dir = Path(ref.locator.get("dir") or Path(ref.locator.get("meta", "")).parent)
+    try:
+        records, omitted = _cursor_cli_read(chat_dir)
+    except (OSError, sqlite3.Error, ValueError, TypeError, KeyError) as exc:
+        stats["unreadable"] = stats.get("unreadable", 0) + 1
+        store.error = f"CLI store {chat_dir}: {exc}"
+        return
+    stats["unsupported_fragments"] = stats.get("unsupported_fragments", 0) + omitted
+    db = ref.locator.get("db") or str(chat_dir / "store.db")
+    for seq, (kind, text_value, blob_id, basis) in enumerate(records, 1):
+        authorship = {"prompt": "human", "assistant": "agent", "reasoning": "agent",
+                      "tool_call": "agent", "tool_result": "system", "context": "system"}.get(kind, "unknown")
+        yield frag(
+            "cursor", store.name, ref.session_id, seq, kind, "cli." + kind,
+            {"db": db, "table": "blobs", "key": blob_id}, text=text_value,
+            authorship=authorship, visible=(kind in ("prompt", "assistant", "tool_call", "tool_result")),
+            basis=basis, cwd=ref.cwd, max_chars=max_chars,
+        )
+
+
 def _folder_uri_to_path(uri: Any) -> str | None:
     """'file:///Users/x/proj' -> '/Users/x/proj'; plain paths pass through."""
     if not isinstance(uri, str) or not uri:
@@ -3833,6 +4292,9 @@ def _folder_uri_to_path(uri: Any) -> str | None:
 def cursor_iter_sessions(store: Store) -> Iterator[SessionRef]:
     if store.name == "acp":
         yield from cursor_acp_sessions(store)
+        return
+    if store.name == "chats":
+        yield from cursor_cli_sessions(store)
         return
     try:
         conn = open_sqlite_ro(store.path)
@@ -3886,6 +4348,9 @@ def cursor_iter_sessions(store: Store) -> Iterator[SessionRef]:
 def cursor_iter_fragments(store: Store, ref: SessionRef, max_chars: int, stats: dict[str, int]) -> Iterator[dict[str, Any]]:
     if store.name == "acp":
         yield from cursor_acp_fragments(store, ref, max_chars, stats)
+        return
+    if store.name == "chats":
+        yield from cursor_cli_fragments(store, ref, max_chars, stats)
         return
     conn = open_sqlite_ro(store.path)
     try:
@@ -5466,6 +5931,14 @@ def fast_resolve(store: Store, query_id: str) -> SessionRef | None:
             if d.is_dir():
                 loc["dir"] = str(d)
             return SessionRef("claude-desktop", store.name, sid, locator=loc)
+    elif store.harness == "cursor" and store.name == "chats":
+        raw = query_id[len("cursor-cli:"):] if query_id.startswith("cursor-cli:") else query_id
+        if _CURSOR_CHAT_UUID.match(raw):
+            hits = [path for path in p.glob(f"*/{raw}/meta.json")
+                    if path.is_file() and not path.is_symlink()]
+            if len(hits) == 1:
+                return SessionRef("cursor", store.name, "cursor-cli:" + raw,
+                                  locator={"dir": str(hits[0].parent), "meta": str(hits[0])})
     elif store.harness == "cursor" and store.kind == "sqlite":
         try:
             conn = open_sqlite_ro(p)

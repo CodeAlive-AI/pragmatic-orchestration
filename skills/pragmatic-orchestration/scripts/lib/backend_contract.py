@@ -37,6 +37,7 @@ BACKEND_IDS = (
     "gemini-cli",
     "devin-cli",
     "antigravity-cli",
+    "cursor-cli",
 )
 
 BACKEND_BINS = {
@@ -47,6 +48,7 @@ BACKEND_BINS = {
     "gemini-cli": "gemini",
     "devin-cli": "devin",
     "antigravity-cli": "agy",
+    "cursor-cli": "cursor-agent",
 }
 
 BIN_ENV = {
@@ -57,6 +59,7 @@ BIN_ENV = {
     "gemini-cli": "PORCH_BIN_GEMINI",
     "devin-cli": "PORCH_BIN_DEVIN",
     "antigravity-cli": "PORCH_BIN_AGY",
+    "cursor-cli": "PORCH_BIN_CURSOR",
 }
 
 MODEL_ENV = {
@@ -67,6 +70,7 @@ MODEL_ENV = {
     "gemini-cli": "GEMINI_MODEL",
     "devin-cli": "DEVIN_MODEL",
     "antigravity-cli": "AGY_MODEL",
+    "cursor-cli": "CURSOR_MODEL",
 }
 
 EFFORT_ENV = {
@@ -249,6 +253,36 @@ _BACKEND_CAPS: Dict[str, BackendCapabilities] = {
             "--dangerously-skip-permissions; a concurrent session/prompt is "
             "injected into the running turn; interrupt is session/cancel then "
             "prompt. Model and thought_level are session config options."
+        ),
+    ),
+    "cursor-cli": BackendCapabilities(
+        backend="cursor-cli",
+        transport="stream-json",
+        oneshot_transport="stream-json",
+        steerable_transport="stream-json",
+        steerable=True,
+        steer_auto="queue_next_turn",
+        steer_queue="queue_next_turn",
+        steer_interrupt="",
+        live_queue=False,
+        oneshot=True,
+        supports_delegate=True,
+        final_text_rule="claude_result_over_deltas",
+        notes=(
+            "Binary is cursor-agent, never the bare agent name (that is Grok "
+            "Build on this machine). One-shot: cursor-agent -p --trust "
+            "--output-format stream-json --stream-partial-output, prompt on "
+            "stdin. Review adds --mode plan, which blocks edit and shell "
+            "writes; --mode ask is not used (refused on the Free tier) and "
+            "--sandbox enabled does not block writes. Delegate adds --force "
+            "and does not pass --mode plan. --model is passed only when the "
+            "profile or CURSOR_MODEL sets one; an empty model keeps the "
+            "account default (Auto). On the Free tier an explicit model, "
+            "including grok-4.7, is refused. The result.result text is "
+            "authoritative over assistant deltas. Steering is a new "
+            "cursor-agent --resume <session_id> process per turn; interrupt "
+            "is not supported. is_error or a non-success result fails the run "
+            "even when the process exits 0."
         ),
     ),
 }

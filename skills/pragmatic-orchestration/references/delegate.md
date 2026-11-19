@@ -97,9 +97,12 @@ first; it is your contract."
 ## Steerable and detached runs
 
 - Select exactly one `-a <agent-id>`; no default, globs or multi-select.
-- Codex CLI, Claude Code, OpenCode, Grok Build, Devin CLI, and Antigravity CLI
-  (`agy`) support delegation.
-  Gemini is review-only and is rejected by delegate.
+- Codex CLI, Claude Code, OpenCode, Grok Build, Devin CLI, Antigravity CLI
+  (`agy`), and Cursor CLI (`cursor-agent`, never the bare name `agent`) support
+  delegation. Gemini is review-only and is rejected by delegate. Cursor review
+  uses `--mode plan`. An empty model keeps the account default; on the Free
+  tier an explicit model is refused. Interrupt is not supported: a steer waits
+  for the next `cursor-agent --resume` process.
 - Delegate uses a full-access runtime, even for a read-only task, with no
   sandbox or approval flow; task scope does not expand user authority. Backend
   permission failures remain explicit blockers.

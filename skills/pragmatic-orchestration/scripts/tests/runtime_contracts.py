@@ -53,7 +53,12 @@ def main() -> int:
         LAYER_ORDER,
     )
     from debug_tape import DebugTape
-    from backend_contract import backend_capabilities, resolve_binary, list_backend_capabilities
+    from backend_contract import (
+        backend_capabilities,
+        list_backend_capabilities,
+        resolve_binary,
+        resolve_model_effort,
+    )
     from normalize_stream import normalize_grok, normalize_opencode
 
     print("=== Event schema ===")
@@ -183,6 +188,18 @@ def main() -> int:
     ok("agy steer same-turn", agy.steer_auto == "same_turn" and agy.steer_queue == "same_turn")
     ok("agy steer interrupt", agy.steer_interrupt == "cancel_and_send")
     ok("agy final rule result over deltas", agy.final_text_rule == "agy_result_over_deltas")
+    cur = backend_capabilities("cursor-cli")
+    ok("cursor steerable delegate", cur.steerable is True and cur.supports_delegate is True)
+    ok("cursor stream-json both ways", cur.oneshot_transport == "stream-json" and cur.steerable_transport == "stream-json")
+    ok("cursor queues the next process", cur.steer_auto == "queue_next_turn" and cur.steer_queue == "queue_next_turn")
+    ok("cursor interrupt unsupported", cur.steer_interrupt == "")
+    ok("cursor final rule result over deltas", cur.final_text_rule == "claude_result_over_deltas")
+    saved_cursor_model = os.environ.pop("CURSOR_MODEL", None)
+    try:
+        ok("cursor empty model stays empty", resolve_model_effort("cursor-cli", {"model": ""})[0] == "")
+    finally:
+        if saved_cursor_model is not None:
+            os.environ["CURSOR_MODEL"] = saved_cursor_model
     # Distinct oneshot vs steerable transports where they differ
     codex = backend_capabilities("codex-cli")
     ok("codex oneshot transport exec-json", codex.oneshot_transport == "exec-json")

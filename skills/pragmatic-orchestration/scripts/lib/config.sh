@@ -5,7 +5,7 @@
 #
 # Agent config schema (per agent id):
 #   enabled  : bool   — is agent active for consensus runs
-#   backend  : string — codex-cli | gemini-cli | opencode | claude-code | grok-build | devin-cli | antigravity-cli
+#   backend  : string — codex-cli | gemini-cli | opencode | claude-code | grok-build | devin-cli | antigravity-cli | cursor-cli
 #   model    : string — model id passed to the backend
 #   role     : string — analyst (deep/precise) | lateral (broad/creative) | specialists...
 #   label    : string — display name in reports (optional)
@@ -145,6 +145,7 @@ BACKEND_CMDS = {
     "grok-build": "grok",
     "devin-cli": "devin",
     "antigravity-cli": "agy",
+    "cursor-cli": "cursor-agent",
 }
 
 with open(os.environ["PORCH_CONFIG_PATH"]) as f:

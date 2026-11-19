@@ -5,8 +5,10 @@ from typing import Mapping
 BACKEND_LAUNCHERS = {
     "codex-cli": "codex", "claude-code": "claude", "opencode": "opencode",
     "grok-build": "grok", "devin-cli": "devin",
-    "antigravity-cli": "agy",
+    "antigravity-cli": "agy", "cursor-cli": "cursor-agent",
 }
+# "cursor" is the IDE launcher. "cursor-agent" is the CLI binary; the bare
+# name "agent" belongs to Grok Build and is not a Cursor launcher.
 KNOWN_LAUNCHERS = frozenset({*BACKEND_LAUNCHERS.values(), "gemini", "cursor", "terminal", "unknown"})
 
 

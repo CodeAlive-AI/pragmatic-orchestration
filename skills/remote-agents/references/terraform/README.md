@@ -7,7 +7,7 @@ This module creates one Ubuntu EC2 worker with:
 - SSH key installed for SSH-over-SSM;
 - `AmazonSSMManagedInstanceCore` instance role;
 - encrypted gp3 root disk;
-- Node.js 22 plus caller-supplied bootstrap commands (agent CLIs, toolchains);
+- Node.js 26 LTS plus caller-supplied bootstrap commands (agent CLIs, toolchains);
 - user lingering enabled for persistent user services.
 
 It does not create a VPC, subnet, NAT gateway, VPC endpoints, DNS, or a

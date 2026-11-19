@@ -251,7 +251,7 @@ $r.fwSmb=($null -ne (Get-NetFirewallRule -DisplayName 'FWRULESMB'))
 $r.smbUser=($null -ne (Get-LocalUser -Name 'ACCOUNTNAME'))
 $r.remotePython=(Test-Path 'REMOTEPYTHON')
 $r.porch=($null -ne (Get-Command porch -ErrorAction SilentlyContinue))
-$r.agents=@('grok','claude','codex','opencode','gemini','devin') | Where-Object { Get-Command "$_.exe","$_" -ErrorAction SilentlyContinue }
+$r.agents=@('grok','claude','codex','opencode','gemini','devin','agy') | Where-Object { Get-Command "$_.exe","$_" -ErrorAction SilentlyContinue }
 $r | ConvertTo-Json -Compress -Depth 3
 """
 
@@ -261,7 +261,7 @@ echo "\"workRoot\": $(test -d 'WORKROOT' && echo true || echo false),"
 echo "\"porch\": $(command -v porch >/dev/null && echo true || echo false),"
 echo "\"tmux\": $(command -v tmux >/dev/null && echo true || echo false),"
 echo "\"git\": $(command -v git >/dev/null && echo true || echo false),"
-a=''; for c in grok claude codex opencode gemini devin; do command -v $c >/dev/null && a="$a$c "; done
+a=''; for c in grok claude codex opencode gemini devin agy; do command -v $c >/dev/null && a="$a$c "; done
 echo "\"agents\": \"$a\"}"
 """
 

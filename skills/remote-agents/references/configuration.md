@@ -77,8 +77,8 @@ Per-dev-OS behavior is documented in [local-platforms.md](local-platforms.md).
 
 | Field | Meaning |
 |---|---|
-| `agentBin` | Agent CLI path on the host (tested: Grok) |
-| `agentModel` | Model id passed to the CLI |
+| `agentBin` | Agent CLI path on the host (tested: Grok Build `grok`) |
+| `agentModel` | Model id passed to the CLI; it must accept image input (default `grok-4.7`; list with `grok models`) |
 | `python` | Interpreter for `run-visual-qa.py` |
 | `mcpServer` | QA MCP server script path on the host |
 | `mcpName` | MCP server name / tool prefix (`windows-qa`) |

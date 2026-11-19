@@ -15,7 +15,7 @@ variable "ssh_public_key" {
 }
 
 variable "ami_id" {
-  description = "Optional AMI override. Null selects the latest Canonical Ubuntu 24.04 amd64 image."
+  description = "Optional AMI override. Null selects the latest Canonical Ubuntu 26.04 LTS amd64 image."
   type        = string
   default     = null
 }

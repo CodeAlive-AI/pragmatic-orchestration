@@ -65,7 +65,7 @@ See `bridge.md`. Invariants: dedicated ed25519 key per host, `IdentitiesOnly`,
 
 ## Linux provisioning
 
-- Ubuntu LTS (the terraform module selects Canonical 24.04 amd64).
+- Ubuntu LTS (the terraform module selects Canonical 26.04 LTS amd64).
 - `AmazonSSMManagedInstanceCore`, no SG ingress, no public IP.
 - `ssh_public_key` installed for SSH-over-SSM; user `ubuntu` or a dedicated
   agent account.

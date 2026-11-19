@@ -13,7 +13,7 @@ packages:
   - python3-pip
 
 runcmd:
-  - [bash, -lc, 'curl -fsSL https://deb.nodesource.com/setup_22.x | bash -']
+  - [bash, -lc, 'curl -fsSL https://deb.nodesource.com/setup_26.x | bash -']
   - [bash, -lc, 'DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs']
   - [bash, -lc, 'systemctl enable --now ssh']
   - [bash, -lc, 'if command -v snap >/dev/null 2>&1; then snap install amazon-ssm-agent --classic || true; systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || true; fi']

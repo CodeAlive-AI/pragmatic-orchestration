@@ -21,9 +21,25 @@ Copy `config.example.json` to `~/.local/share/porch/config.json` (or set
 ## Agent CLIs on the host
 
 Install each provider CLI with its official installer, then authenticate
-interactively on the host: `ssh -t <alias> '<cli> login --device-auth'`
-(`scripts/auth-grok.sh` wraps the Grok variant). Auth belongs to the remote
-account profile — never copy local credential files or tokens to the host.
+interactively on the host through `ssh -t <alias> '…'`. Auth belongs to the
+remote account profile — never copy local credential files or tokens to the
+host. Install only the backends this host will run; `onboard.py check` lists
+the ones it finds.
+
+| Backend (`backend` in porch config) | CLI | Headless sign-in | Binary override |
+|---|---|---|---|
+| `codex-cli` | `codex` | `codex login --device-auth` | `PORCH_BIN_CODEX` |
+| `grok-build` | `grok` | `grok login --device-auth` (`scripts/auth-grok.sh`) | `PORCH_BIN_GROK` |
+| `claude-code` | `claude` | `claude auth login` | `PORCH_BIN_CLAUDE` |
+| `opencode` (2.2.6+, 2.x) | `opencode` | `opencode auth login` | `PORCH_BIN_OPENCODE` |
+| `devin-cli` (opt-in) | `devin` | `devin auth login` | `PORCH_BIN_DEVIN` |
+| `antigravity-cli` (opt-in, 1.5.4+) | `agy` | `agy acp --login` | `PORCH_BIN_AGY` |
+| `gemini-cli` (review-only) | `gemini` | interactive `gemini` sign-in | `PORCH_BIN_GEMINI` |
+
+Model ids and profiles come from porch's own `config.example.json` and its
+`references/model-routing.md`; do not pin model ids in this skill. Check
+what a host's CLI actually serves with its own listing (for example
+`grok models`) before naming a model in a remote contract.
 
 ## Delegate remotely
 

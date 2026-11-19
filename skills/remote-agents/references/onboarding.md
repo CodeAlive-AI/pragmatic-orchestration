@@ -89,12 +89,14 @@ layout, sshd hardening.
 ## Phase 6 — Agent execution
 
 [porch-remote.md](porch-remote.md): install `porch` on the host, authenticate
-the provider CLIs you will use (`auth-grok.sh` shows the device-auth pattern;
-same flow for other CLIs), then smoke a detached run:
+the provider CLIs you will use (per-backend sign-in commands are in
+[porch-remote.md](porch-remote.md#agent-clis-on-the-host)), then smoke a detached run:
 
 ```bash
-ssh <alias> 'porch delegate --detach --prompt "echo ok" --path <workRoot>/runs/smoke'
-ssh <alias> 'porch delegate events <id>'   # or wait/list
+ssh <alias> 'mkdir -p <workRoot>/runs/smoke && cd <workRoot>/runs/smoke \
+             && porch delegate -a <agent-id> --detach "Reply with the single word ok."'
+ssh <alias> 'porch delegate events run_<id>'              # or wait/list
+ssh <alias> 'porch delegate wait run_<id> --timeout 300'
 ```
 
 Optional planes: managed-worker daemon ([managed-workers.md](managed-workers.md)),

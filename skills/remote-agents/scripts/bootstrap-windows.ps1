@@ -91,9 +91,9 @@ $gitSignature = Get-AuthenticodeSignature -FilePath $gitInstaller
 if ($gitSignature.Status -ne 'Valid') { throw "Invalid Git installer signature: $($gitSignature.Status)" }
 Invoke-Installer -FilePath $gitInstaller -ArgumentList @('/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-') -AllowedExitCodes @(0)
 
-Write-Host 'Installing Python 3.13 for repository automation...'
-$pythonInstaller = Join-Path $work 'python-3.13.15-amd64.exe'
-Get-SignedFile -Uri 'https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe' -OutFile $pythonInstaller -SignerPattern 'Python Software Foundation'
+Write-Host 'Installing Python 3.15 for repository automation...'
+$pythonInstaller = Join-Path $work 'python-3.15.2-amd64.exe'
+Get-SignedFile -Uri 'https://www.python.org/ftp/python/3.15.2/python-3.15.2-amd64.exe' -OutFile $pythonInstaller -SignerPattern 'Python Software Foundation'
 Invoke-Installer -FilePath $pythonInstaller -ArgumentList @('/quiet', 'InstallAllUsers=1', 'PrependPath=1', 'Include_test=0', 'Include_launcher=1')
 
 Write-Host 'Installing current stable PowerShell from the official GitHub release...'
@@ -139,7 +139,7 @@ $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [En
 
 $summary = [ordered]@{
     Git = (& 'C:\Program Files\Git\cmd\git.exe' --version)
-    Python = (& 'C:\Program Files\Python313\python.exe' --version)
+    Python = (& 'C:\Program Files\Python315\python.exe' --version)
     PowerShell = (& 'C:\Program Files\PowerShell\7\pwsh.exe' -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()')
     SevenZip = (& 'C:\Program Files\7-Zip\7z.exe' | Select-Object -First 2 | Select-Object -Last 1)
 }

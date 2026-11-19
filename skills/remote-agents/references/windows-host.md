@@ -44,7 +44,7 @@ SSH/RDP to the internet as a "fix".
 
 ## Toolchain
 
-`bootstrap-windows.ps1` installs and verifies VS workloads, Git, Python 3.13,
+`bootstrap-windows.ps1` installs and verifies VS workloads, Git, Python 3.15,
 pwsh 7, 7-Zip — all signature/checksum-verified — and writes
 `<workRoot>/toolchain.json` + `bootstrap.log`. Set pwsh 7 as the OpenSSH
 `DefaultShell` (`HKLM:\SOFTWARE\OpenSSH`) so `ssh` and `host.sh run` execute in

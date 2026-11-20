@@ -24,7 +24,9 @@ Two transports, modeled on verified agy 1.5.4 wire facts:
    PORCH_FAKE_AGY_BG_DELAY seconds the agent continues by itself with no new
    prompt and answers FAKE_AGY_BG_DONE; session/cancel with no turn running
    fails that tool call instead) | daemon (the tool call carries IsDaemon and
-   never closes) | hang (a background tool call that never closes).
+   never closes) | hang (a background tool call that never closes) | stall
+   (like background, but after the tool call closes the woken model call never
+   answers: no usage_update, no text).
    session/close stops background work. PORCH_FAKE_AGY_VERSION sets
    agentInfo.version (default 1.5.12).
 """
@@ -302,6 +304,8 @@ def continue_after_background(sess: Session, call_id: str, stop: threading.Event
     # The backgrounded command finished: agy wakes the agent with no prompt.
     sess.update({"sessionUpdate": "tool_call_update", "toolCallId": call_id,
                  "kind": "execute", "status": "completed"})
+    if MODE == "stall":
+        return
     time.sleep(0.05)
     sess.usage()
     write_id = "call_" + uuid.uuid4().hex[:12]
@@ -331,7 +335,7 @@ def run_background_turn(sess: Session) -> None:
     sess.chunk("agent_message_chunk", "Launched sleep 120 in the background.")
     sess.usage()
     sess.end_turn("end_turn")
-    if MODE == "background":
+    if MODE in ("background", "stall"):
         threading.Thread(target=continue_after_background, args=(sess, call_id, stop),
                          daemon=True).start()
 
@@ -340,7 +344,7 @@ def run_turn(sess: Session) -> None:
     if MODE == "crash":
         os._exit(1)
     sess.turns += 1
-    if MODE in ("background", "daemon", "hang") and sess.turns == 1:
+    if MODE in ("background", "stall", "daemon", "hang") and sess.turns == 1:
         run_background_turn(sess)
         return
     sess.update({"sessionUpdate": "available_commands_update",

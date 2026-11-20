@@ -291,9 +291,13 @@ new prompt and no end marker. Porch therefore keeps such a run open:
   standing timers) are not waited for.
 - When nothing is open, it finishes once the newest update is a
   `usage_update` (the end of a model call) and 30 s pass quietly; the done
-  event reads `end_turn:usage_settled`. Without that marker it finishes after
-  300 s of quiet as `end_turn:idle_timeout`. The continuation's answer text is
+  event reads `end_turn:usage_settled`. The continuation's answer text is
   appended to the final answer after a blank line.
+- If the background tool closed but the woken model never answers (no
+  `usage_update` for 300 s), its call failed or stalled: the run ends `failed`
+  with exit 1 and the done event `continuation_stalled`, keeping the text so
+  far. ACP carries no error for such a continuation, so check the agy session
+  before retrying.
 - `auto`/`queue` during the wait start a new turn; the background command
   keeps running and agy continues afterwards. `interrupt` during the wait
   stops the background command (its tool call ends `failed`) before the steer

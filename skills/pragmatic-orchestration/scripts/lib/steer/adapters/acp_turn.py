@@ -21,8 +21,9 @@ marker. With tracking on, such a stop does not finish the run. The run settles
 when no prompt is in flight, no non-daemon tool call is open, nothing closed
 since the last model call (`usage_update`), the newest update is a
 `usage_update`, and SETTLE seconds passed quietly (`usage_settled`); without
-that marker it settles after IDLE quiet seconds with no open tool call
-(`idle_timeout`). An open background tool call is waited for without a cap.
+that marker, IDLE quiet seconds with no open tool call mean the continuation's
+model call failed or stalled, and the run fails (`continuation_stalled`, exit
+1, partial text kept). An open background tool call is waited for without a cap.
 
 Subclasses provide the argv, child environment and per-session configuration.
 """
@@ -419,15 +420,19 @@ class AcpTurnAdapter(BackendAdapter):
             settled = (self._last_close_seq <= self._last_usage_seq
                        and self._last_usage_seq == self._update_seq)
             if settled and quiet >= self._settle_s:
-                evidence = "usage_settled"
+                evidence, exit_code, data = "usage_settled", 0, "end_turn:usage_settled"
             elif quiet >= self._idle_s:
-                evidence = "idle_timeout"
+                # The model never answered after the background work ended:
+                # its call failed or stalled. Fail explicitly, keep partial text.
+                evidence, exit_code, data = "continuation_stalled", 1, "continuation_stalled"
+                self._error = (f"{self.backend_name} continuation stalled: no model output for "
+                               f"{int(quiet)} s after background tool calls finished")
             else:
                 return
             self._awaiting_background = False
             self._done = True
-            self._exit_code = 0
-        self._events.put(AdapterEvent(kind="done", data=f"end_turn:{evidence}",
+            self._exit_code = exit_code
+        self._events.put(AdapterEvent(kind="done", data=data,
                                       raw={"completion_evidence": evidence}))
 
     def poll_events(self) -> Iterator[AdapterEvent]:

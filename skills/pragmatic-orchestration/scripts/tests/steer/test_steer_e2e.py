@@ -2006,6 +2006,23 @@ def test_agy_background_interrupt(tmp: Path) -> None:
                 any(e.get("turn_active") is False for e in cancels), str(cancels))
 
 
+def test_agy_stalled_continuation_fails(tmp: Path) -> None:
+    """No model output after the background tool closed fails the run, never success."""
+    print("=== e2e: agy stalled continuation fails explicitly ===")
+    env, cwd, _ = _agy_bg_env(tmp, "agy-stall", "stall", PORCH_FAKE_AGY_BG_DELAY="1.0",
+                              PORCH_ACP_BACKGROUND_IDLE_S="2.0")
+    proc, run_id, _ = start_steerable("agy", "TASK WITH LONG COMMAND", env, cwd)
+    code, out, err = wait_proc(proc, timeout=40)
+    assert_true("agy stall exit non-zero", code not in (0, None), f"code={code}")
+    assert_true("agy stall keeps partial text", "Launched sleep 120" in (out or ""), (out or "")[:300])
+    st = json.loads(run_cmd([str(PORCH), "delegate", "status", run_id, "--json"], env).stdout,
+                    strict=False)
+    assert_true("agy stall status failed", st.get("status") == "failed", str(st.get("status")))
+    data = [str(e.get("data") or "") for e in _agy_events(run_id, env)]
+    assert_true("agy stall evidence visible",
+                any("continuation_stalled" in d for d in data), str(data[-6:]))
+
+
 def test_agy_daemon_tool_not_awaited(tmp: Path) -> None:
     """An IsDaemon tool call (dev server) never holds the run open."""
     print("=== e2e: agy daemon tool not awaited ===")
@@ -3232,6 +3249,7 @@ def main() -> int:
         test_agy_unknown_model_fails_launch(tmp)
         test_agy_background_continuation(tmp)
         test_agy_background_interrupt(tmp)
+        test_agy_stalled_continuation_fails(tmp)
         test_agy_daemon_tool_not_awaited(tmp)
         test_agy_old_version_keeps_turn_completion(tmp)
         test_agy_open_background_waits_then_cancel_closes(tmp)

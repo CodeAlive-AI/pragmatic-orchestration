@@ -25,6 +25,8 @@ export PORCH_SUPPRESS_SHELL_WARN=1
 # The suite's runs must not start the background `porch prune --apply`; the
 # retention tests switch it on for their own temporary folders.
 export PORCH_RETENTION_AUTO=0
+# The suite checks the default (compact) streams; the debug switch is tested on its own.
+unset PORCH_STREAM_FULL
 # Parent shells (prior delegate runs, harnesses) must not leak mode wrappers
 # into the offline suite.
 unset PORCH_RAW_PROMPT PORCH_SKIP_OUTPUT_TEMPLATE PORCH_MODE \
@@ -1658,6 +1660,13 @@ fi
 
 # Retention: `porch prune`, the durable default outputs folder, automatic prune
 if env -u PORCH_RETENTION_AUTO PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/retention_test.py"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
+# Compact event streams: what a run saves and that it still reads back.
+if env -u PORCH_STREAM_FULL PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/stream_test.py"; then
   PASS=$((PASS + 1))
 else
   FAIL=$((FAIL + 1))

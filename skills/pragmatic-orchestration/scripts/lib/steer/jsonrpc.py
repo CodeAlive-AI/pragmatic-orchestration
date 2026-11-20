@@ -10,6 +10,71 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .util import detached_popen_kwargs, resolve_argv, kill_process_group
 
+# What a wire classifier answers for a received message.
+HOLD = "hold"    # superseded by the next message with the same key: keep the last
+FLUSH = "flush"  # a boundary: write what is held, then this message
+
+
+class RawWire:
+    """The saved wire log of one backend process (``raw/<agent>.jsonl``).
+
+    Every line is written as it arrives, with one exception. A backend may
+    send messages that each replace the previous one (Codex repeats the whole
+    turn diff after every edit); a classifier names those, and the log keeps
+    only the last per key, written at the next boundary or when the log
+    closes. A supervisor killed outright loses the held messages of the
+    unfinished turn and nothing else.
+    """
+
+    def __init__(self, fp, classify: Optional[Callable[[Dict[str, Any]], Optional[Tuple[str, str]]]] = None):
+        self._fp = fp
+        self._classify = classify
+        self._held: Dict[str, str] = {}
+        self._lock = threading.Lock()
+
+    def write(self, line: str, msg: Optional[Dict[str, Any]] = None) -> None:
+        with self._lock:
+            if self._fp is None:
+                return
+            if self._classify is not None and isinstance(msg, dict):
+                try:
+                    verdict = self._classify(msg)
+                except Exception:
+                    verdict = None  # a classifier fault must not lose the line
+                if verdict:
+                    action, key = verdict
+                    if action == HOLD:
+                        self._held[key] = line
+                        return
+                    if action == FLUSH:
+                        self._write_held()
+            self._emit(line)
+
+    def flush_held(self) -> None:
+        with self._lock:
+            if self._fp is not None:
+                self._write_held()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._fp is None:
+                return
+            try:
+                self._write_held()
+                self._fp.close()
+            except Exception:
+                pass
+            self._fp = None
+
+    def _write_held(self) -> None:
+        held, self._held = self._held, {}
+        for line in held.values():
+            self._emit(line)
+
+    def _emit(self, line: str) -> None:
+        self._fp.write(line if line.endswith("\n") else line + "\n")
+        self._fp.flush()
+
 
 class JsonRpcProcess:
     """
@@ -41,7 +106,7 @@ class JsonRpcProcess:
         self._stderr_thread: Optional[threading.Thread] = None
         self.stderr_lines: List[str] = []
         self.raw_out_path: Optional[str] = None
-        self._raw_fp = None
+        self._raw: Optional[RawWire] = None
         self._closed = False
         self.notifications: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         self._exit_code: Optional[int] = None
@@ -64,31 +129,40 @@ class JsonRpcProcess:
         self._stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
         self._stderr_thread.start()
 
-    def set_raw_out(self, path: str) -> None:
+    def set_raw_out(self, path: str, classify=None) -> None:
+        """Save the wire to ``path``; ``classify`` names superseded messages (see RawWire)."""
         self.raw_out_path = path
-        self._raw_fp = open(path, "a", encoding="utf-8")
+        self._raw = RawWire(open(path, "a", encoding="utf-8"), classify)
 
     def set_raw_out_fp(self, fp) -> None:
         """Attach an already-open file-like object for raw wire capture."""
-        self._raw_fp = fp
+        self._raw = RawWire(fp)
 
-    def _write_raw(self, line: str) -> None:
-        if self._raw_fp:
-            self._raw_fp.write(line if line.endswith("\n") else line + "\n")
-            self._raw_fp.flush()
+    def _write_raw(self, line: str, msg: Optional[Dict[str, Any]] = None) -> None:
+        if self._raw:
+            self._raw.write(line, msg)
 
     def _read_stdout(self) -> None:
+        try:
+            self._read_stdout_lines()
+        finally:
+            # The backend is gone: nothing can supersede what is held.
+            if self._raw:
+                self._raw.flush_held()
+
+    def _read_stdout_lines(self) -> None:
         assert self.proc and self.proc.stdout
         for line in self.proc.stdout:
             line = line.rstrip("\n")
             if not line:
                 continue
-            self._write_raw(line)
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
+                self._write_raw(line)
                 self.notifications.put({"method": "_non_json", "params": {"line": line}})
                 continue
+            self._write_raw(line, msg)
             # Response to our request
             if "id" in msg and ("result" in msg or "error" in msg) and "method" not in msg:
                 rid = msg["id"]
@@ -267,8 +341,5 @@ class JsonRpcProcess:
                 pass
             self.proc.wait(timeout=3)
         self._closed = True
-        if self._raw_fp:
-            try:
-                self._raw_fp.close()
-            except Exception:
-                pass
+        if self._raw:
+            self._raw.close()

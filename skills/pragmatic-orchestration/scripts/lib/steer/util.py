@@ -55,6 +55,14 @@ DIR_MODE = 0o700
 FILE_MODE = 0o600
 
 
+STREAM_FULL_ENV = "PORCH_STREAM_FULL"
+
+
+def stream_full() -> bool:
+    """True when a run keeps its complete, uncompacted event streams (a debug switch)."""
+    return os.environ.get(STREAM_FULL_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def utc_now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 

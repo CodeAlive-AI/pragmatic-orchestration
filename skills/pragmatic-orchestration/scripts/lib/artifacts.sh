@@ -4,8 +4,12 @@
 # Layout:
 #   $PORCH_RUN_DIR/
 #     meta.json
-#     raw/<key>.jsonl          # backend raw stdout (structured when available)
-#     normalized/<key>.jsonl   # normalized semantic events
+#     raw/<key>.jsonl          # backend raw stdout (structured when available);
+#                              # a persistent Codex run leaves <key>.native.json,
+#                              # a pointer to its native session, instead
+#     normalized/<key>.jsonl   # normalized semantic events, without the backend
+#                              # payload of content events (PORCH_STREAM_FULL=1
+#                              # saves the complete streams)
 #     final/<key>.txt          # final text answer per invocation
 #     final.txt                # primary final answer (single-agent or combined)
 #

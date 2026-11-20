@@ -3,7 +3,12 @@
 
 Normalized artifacts must only persist event types from KNOWN_EVENT_TYPES.
 Unknown types are rejected (protocol drift), not silently written.
-Backend-specific raw payloads remain on the optional ``raw`` field.
+Backend-specific raw payloads ride on the optional ``raw`` field in memory.
+Content events (thinking, answer, progress, tools, turns) are written to the
+normalized stream without it: the wire log under ``raw/`` already holds that
+payload, and no reader of the normalized stream uses the copy. Lifecycle
+events porch makes itself keep their small ``raw``; it is their only record.
+``PORCH_STREAM_FULL=1`` writes every payload again for debugging.
 
 Progress rendering may still use display aliases (thought/text/end/error);
 those aliases are mapped here and never invent new persisted types.
@@ -14,6 +19,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from steer.util import stream_full
 
 
 # Closed set of normalized event types. Extend deliberately; tests assert drift.
@@ -53,6 +60,26 @@ KNOWN_EVENT_TYPES = frozenset(
         "prompt_complete",
     }
 )
+
+# Events that carry what the backend sent: their ``raw`` is a copy of a line
+# in the wire log (``raw/<agent>.jsonl``) and is not written a second time.
+PAYLOAD_COPY_TYPES = frozenset(
+    {
+        "thinking_delta",
+        "answer_delta",
+        "tool_started",
+        "tool_completed",
+        "result",
+        "progress",
+        "user_replay",
+        "turn_started",
+        "turn_completed",
+    }
+)
+# The other events (run start and end, steer states, retries) are porch's own:
+# their ``raw`` holds a few facts found nowhere else (resolved model, prompt
+# id, completion evidence) and stays, unless a backend payload was packed in.
+LIFECYCLE_RAW_MAX = 2048
 
 # Backend / adapter stream names → closed PorchEvent types.
 STREAM_TO_EVENT: Dict[str, str] = {
@@ -185,6 +212,27 @@ class PorchEvent:
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False)
+
+    def to_stream_dict(self) -> Dict[str, Any]:
+        """The record written to ``normalized/<agent>.jsonl``.
+
+        Everything a reader of the stream uses, without the backend payload
+        of content events: that payload is the same bytes the wire log already
+        keeps, and it made the normalized stream as large as the wire log
+        (twice as large for ACP backends, which embed the update and its
+        envelope). See PAYLOAD_COPY_TYPES.
+        """
+        d = self.to_dict()
+        if stream_full():
+            return d
+        if self.type in PAYLOAD_COPY_TYPES or self.raw is None:
+            d.pop("raw", None)
+        elif len(json.dumps(self.raw, ensure_ascii=False, default=str)) > LIFECYCLE_RAW_MAX:
+            d.pop("raw", None)
+        return d
+
+    def to_stream_json(self) -> str:
+        return json.dumps(self.to_stream_dict(), ensure_ascii=False)
 
     @classmethod
     def from_dict(cls, obj: Dict[str, Any]) -> "PorchEvent":

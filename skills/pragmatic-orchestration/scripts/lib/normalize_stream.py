@@ -11,7 +11,9 @@ When used mid-flight (stdin from a live backend pipe):
   - unknown stream types are rejected for normalized artifacts (protocol drift)
 
 Normalized event schema (closed PorchEvent types — see events.py):
-  {"ts": ISO8601, "backend": str, "agent_id": str, "type": str, "data": str|null, "raw": object|null}
+  {"ts": ISO8601, "backend": str, "agent_id": str, "type": str, "data": str|null}
+  The backend payload ("raw") is written only with PORCH_STREAM_FULL=1; the
+  wire log (--raw-out) is its single saved copy.
 
   type ∈ {run_started, thinking_delta, answer_delta, tool_started, tool_completed,
           retry_scheduled, steer_*, result, progress, user_replay, turn_*,
@@ -54,7 +56,7 @@ def utc_now() -> str:
 
 def emit_event(out: TextIO, evt) -> None:
     """Persist a validated PorchEvent; never write unknown types."""
-    out.write(evt.to_json() + "\n")
+    out.write(evt.to_stream_json() + "\n")
     out.flush()
     tape_record(
         "NORMALIZED",

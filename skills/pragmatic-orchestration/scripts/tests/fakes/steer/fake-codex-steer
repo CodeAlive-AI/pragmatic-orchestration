@@ -90,6 +90,14 @@ def main() -> int:
             "item/agentMessage/delta",
             {"threadId": thread_id, "turnId": my_turn, "delta": "FAKE_CODEX"},
         )
+        # The real app-server repeats the whole turn diff after every edit.
+        diffs = int(os.environ.get("PORCH_FAKE_CODEX_DIFFS", "0"))
+        for n in range(1, diffs + 1):
+            notify(
+                "turn/diff/updated",
+                {"threadId": thread_id, "turnId": my_turn,
+                 "diff": "".join(f"+edit {i} of {diffs}\n" for i in range(1, n + 1))},
+            )
         time.sleep(slow)
         with lock:
             if my_gen != worker_gen or active_turn != my_turn:
@@ -131,12 +139,21 @@ def main() -> int:
             )
             continue
         if method in ("thread/start", "thread/resume"):
+            thread = {"id": thread_id}
+            # A persistent thread is saved by Codex itself; the reply names the file.
+            native_dir = os.environ.get("PORCH_FAKE_CODEX_NATIVE_DIR")
+            if native_dir and not params.get("ephemeral"):
+                thread["path"] = os.path.join(native_dir, f"rollout-{thread_id}.jsonl")
+                if os.environ.get("PORCH_FAKE_CODEX_NATIVE_MISSING") != "1":
+                    os.makedirs(native_dir, exist_ok=True)
+                    with open(thread["path"], "a", encoding="utf-8") as f:
+                        f.write(json.dumps({"type": "session_meta", "id": thread_id}) + "\n")
             send(
                 {
                     "jsonrpc": "2.0",
                     "id": mid,
                     "result": {
-                        "thread": {"id": thread_id},
+                        "thread": thread,
                         "sandbox": "danger-full-access",
                         "approvalPolicy": "never",
                         "cwd": params.get("cwd") or "",

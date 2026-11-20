@@ -9,15 +9,32 @@ Field names verified against installed `codex app-server generate-json-schema`:
 """
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from ..jsonrpc import JsonRpcProcess
-from ..util import kill_process_group
+from ..jsonrpc import FLUSH, HOLD, JsonRpcProcess
+from ..util import atomic_write_text, kill_process_group, stream_full
 from .base import AdapterEvent, BackendAdapter, DeliveryClass, SteerResult
+
+
+def wire_classify(msg: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """Name the app-server messages the wire log need not keep one by one.
+
+    ``turn/diff/updated`` carries the whole diff of the turn so far and is sent
+    again after every edit; in a long turn these repeats were four fifths of
+    the log. Only the last one per turn is kept, written when the turn ends.
+    """
+    method = msg.get("method")
+    if method == "turn/diff/updated":
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        return HOLD, f"turn-diff:{params.get('threadId')}:{params.get('turnId')}"
+    if method == "turn/completed":
+        return FLUSH, ""
+    return None
 
 
 # Bounded local protocol handshake timeout (not a global run timeout).
@@ -38,6 +55,8 @@ class CodexAdapter(BackendAdapter):
         self._thread_id: Optional[str] = None
         self._active_turn_id: Optional[str] = None
         self._raw_path = Path(self.artifacts_dir) / "raw" / f"{self.agent_id or 'codex'}.jsonl"
+        # Where Codex itself saves a persistent thread (thread.path).
+        self.native_session_path: Optional[str] = None
         # Final answer only from a natural completed turn (never interrupted).
         self._result_text: Optional[str] = None
         # Per-turn streamed deltas (reset on each replacement turn).
@@ -229,7 +248,7 @@ class CodexAdapter(BackendAdapter):
             on_notification=self._on_notification,
             on_server_request=self._on_server_request,
         )
-        self.rpc.set_raw_out(str(self._raw_path))
+        self.rpc.set_raw_out(str(self._raw_path), None if stream_full() else wire_classify)
         self.rpc.start()
         # initialize
         self.rpc.request(
@@ -264,6 +283,9 @@ class CodexAdapter(BackendAdapter):
             raise RuntimeError(f"codex {method} missing thread id: {result}")
         if self.resume_thread_id and self._thread_id != self.resume_thread_id:
             raise RuntimeError("Codex resumed a different thread; no task sent")
+        native_path = thread.get("path")
+        if isinstance(native_path, str) and native_path:
+            self.native_session_path = native_path
         if self.on_session_ready:
             self.on_session_ready(self._thread_id)
         # turn/start with initial task (schema: TurnStartParams — threadId + input required)
@@ -568,3 +590,41 @@ class CodexAdapter(BackendAdapter):
 
     def close(self) -> None:
         self.cancel()
+        self._release_wire_log()
+
+    def _release_wire_log(self) -> None:
+        """Leave a pointer instead of the wire log when Codex saved the thread itself.
+
+        A persistent thread is a native Codex session with the full history,
+        reachable by ``native_session_id`` (``porch sessions show codex:<id>``),
+        so a second copy under ``raw/`` only costs disk. The log goes only once
+        the native file is seen on disk; an ephemeral thread has no such file
+        and keeps its log, the only complete record of that run. So does a run
+        that ended with a backend error: the exchange around the error is in
+        the log and nowhere else.
+        """
+        if stream_full() or not self.persist_session or not self._thread_id or self._error:
+            return
+        native = Path(self.native_session_path) if self.native_session_path else None
+        try:
+            if native is None or not native.is_file() or native.stat().st_size == 0:
+                return
+            if not self._raw_path.is_file():
+                return
+            atomic_write_text(
+                self._raw_path.with_suffix(".native.json"),
+                json.dumps(
+                    {
+                        "wire_log": "not kept: the native Codex session holds this run's history",
+                        "native_session_id": self._thread_id,
+                        "native_session_path": str(native),
+                        "read_with": f"porch sessions show codex:{self._thread_id}",
+                        "keep_wire_log": "PORCH_STREAM_FULL=1",
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+            self._raw_path.unlink()
+        except OSError:
+            return  # the log stays; nothing was lost

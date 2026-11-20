@@ -451,7 +451,7 @@ class Supervisor:
                 raw=ev.raw,
             )
             if ce is not None:
-                record = ce.to_dict()
+                record = ce.to_stream_dict()
                 # Keep adapter kind for steerable tests / audit correlation.
                 record["kind"] = ev.kind
             else:

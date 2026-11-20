@@ -17,7 +17,7 @@ Use this reference when diagnosing or changing observability, normalized events,
 |---|---|
 | stderr | Mode-specific progress for foreground commands; this is not a promise of tool/file visibility for steerable delegation |
 | stdout | Clean final answer only |
-| artifacts | Per-run `raw/*.jsonl`, `normalized/*.jsonl`, `final/*.txt`, and `final.txt` under `PORCH_OUTPUT_DIR` or `PORCH_RUN_DIR` |
+| artifacts | Per-run `raw/*.jsonl` (wire log), `normalized/*.jsonl` (events without the backend payload), `final/*.txt`, and `final.txt` under `PORCH_OUTPUT_DIR` or `PORCH_RUN_DIR`; what each holds and how long it is kept: [configuration.md](configuration.md#saved-runs-and-retention) |
 
 Artifact keys are per invocation: the profile ID for review and delegate. Review clears any inherited artifact key.
 

@@ -575,7 +575,10 @@ Three generations are read, in precedence order `session_v2` > legacy tables
   `native_session` linkage (e.g. codex thread id for `--persist-session`
   runs — joinable to `codex:` sessions).
 - `events.jsonl`: normalized event stream emitted by the run; raw provider
-  output under `raw/`.
+  output under `raw/`. A persistent Codex run keeps `raw/<agent>.native.json`
+  there instead, naming the native session that holds its history. Streams
+  are removed after the detail retention period (`porch prune`); the task and
+  the final answer stay for the run's whole retention.
 
 ## Turn analytics: `turns` / `flags` / `stats`
 

@@ -296,6 +296,7 @@ must not reinterpret such a path as an instruction to read stdin.
 | `PORCH_SAVE_OUTPUTS` | Disable ordinary archival with `0`; steerable service artifacts remain |
 | `PORCH_STEER_DIR` | Steerable registry; reuse the same value for every control command |
 | `PORCH_RETENTION_DAYS`, `PORCH_RETENTION_DETAIL_DAYS`, `PORCH_RETENTION_DETAIL_MAX`, `PORCH_RETENTION_AUTO` | Retention of saved runs, see below |
+| `PORCH_STREAM_FULL` | `1` saves the complete, uncompacted event streams of a run (debugging) |
 | `PORCH_DEBUG_EVENTS*` | Opt-in bounded event tape and its path/record/byte limits |
 | `GEMINI_API_KEY` | Gemini CLI authentication when required |
 
@@ -342,6 +343,27 @@ at most once in six hours (`<outputs>/.retention.log` has its output);
 `PORCH_RETENTION_AUTO=0` switches that off. The other outputs folder of an
 older version is pruned by naming it:
 `PORCH_OUTPUT_DIR="${TMPDIR%/}/pragmatic-orchestration-outputs" porch prune`.
+
+### What the event streams hold
+
+- `normalized/<agent>.jsonl` is what `delegate events`, the UI and
+  `porch sessions` read: one record per event with its type, text and tool
+  name. Content events (thinking, answer, progress, tools, turns) do not carry
+  the backend's payload; lifecycle events porch makes itself (run start and
+  end, steer states) keep their small details.
+- `raw/<agent>.jsonl` is the wire log, the complete record of what the backend
+  sent and what porch sent to it. Media modes read it. For Codex, the repeated
+  `turn/diff/updated` messages (the whole turn diff again after every edit) are
+  collapsed to the last one per turn.
+- A persistent Codex run (`--persist-session`, `--continue-run`) is also a
+  native Codex session holding the full history. Once that session file is on
+  disk and the run ended without a backend error, the wire log is replaced by
+  `raw/<agent>.native.json`, which names the session:
+  `porch sessions show codex:<native_session_id>`. An ephemeral run has no
+  native session and keeps its wire log.
+- `PORCH_STREAM_FULL=1` on a run saves everything as before: the payload inside
+  every normalized record, every repeated diff, and the wire log of a
+  persistent run.
 
 # Quota inspection
 

@@ -361,9 +361,18 @@ older version is pruned by naming it:
   `raw/<agent>.native.json`, which names the session:
   `porch sessions show codex:<native_session_id>`. An ephemeral run has no
   native session and keeps its wire log.
+- The registry entry of a steerable run holds a private `audit.jsonl` and, for
+  a detached run, `supervisor.log`. They record turns, tools, steers, errors
+  and the end of the run one by one. The streamed pieces of answer, thinking
+  and protocol chatter are only counted there: the next audit record carries
+  the counts in its `stream` field (progress by label), and the detached log
+  gets one `stream text=… thought=… progress=…` line at most once a minute.
+  After the event streams are pruned, those counts, the task and the final
+  answer are what is left of a run's course. A foreground run still prints a
+  progress line per piece on stderr.
 - `PORCH_STREAM_FULL=1` on a run saves everything as before: the payload inside
-  every normalized record, every repeated diff, and the wire log of a
-  persistent run.
+  every normalized record, every repeated diff, the wire log of a persistent
+  run, and an audit record and a detached log line for every streamed piece.
 
 # Quota inspection
 

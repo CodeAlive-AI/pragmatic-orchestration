@@ -1,10 +1,15 @@
-"""What a run saves: compact event streams that still read back as before.
+"""What a run saves: compact event streams that still read back as before,
+and a registry audit and detached log without a record per streamed piece.
 
 Offline. The steerable runs go through the real `porch` CLI and the fake
 backends; nothing here touches a provider or the user's own run folders.
 """
+import collections
+import contextlib
+import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,8 +30,12 @@ from events import (  # noqa: E402
     PAYLOAD_COPY_TYPES,
     PorchEvent,
 )
+from steer import supervisor as supervisor_module  # noqa: E402
+from steer.adapters.base import AdapterEvent  # noqa: E402
 from steer.adapters.codex import CodexAdapter, wire_classify  # noqa: E402
 from steer.jsonrpc import FLUSH, HOLD, JsonRpcProcess, RawWire  # noqa: E402
+from steer.registry import Registry  # noqa: E402
+from steer.tally import LABEL_MAX_CHARS, LABELS_MAX, OTHER_LABEL, STREAM_KINDS, StreamTally  # noqa: E402
 
 
 def lines(path: Path):
@@ -323,7 +332,7 @@ class WireLogReleaseTest(unittest.TestCase):
             self.assertTrue((tmp / "raw" / "codex.jsonl").exists())
 
 
-class SteerableRunTest(unittest.TestCase):
+class RunCase(unittest.TestCase):
     """Whole runs through `porch delegate` and the fake backends."""
 
     def setUp(self):
@@ -362,6 +371,16 @@ class SteerableRunTest(unittest.TestCase):
                 return part.split("=", 1)[1]
         self.fail("no run id in: " + result.stderr[-400:])
 
+    def run_dir(self, run_id):
+        return self.root / "registry" / "runs" / run_id
+
+    def stream_events(self, agent="codex"):
+        """Stream events of the run by adapter kind, as the normalized stream holds them."""
+        normalized = records(self.artifacts / "normalized" / f"{agent}.jsonl")
+        return collections.Counter(r["kind"] for r in normalized if r.get("kind") in STREAM_KINDS)
+
+
+class SteerableRunTest(RunCase):
     def wire_diffs(self, agent="codex"):
         path = self.artifacts / "raw" / f"{agent}.jsonl"
         rows = [json.loads(line) for line in lines(path) if not line.startswith(">> ")]
@@ -470,6 +489,237 @@ class SteerableRunTest(unittest.TestCase):
         wire = (self.artifacts / "raw" / "devin.jsonl").read_text()
         self.assertIn("agent_message_chunk", wire)
         self.assertIn("session/update", wire)
+
+
+def tally_totals(stream):
+    """Events per kind in the `stream` field of an audit record."""
+    return {kind: sum(v.values()) if isinstance(v, dict) else v for kind, v in stream.items()}
+
+
+EVENT_LINE = re.compile(r"^\[porch\] event run_id=\S+ (\S+)(?: (.*))?$")
+
+
+def event_lines(text):
+    """(kind, rest) of every `[porch] event` line."""
+    found = []
+    for line in text.splitlines():
+        match = EVENT_LINE.match(line)
+        if match:
+            found.append((match.group(1), match.group(2) or ""))
+    return found
+
+
+class StreamTallyTest(unittest.TestCase):
+    def test_counts_plain_kinds_and_progress_labels_then_starts_again(self):
+        tally = StreamTally()
+        self.assertFalse(tally)
+        for kind, data in [("text", "a"), ("text", "b"), ("thought", "c"),
+                           ("progress", "item/started"), ("progress", "item/started"),
+                           ("progress", "stream_reconnected attempt=2")]:
+            tally.add(kind, data)
+        self.assertTrue(tally)
+        self.assertEqual(tally.totals(), {"text": 2, "thought": 1, "progress": 3})
+        self.assertEqual(tally.brief(), "progress=3 text=2 thought=1")
+        self.assertEqual(tally.take(), {
+            "text": 2, "thought": 1,
+            "progress": {"item/started": 2, "stream_reconnected attempt=2": 1},
+        })
+        self.assertFalse(tally)
+        self.assertEqual(tally.take(), {})
+
+    def test_free_text_labels_cannot_grow_the_record_without_bound(self):
+        tally = StreamTally()
+        for i in range(LABELS_MAX + 10):
+            tally.add("progress", f"label {i}")
+        tally.add("progress", "label 0")
+        tally.add("progress", "many   words\n" + "x" * 500)
+        taken = tally.take()["progress"]
+        self.assertEqual(len(taken), LABELS_MAX + 1)
+        self.assertEqual(taken["label 0"], 2)
+        self.assertEqual(taken[OTHER_LABEL], 11)
+        self.assertEqual(sum(taken.values()), LABELS_MAX + 12)
+        tally.add("progress", "many   words\n" + "x" * 500)
+        tally.add("progress", "")
+        labels = list(tally.take()["progress"])
+        self.assertEqual(labels[0], ("many words " + "x" * 500)[:LABEL_MAX_CHARS])
+        self.assertEqual(labels[1], "(none)")
+
+
+class SupervisorRecordsTest(unittest.TestCase):
+    """What the supervisor writes for each adapter event, without a backend."""
+
+    def supervisor(self, root: Path, *, detached: bool):
+        registry = Registry(root / "registry")
+        sup = supervisor_module.Supervisor(
+            agent_id="codex", task="t", cwd=str(root), artifacts_dir=str(root / "artifacts"),
+            registry=registry, log_file=str(root / "supervisor.log") if detached else "")
+        sup.run_id = "run_codex-tally-test"
+        registry.run_path(sup.run_id).mkdir(parents=True)
+        (root / "artifacts" / "normalized").mkdir(parents=True)
+        return sup, registry.run_path(sup.run_id) / "audit.jsonl"
+
+    def feed(self, sup, events):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for kind, data in events:
+                sup._handle_event(AdapterEvent(kind=kind, data=data))
+        return err.getvalue()
+
+    EVENTS = [("turn_started", "t1"), ("text", "Hel"), ("text", "lo"), ("thought", "hm"),
+              ("progress", "item/started"), ("tool", "Read file"), ("text", "!"),
+              ("turn_completed", ""), ("thought", "after")]
+    PRINTED = [kind for kind, _ in EVENTS if kind != "tool"]  # a tool event never had a line
+
+    def run_events(self, *, detached, full=None):
+        with FullSwitch(full), tempfile.TemporaryDirectory() as name:
+            sup, audit = self.supervisor(Path(name), detached=detached)
+            log = self.feed(sup, self.EVENTS)
+            tail = io.StringIO()
+            with contextlib.redirect_stderr(tail):
+                sup._flush_stream_tallies()
+            return log, tail.getvalue(), records(audit)
+
+    def test_audit_records_lifecycle_events_and_counts_the_stream_between_them(self):
+        _log, _tail, audit = self.run_events(detached=False)
+        self.assertEqual([(r["event"], r.get("kind")) for r in audit], [
+            ("adapter_event", "turn_started"), ("adapter_event", "tool"),
+            ("adapter_event", "turn_completed"), ("stream_tally", None)])
+        self.assertNotIn("stream", audit[0])
+        self.assertEqual(audit[1]["stream"], {"text": 2, "thought": 1, "progress": {"item/started": 1}})
+        self.assertEqual(audit[1]["data_preview"], "Read file")
+        self.assertEqual(audit[2]["stream"], {"text": 1})
+        self.assertEqual(audit[3]["stream"], {"thought": 1})  # what no later record carried
+
+    def test_foreground_run_keeps_a_progress_line_per_event(self):
+        log, tail, _audit = self.run_events(detached=False)
+        self.assertEqual([kind for kind, _ in event_lines(log)], self.PRINTED)
+        self.assertEqual(tail, "")
+        with FullSwitch(None), tempfile.TemporaryDirectory() as name:
+            sup, _audit = self.supervisor(Path(name), detached=False)
+            self.assertEqual(event_lines(self.feed(sup, [("text", ""), ("text", "x")])), [("text", "x")])
+
+    def test_detached_log_gets_counts_before_the_next_lifecycle_line(self):
+        log, tail, _audit = self.run_events(detached=True)
+        self.assertEqual(event_lines(log), [
+            ("turn_started", "t1"), ("stream", "progress=1 text=3 thought=1"), ("turn_completed", "")])
+        self.assertEqual(event_lines(tail), [("stream", "thought=1")])
+
+    def test_detached_log_writes_counts_once_the_interval_has_passed(self):
+        with FullSwitch(None), tempfile.TemporaryDirectory() as name:
+            sup, _audit = self.supervisor(Path(name), detached=True)
+            first = self.feed(sup, [("text", "a"), ("text", "b")])
+            self.assertEqual(event_lines(first), [])
+            sup._log_tally_written -= supervisor_module.STREAM_LOG_INTERVAL_S
+            second = self.feed(sup, [("text", "c"), ("text", "d")])
+            self.assertEqual(event_lines(second), [("stream", "text=3")])
+
+    def test_the_debug_switch_records_every_event_again(self):
+        log, tail, audit = self.run_events(detached=True, full="1")
+        self.assertEqual([r.get("kind") for r in audit], [kind for kind, _ in self.EVENTS])
+        self.assertTrue(all("stream" not in r for r in audit))
+        self.assertEqual([kind for kind, _ in event_lines(log)], self.PRINTED)
+        self.assertEqual(tail, "")
+
+    def test_a_run_that_ends_without_a_last_record_still_leaves_its_counts(self):
+        with FullSwitch(None), tempfile.TemporaryDirectory() as name:
+            sup, audit = self.supervisor(Path(name), detached=True)
+            self.feed(sup, [("turn_started", "t1"), ("text", "cut"), ("text", "short")])
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                sup._finalize(status="cancelled", exit_code=130)
+            tallies = [r for r in records(audit) if r["event"] == "stream_tally"]
+            self.assertEqual([r["stream"] for r in tallies], [{"text": 2}])
+            self.assertIn(("stream", "text=2"), event_lines(err.getvalue()))
+
+    def test_a_steer_acknowledgement_is_still_reconciled(self):
+        with FullSwitch(None), tempfile.TemporaryDirectory() as name:
+            sup, audit = self.supervisor(Path(name), detached=True)
+            seen = []
+            sup._reconcile_steer_ack = seen.append
+            self.feed(sup, [("steer_ack", "queued")])
+            self.assertEqual(len(seen), 1)
+            self.assertEqual([r["kind"] for r in records(audit)], ["steer_ack"])
+
+
+class RegistryLogTest(RunCase):
+    """Real `porch delegate` runs: the registry audit and the detached log."""
+
+    def audit(self, run_id):
+        return records(self.run_dir(run_id) / "audit.jsonl")
+
+    def audit_stream_totals(self, audit):
+        total = collections.Counter()
+        for record in audit:
+            total.update(tally_totals(record.get("stream") or {}))
+        return total
+
+    def test_audit_counts_every_stream_event_and_records_none(self):
+        result = self.delegate("-a", "codex", "TASK")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        audit = self.audit(self.run_id(result))
+        kinds = [r.get("kind") for r in audit if r["event"] == "adapter_event"]
+        self.assertFalse(STREAM_KINDS.intersection(kinds), kinds)
+        self.assertIn("turn_completed", kinds)
+        self.assertEqual(kinds[-1], "done")
+        streamed = self.stream_events()
+        self.assertGreaterEqual(streamed["progress"], 6)
+        self.assertGreater(streamed["text"], 0)
+        self.assertEqual(self.audit_stream_totals(audit), streamed)
+        labels = collections.Counter()
+        for record in audit:
+            labels.update((record.get("stream") or {}).get("progress") or {})
+        self.assertEqual(labels["turn/diff/updated"], 6)
+        # The caller of a foreground run still sees each piece as it arrives.
+        self.assertEqual(sum(1 for kind, _ in event_lines(result.stderr) if kind == "progress"), streamed["progress"])
+        self.assertNotIn("stream", [kind for kind, _ in event_lines(result.stderr)])
+
+    def detached(self, **env):
+        started = self.delegate("-a", "codex", "--detach", "TASK", **env)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        run_id = started.stdout.strip()
+        waited = self.delegate("wait", run_id, "--timeout", "60")
+        self.assertEqual(waited.returncode, 0, waited.stderr)
+        self.assertIn("FAKE_CODEX_STEER_OK", waited.stdout)
+        meta = json.loads((self.run_dir(run_id) / "meta.json").read_text())
+        return run_id, Path(meta["detach_log"]).read_text(encoding="utf-8")
+
+    def test_detached_run_log_holds_counts_instead_of_a_line_per_event(self):
+        run_id, log = self.detached()
+        found = event_lines(log)
+        kinds = [kind for kind, _ in found]
+        self.assertFalse(STREAM_KINDS.intersection(kinds), kinds)
+        self.assertIn("turn_completed", kinds)
+        self.assertIn("done", kinds)
+        counted = collections.Counter()
+        for kind, rest in found:
+            if kind == "stream":
+                counted.update({k: int(v) for k, v in (part.split("=") for part in rest.split())})
+        self.assertEqual(counted, self.stream_events())
+        self.assertLess(kinds.index("stream"), kinds.index("turn_completed"))
+        self.assertEqual(self.audit_stream_totals(self.audit(run_id)), self.stream_events())
+
+    def test_the_debug_switch_writes_a_record_and_a_line_per_event(self):
+        run_id, log = self.detached(PORCH_STREAM_FULL="1")
+        streamed = self.stream_events()
+        audit = self.audit(run_id)
+        self.assertEqual(collections.Counter(r["kind"] for r in audit if r.get("kind") in STREAM_KINDS), streamed)
+        self.assertTrue(all("stream" not in r for r in audit))
+        kinds = [kind for kind, _ in event_lines(log)]
+        self.assertEqual(kinds.count("progress"), streamed["progress"])
+        self.assertNotIn("stream", kinds)
+
+    def test_watch_shows_the_turns_and_none_of_the_bookkeeping(self):
+        result = self.delegate("-a", "codex", "TASK")
+        run_id = self.run_id(result)
+        with (self.run_dir(run_id) / "audit.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"event": "stream_tally", "stream": {"text": 3}}) + "\n")
+        watched = self.delegate("watch", run_id)
+        self.assertEqual(watched.returncode, 0, watched.stderr)
+        shown = watched.stdout
+        self.assertIn("turn_completed", shown)
+        self.assertIn("terminal", shown)
+        self.assertNotIn("stream_tally", shown)
+        self.assertNotIn("stream=", shown)
 
 
 if __name__ == "__main__":

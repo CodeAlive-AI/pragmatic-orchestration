@@ -404,13 +404,15 @@ def cmd_wait(args: argparse.Namespace) -> int:
     return code
 
 
-# audit.jsonl gets one record per streamed chunk, so a raw tail would cost one
-# model turn per token. Only lifecycle-bearing adapter events survive.
+# Only lifecycle-bearing adapter events are shown. Runs of older versions also
+# hold one audit record per streamed chunk (kinds text, thought, progress); a
+# raw tail of those would cost one model turn per token.
 _AUDIT_KEEP_KINDS = frozenset(
     {"turn_started", "turn_completed", "prompt_complete", "error", "done"}
 )
-# Pure bookkeeping; the same information reaches the caller via state.steers.
-_AUDIT_DROP_EVENTS = frozenset({"steer_ack_reconcile"})
+# Pure bookkeeping: steer state reaches the caller via state.steers, and
+# stream_tally only counts the stream events of a run's last stretch.
+_AUDIT_DROP_EVENTS = frozenset({"steer_ack_reconcile", "stream_tally"})
 
 
 class _AuditTail:

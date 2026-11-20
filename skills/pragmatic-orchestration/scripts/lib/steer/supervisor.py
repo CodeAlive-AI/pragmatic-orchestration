@@ -17,6 +17,7 @@ from .launcher import BACKEND_LAUNCHERS, launcher_metadata
 from .mailbox import Mailbox, MailboxError
 from .registry import Registry, RegistryError, TERMINAL_STATUSES
 from .session import SessionLease
+from .tally import STREAM_KINDS, StreamTally
 from .util import (
     DIR_MODE,
     FILE_MODE,
@@ -27,8 +28,12 @@ from .util import (
     preview_text,
     progress,
     secure_touch,
+    stream_full,
     utc_now_iso,
 )
+
+# A detached run's log gets one line of stream counts at most this often.
+STREAM_LOG_INTERVAL_S = 60.0
 
 # Success-path mailbox ranks for async steer_ack reconciliation.
 # Higher wins; equal rank allows evidence upgrade. Never demote.
@@ -142,6 +147,12 @@ class Supervisor:
             "steers": {},
         }
         self._registry_recoveries = 0
+        # Stream events (answer, thinking and protocol pieces) are counted, not
+        # recorded one by one: see tally.py. PORCH_STREAM_FULL=1 records each.
+        self._tally_stream = not stream_full()
+        self._audit_tally = StreamTally()
+        self._log_tally = StreamTally()
+        self._log_tally_written = time.time()
 
     def run(self) -> int:
         if self.recover_session and not self.continue_run:
@@ -487,35 +498,81 @@ class Supervisor:
                 },
             )
 
-        if ev.kind == "text" and ev.data:
-            progress("event", f"run_id={self.run_id}", "text", preview_text(ev.data, 80))
-        elif ev.kind == "thought":
-            progress("event", f"run_id={self.run_id}", "thought", preview_text(ev.data, 60))
-        elif ev.kind == "steer_ack":
-            progress("event", f"run_id={self.run_id}", "steer_ack", preview_text(ev.data, 80))
+        tallied = self._tally_stream and ev.kind in STREAM_KINDS
+        if tallied and self.log_file:
+            # A detached run's stderr is its supervisor.log, read by nobody
+            # while it streams: counts, at most one line a minute. A foreground
+            # run's stderr is the caller's live progress and stays per event.
+            self._log_tally.add(ev.kind, ev.data)
+            if time.time() - self._log_tally_written >= STREAM_LOG_INTERVAL_S:
+                self._write_log_tally()
+        else:
+            line = self._event_line(ev)
+            if line:
+                # Counts first, so the log keeps the order of events.
+                self._write_log_tally()
+                progress("event", f"run_id={self.run_id}", *line)
+        if ev.kind == "steer_ack":
             self._reconcile_steer_ack(ev)
-        elif ev.kind in (
+        if tallied:
+            self._audit_tally.add(ev.kind, ev.data)
+            return
+        # Audit keeps a short preview only (status/debug); full body is in normalized.
+        audit_record: Dict[str, Any] = {
+            "ts": utc_now_iso(),
+            "event": "adapter_event",
+            "kind": ev.kind,
+            "data_preview": preview_text(ev.data, 200),
+        }
+        if self._audit_tally:
+            # Stream events since the previous audit record of an adapter event.
+            audit_record["stream"] = self._audit_tally.take()
+        append_jsonl(run_dir / "audit.jsonl", audit_record)
+
+    @staticmethod
+    def _event_line(ev) -> Optional[tuple]:
+        """Kind and preview of the progress line an event gets, if it gets one."""
+        if ev.kind == "text":
+            return ("text", preview_text(ev.data, 80)) if ev.data else None
+        if ev.kind == "thought":
+            return ("thought", preview_text(ev.data, 60))
+        if ev.kind in ("steer_ack", "done"):
+            return (ev.kind, preview_text(ev.data, 80))
+        if ev.kind in (
             "turn_started",
             "turn_completed",
             "prompt_complete",
             "progress",
             "user_replay",
         ):
-            progress("event", f"run_id={self.run_id}", ev.kind, preview_text(ev.data, 60))
-        elif ev.kind == "error":
-            progress("event", f"run_id={self.run_id}", "error", preview_text(ev.data, 120))
-        elif ev.kind == "done":
-            progress("event", f"run_id={self.run_id}", "done", preview_text(ev.data, 80))
-        # Audit keeps a short preview only (status/debug); full body is in normalized.
-        append_jsonl(
-            run_dir / "audit.jsonl",
-            {
-                "ts": utc_now_iso(),
-                "event": "adapter_event",
-                "kind": ev.kind,
-                "data_preview": preview_text(ev.data, 200),
-            },
-        )
+            return (ev.kind, preview_text(ev.data, 60))
+        if ev.kind == "error":
+            return ("error", preview_text(ev.data, 120))
+        return None
+
+    def _write_log_tally(self) -> None:
+        """Write the pending stream counts of a detached run as one log line."""
+        self._log_tally_written = time.time()
+        if self._log_tally:
+            brief = self._log_tally.brief()
+            self._log_tally.take()
+            progress("event", f"run_id={self.run_id}", "stream", brief)
+
+    def _flush_stream_tallies(self) -> None:
+        """At the end of a run: counts no later record carried. Never raises."""
+        try:
+            self._write_log_tally()
+            if self._audit_tally and self.run_id:
+                append_jsonl(
+                    self.registry.run_path(self.run_id) / "audit.jsonl",
+                    {
+                        "ts": utc_now_iso(),
+                        "event": "stream_tally",
+                        "stream": self._audit_tally.take(),
+                    },
+                )
+        except Exception:
+            pass
 
     def _reconcile_steer_ack(self, ev) -> None:
         raw = ev.raw if isinstance(ev.raw, dict) else {}
@@ -788,6 +845,7 @@ class Supervisor:
         if self._terminal:
             return
         self._terminal = True
+        self._flush_stream_tallies()
         text = final_text
         if not text and self.adapter:
             try:

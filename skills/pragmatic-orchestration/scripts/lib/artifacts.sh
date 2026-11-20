@@ -13,10 +13,39 @@
 # backend_run uses PORCH_ARTIFACT_KEY when set, else agent id.
 #
 # Env:
-#   PORCH_OUTPUT_DIR  — parent for auto run dirs (default: ${TMPDIR}/pragmatic-orchestration-outputs)
+#   PORCH_OUTPUT_DIR  — parent for auto run dirs (default: porch_default_output_dir
+#                       in common.sh, ~/.local/state/pragmatic-orchestration/outputs)
 #   PORCH_RUN_DIR     — if set, use this directory (created if missing)
 #   PORCH_SAVE_OUTPUTS — set 0 to disable (no-op helpers)
 #   PORCH_ARTIFACT_KEY — per-invocation key set by callers (see backend_run.sh)
+#   PORCH_RETENTION_AUTO — set 0 to stop the automatic `porch prune --apply`
+#
+# Retention (lib/retention.py, `porch prune`): the folder is durable, so porch
+# bounds it itself. Creating a run dir starts one detached prune at most every
+# six hours. meta.json records the launching process as owner_pid; a run whose
+# owner is alive is running and is never pruned.
+
+PORCH_RETENTION_AUTO_MINUTES=360
+
+# Start a detached `porch prune --apply` for $1 unless one ran recently.
+# Never blocks or fails the run: the caller's stdout and stderr are not
+# inherited, so `$(porch ...)` does not wait for it.
+artifacts_auto_prune() {
+    local parent="$1" lib_dir="$2"
+    [[ "${PORCH_RETENTION_AUTO:-1}" != "0" ]] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local stamp="${parent%/}/.retention-stamp"
+    if [[ -f "$stamp" && -n "$(find "$stamp" -mmin "-$PORCH_RETENTION_AUTO_MINUTES" 2>/dev/null)" ]]; then
+        return 0
+    fi
+    # Stamp first: concurrent starts must not each spawn a pruner.
+    : > "$stamp" 2>/dev/null || return 0
+    (
+        PORCH_OUTPUT_DIR="$parent" nohup python3 "$lib_dir/retention.py" prune --apply --quiet \
+            </dev/null >>"${parent%/}/.retention.log" 2>&1 &
+    ) >/dev/null 2>&1 || true
+    return 0
+}
 
 artifacts_init_run() {
     local mode="${1:-unknown}"
@@ -26,7 +55,7 @@ artifacts_init_run() {
         return 0
     fi
     if [[ -z "${PORCH_RUN_DIR:-}" ]]; then
-        local parent="${PORCH_OUTPUT_DIR:-${TMPDIR:-/tmp}/pragmatic-orchestration-outputs}"
+        local parent="${PORCH_OUTPUT_DIR:-$(porch_default_output_dir)}"
         mkdir -p "$parent"
         # Human-readable run dir (run-ask-amber-otter-4f21): the path is quoted
         # back to the caller in progress output and referenced later by hand, so
@@ -48,12 +77,19 @@ artifacts_init_run() {
             # review over a directory name.
             PORCH_RUN_DIR="$(mktemp -d "${parent%/}/run-${mode}.XXXXXX")"
         fi
+        artifacts_auto_prune "$parent" "$_lib_dir"
     else
         mkdir -p "$PORCH_RUN_DIR"
     fi
     mkdir -p "$PORCH_RUN_DIR/raw" "$PORCH_RUN_DIR/normalized" "$PORCH_RUN_DIR/final"
     export PORCH_RUN_DIR
-    python3 -c '
+    # owner_pid is this porch process ($$ also inside subshells): it lives for
+    # the whole run, or hands over to a supervisor that the registry tracks.
+    # Git Bash pids are not Windows pids, so none is recorded there and
+    # retention falls back to how recently the folder was written.
+    local _owner_pid="$$"
+    case "${OSTYPE:-}" in msys*|cygwin*|win32*) _owner_pid="" ;; esac
+    PORCH_ARTIFACT_OWNER_PID="$_owner_pid" python3 -c '
 import json, os, time
 path = os.path.join(os.environ["PORCH_RUN_DIR"], "meta.json")
 meta = {
@@ -62,6 +98,9 @@ meta = {
     "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "pid": os.getpid(),
 }
+owner = os.environ.get("PORCH_ARTIFACT_OWNER_PID", "")
+if owner.isdigit():
+    meta["owner_pid"] = int(owner)
 with open(path, "w") as f:
     json.dump(meta, f, indent=2)
     f.write("\n")

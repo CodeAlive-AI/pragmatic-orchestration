@@ -22,6 +22,9 @@ export PORCH_BIN_DEVIN="$FAKES/fake-devin"
 export PORCH_BIN_AGY="$FAKES/fake-agy"
 export PORCH_BIN_CURSOR="$FAKES/fake-cursor"
 export PORCH_SUPPRESS_SHELL_WARN=1
+# The suite's runs must not start the background `porch prune --apply`; the
+# retention tests switch it on for their own temporary folders.
+export PORCH_RETENTION_AUTO=0
 # Parent shells (prior delegate runs, harnesses) must not leak mode wrappers
 # into the offline suite.
 unset PORCH_RAW_PROMPT PORCH_SKIP_OUTPUT_TEMPLATE PORCH_MODE \
@@ -217,6 +220,9 @@ dump_delegate() {
 
 TMP=$(mktemp -d)
 export XDG_DATA_HOME="$TMP/xdg-data"
+# Runs without an explicit PORCH_RUN_DIR must not land in the user's own,
+# durable outputs folder.
+export PORCH_OUTPUT_DIR="$TMP/outputs"
 unset OPENCODE_DB OPENCODE_PASSWORD OPENCODE_SERVER_PASSWORD OPENCODE_CONFIG_CONTENT
 
 # Production profiles must reach their native harnesses with the exact current
@@ -1645,6 +1651,13 @@ else
 fi
 
 if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/cancellation_test.py"; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
+# Retention: `porch prune`, the durable default outputs folder, automatic prune
+if env -u PORCH_RETENTION_AUTO PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/retention_test.py"; then
   PASS=$((PASS + 1))
 else
   FAIL=$((FAIL + 1))

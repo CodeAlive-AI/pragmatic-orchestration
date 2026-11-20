@@ -348,7 +348,7 @@ Do not put secrets in tasks or steering guidance unless persistence in private r
 
 The registry defaults below the user cache. Registry/run directories are `0700`, state files are `0600`, and symlink run directories are rejected. An active supervisor validates and can safely reconstruct missing or malformed owned registry metadata; unsafe ownership/symlink failures remain degraded instead of being overwritten.
 
-Steerable runs always retain the private service registry and protocol artifacts required for steer/status/cancel, even when `PORCH_SAVE_OUTPUTS=0` disables ordinary archival. Terminal transition serializes with enqueue so no accepted/delivering mailbox entry remains without a terminal outcome.
+Steerable runs always retain the private service registry and protocol artifacts required for steer/status/cancel, even when `PORCH_SAVE_OUTPUTS=0` disables ordinary archival. Finished runs leave the registry and the outputs folder after their retention period; `porch prune` lists and removes them and never touches a running one ([configuration.md](configuration.md#saved-runs-and-retention)). Terminal transition serializes with enqueue so no accepted/delivering mailbox entry remains without a terminal outcome.
 
 ## Backend delivery matrix
 

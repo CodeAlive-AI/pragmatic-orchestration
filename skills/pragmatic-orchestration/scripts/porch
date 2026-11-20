@@ -11,6 +11,7 @@
 #   porch quota [all|codex|grok]
 #   porch sessions roots|list|grep|show [...]
 #   porch desktop list|search|read|projects|start|open|archive|unarchive [...]
+#   porch prune [--apply] [--older-than AGE] [...]
 #
 # Observability contract:
 #   compact semantic live progress → stderr
@@ -71,6 +72,8 @@ Usage:
   porch sessions stats [-a ...] [--by model|harness|cwd|day] [--since T]
   porch desktop list|search|read [--app claude|codex|all] [--project S] [--state active|archived|any] [...]
   porch desktop projects|start|open|archive|unarchive [...]   (Claude Desktop / Codex app; macOS)
+  porch prune [--apply] [--older-than AGE] [--detail-older-than AGE] [--max-detail-size SIZE]
+              [--all] [--json]
   porch --list-agents
   porch -h | --help
 
@@ -155,9 +158,22 @@ sessions
   tools, reasoning, system, all. Classification rules and per-harness format
   recipes: references/session-history.md.
 
+prune
+  Retention for saved run outputs (PORCH_OUTPUT_DIR) and the steerable run
+  registry (PORCH_STEER_DIR). Without --apply it only lists what would go.
+  Finished runs older than --older-than (default 30d) are removed; the bulky
+  raw/ and normalized/ streams of finished runs go after --detail-older-than
+  (default 3d), or sooner, oldest first, while they exceed --max-detail-size
+  (default 2G; never within a run's first day). Final answers and metadata
+  stay for the full period. A running run is never touched. porch also runs
+  `prune --apply` by itself at most every six hours; PORCH_RETENTION_AUTO=0
+  turns that off.
+    Exit: 0 done or nothing to do, 1 a removal failed, 5 usage.
+
 Environment:
   PORCH_CONFIG, PORCH_PROGRESS, PORCH_OUTPUT_DIR, PORCH_RUN_DIR, PORCH_SAVE_OUTPUTS,
-  PORCH_STEER_DIR and per-backend
+  PORCH_STEER_DIR, PORCH_RETENTION_DAYS, PORCH_RETENTION_DETAIL_DAYS,
+  PORCH_RETENTION_DETAIL_MAX, PORCH_RETENTION_AUTO and per-backend
   model/effort overrides — see SKILL.md.
 EOF
 }
@@ -222,6 +238,12 @@ case "$1" in
         PY=$(command -v python3 || command -v python) || exit "$EXIT_USAGE"
         exec "$PY" "$LIB_DIR/desktop.py" "$@"
         ;;
+    prune)
+        shift
+        PY=$(command -v python3 || command -v python) || exit "$EXIT_USAGE"
+        export PORCH_OUTPUT_DIR
+        exec "$PY" "$LIB_DIR/retention.py" prune "$@"
+        ;;
     quota|sessions|history)
         cmd=$1; shift
         # python3 on POSIX; Git Bash on Windows usually exposes only `python`
@@ -236,7 +258,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Error: unknown command: $1 (expected review|delegate|quota|sessions|desktop|ui|media)" >&2
+        echo "Error: unknown command: $1 (expected review|delegate|quota|sessions|desktop|ui|prune|media)" >&2
         usage >&2
         exit $EXIT_USAGE
         ;;

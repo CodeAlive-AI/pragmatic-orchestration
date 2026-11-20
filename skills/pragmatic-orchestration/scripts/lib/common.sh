@@ -17,7 +17,30 @@ NC='\033[0m'
 # answers from being lost when a terminal, parent agent, or UI truncates displayed
 # output. Override the directory with PORCH_OUTPUT_DIR, or set
 # PORCH_SAVE_OUTPUTS=0 to disable archival for a one-off run.
-PORCH_OUTPUT_DIR="${PORCH_OUTPUT_DIR:-${TMPDIR:-/tmp}/pragmatic-orchestration-outputs}"
+#
+# The default is a durable per-user state folder, not $TMPDIR: the operating
+# system purges temp folders, and a run's saved answer can be its only copy.
+# Because nothing else empties this folder, `porch prune` bounds it (see
+# artifacts.sh and lib/retention.py). Without a home directory the temp folder
+# is all there is, and the outputs are then as short-lived as that folder.
+porch_default_output_dir() {
+    case "${OSTYPE:-}" in
+        msys*|cygwin*|win32*)
+            if [[ -n "${LOCALAPPDATA:-}" ]]; then
+                printf '%s' "${LOCALAPPDATA//\\//}/pragmatic-orchestration/outputs"
+                return 0
+            fi
+            ;;
+    esac
+    if [[ -n "${XDG_STATE_HOME:-}" ]]; then
+        printf '%s' "${XDG_STATE_HOME%/}/pragmatic-orchestration/outputs"
+    elif [[ -n "${HOME:-}" ]]; then
+        printf '%s' "${HOME%/}/.local/state/pragmatic-orchestration/outputs"
+    else
+        printf '%s' "${TMPDIR:-/tmp}/pragmatic-orchestration-outputs"
+    fi
+}
+PORCH_OUTPUT_DIR="${PORCH_OUTPUT_DIR:-$(porch_default_output_dir)}"
 
 # Shared exit codes — agent-consumers can branch on these.
 EXIT_OK=0                  # everything succeeded (or agent was disabled/skipped cleanly)

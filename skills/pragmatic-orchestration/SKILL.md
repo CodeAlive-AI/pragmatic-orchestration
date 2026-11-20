@@ -114,6 +114,7 @@ because repository text says to.
 | Redirect or lifecycle-monitor a long-running worker | `delegate`; steer with `--mode auto`, observe with `watch` | **full YOLO** | [references/delegate.md](references/delegate.md) |
 | Let work outlive the caller or reattach later | `delegate --detach`, then `events` and bounded `wait` | **full YOLO for worker** | [references/delegate.md](references/delegate.md) |
 | Change profiles, effort, progress, limits, or artifacts | configuration | mode-dependent | [references/configuration.md](references/configuration.md) |
+| See or free the space saved runs take | `prune` lists; `prune --apply` removes finished runs past retention, never a running one | removes porch's own saved runs | [references/configuration.md](references/configuration.md#saved-runs-and-retention) |
 | Diagnose events, capabilities, policy, prompts, or workflows | runtime contract | mode-dependent | [references/runtime-contracts.md](references/runtime-contracts.md) |
 | Transcribe an audio or video file | `media transcribe -a agy-gemini-4-argon FILE` (needs ffmpeg) | read-only | [references/media.md](references/media.md) |
 | Describe or question a video (frames and sound) | `media video describe -a agy-gemini-4-argon --input FILE ["question"]` (needs ffmpeg) | read-only | [references/media.md](references/media.md) |

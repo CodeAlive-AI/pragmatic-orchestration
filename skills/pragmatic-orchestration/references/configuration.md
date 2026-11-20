@@ -292,14 +292,56 @@ must not reinterpret such a path as an instruction to read stdin.
 |---|---|
 | `PORCH_CONFIG` | Alternate profile configuration |
 | `PORCH_PROGRESS` | Review progress: `full`, `compact`, or `none` |
-| `PORCH_OUTPUT_DIR`, `PORCH_RUN_DIR` | Artifact locations |
+| `PORCH_OUTPUT_DIR`, `PORCH_RUN_DIR` | Artifact locations; `PORCH_OUTPUT_DIR` defaults to `${XDG_STATE_HOME:-~/.local/state}/pragmatic-orchestration/outputs` |
 | `PORCH_SAVE_OUTPUTS` | Disable ordinary archival with `0`; steerable service artifacts remain |
 | `PORCH_STEER_DIR` | Steerable registry; reuse the same value for every control command |
+| `PORCH_RETENTION_DAYS`, `PORCH_RETENTION_DETAIL_DAYS`, `PORCH_RETENTION_DETAIL_MAX`, `PORCH_RETENTION_AUTO` | Retention of saved runs, see below |
 | `PORCH_DEBUG_EVENTS*` | Opt-in bounded event tape and its path/record/byte limits |
 | `GEMINI_API_KEY` | Gemini CLI authentication when required |
 
 Porch imposes no execution deadline in any mode. Provider context/output
 limits and managed harness settings still apply.
+
+## Saved runs and retention
+
+Every run saves its answer and event streams in its own folder
+`run-<mode>-<name>` under `PORCH_OUTPUT_DIR`. The default folder is
+`${XDG_STATE_HOME:-~/.local/state}/pragmatic-orchestration/outputs` (on Windows
+`%LOCALAPPDATA%\pragmatic-orchestration\outputs`). It is not the system
+temporary folder: the OS empties that at every boot and purges it after a few
+idle days, and a saved answer can be the only copy of finished work. A caller
+that sets `PORCH_RUN_DIR` owns that folder; retention never touches it.
+
+Nothing else bounds a durable folder, so porch does:
+
+| What | Kept | Setting |
+|---|---|---|
+| A finished run: its folder and its registry entry (`final.txt`, `meta.json`, audit) | 30 days | `PORCH_RETENTION_DAYS`, `--older-than` |
+| The event streams of a finished run (`raw/`, `normalized/`) | 3 days | `PORCH_RETENTION_DETAIL_DAYS`, `--detail-older-than` |
+| All event streams of finished runs together | 2 GiB, oldest removed first, never within a run's first 24 hours; `0` switches the limit off | `PORCH_RETENTION_DETAIL_MAX`, `--max-detail-size` |
+
+A run that is still going is never pruned: one the registry reports as running,
+one whose launching process is alive, or one written to in the last six hours
+when no process was recorded. A registry entry goes only together with the
+whole session chain it belongs to (`--continue-run`), and only when every run
+of the chain is past retention. After its streams are removed, a run still
+answers `delegate status`, `wait` and `list`, and `porch sessions` still shows
+its task and final answer; `delegate events` has no events left for it.
+
+```bash
+porch prune                          # list what would be pruned; removes nothing
+porch prune --apply                  # prune it
+porch prune --older-than 14d --detail-older-than 1d --max-detail-size 500M
+porch prune --all --json             # every run with its verdict
+```
+
+Ages take `h`, `d` or `w` (a bare number is days); sizes take `K`, `M`, `G`.
+Exit codes: 0 done, 1 some entries could not be removed, 5 invalid setting.
+Porch also starts `porch prune --apply` in the background when a run starts,
+at most once in six hours (`<outputs>/.retention.log` has its output);
+`PORCH_RETENTION_AUTO=0` switches that off. The other outputs folder of an
+older version is pruned by naming it:
+`PORCH_OUTPUT_DIR="${TMPDIR%/}/pragmatic-orchestration-outputs" porch prune`.
 
 # Quota inspection
 

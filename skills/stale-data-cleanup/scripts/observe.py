@@ -24,6 +24,10 @@ MACHINE_KEYS = {"root", "ssh", "target_free", "floor_free", "stocks",
 NOTIFY_KEYS = {"command", "decide", "now", "floor", "scan_failed"}
 SIZE_RE = re.compile(r"(?:[0-9]+(?:\.[0-9]+)?[KMGTPE]?(?:i?B)?|[0-9]+(?:\.[0-9]+)?%)\Z", re.I)
 NOTIFY_TIMEOUT_SECONDS = 60
+# A failed scan still reports free space; the check must not outlast the run.
+DF_TIMEOUT_SECONDS = 60
+# Same horizon as disk_map.py trend: "now" means full within this many days.
+HORIZON_DAYS = 4
 DEFAULTS = {
     "decide": "Disk space on {machine} is below target: {free} free of {total}; target {target}, pressure {pressure}. Report: {report_path}",
     "now": "Disk space on {machine} needs attention now: {free} free of {total}; pressure {pressure}, {days_until_full} until full. Report: {report_path}",
@@ -151,6 +155,60 @@ def remote_command(root, scan_timeout_minutes):
             "exec $T $I $N {}".format(remote_seconds, scan))
 
 
+def volume_now(config):
+    """Free and total bytes of the watched volume, measured without a scan.
+
+    Returns (free, total, error). Locally this is statvfs, the call `df` makes
+    and the one disk_map.py records in a scan; remotely it is `df -Pk` over ssh.
+    """
+    root = config["root"]
+    if not config.get("ssh"):
+        try:
+            vfs = os.statvfs(os.path.expanduser(root))
+        except OSError as exc:
+            return None, None, str(exc)
+        return vfs.f_bavail * vfs.f_frsize, vfs.f_blocks * vfs.f_frsize, None
+    argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ControlMaster=no",
+            "-o", "ControlPath=none", config["ssh"], "df -Pk -- {}".format(shlex.quote(root))]
+    try:
+        code, out, err, timed_out = run_command(argv, timeout=DF_TIMEOUT_SECONDS)
+    except OSError as exc:
+        return None, None, str(exc)
+    if timed_out:
+        return None, None, "df timed out after {} seconds".format(DF_TIMEOUT_SECONDS)
+    if code:
+        return None, None, "df failed (ssh exit {}): {}".format(code, err.decode("utf-8", "replace").strip())
+    lines = out.decode("utf-8", "replace").strip().splitlines()
+    fields = lines[-1].split() if len(lines) >= 2 else []
+    try:
+        return int(fields[3]) * 1024, int(fields[1]) * 1024, None
+    except (IndexError, ValueError):
+        return None, None, "unexpected df output: {!r}".format(lines[-1] if lines else "")
+
+
+def last_scan_point(result):
+    """(free_bytes, scanned_at as aware datetime) of the newest saved scan, if any."""
+    for item in reversed((result or {}).get("scans") or []):
+        free, stamp = item.get("free_bytes"), item.get("scanned_at")
+        if free is None or not stamp:
+            continue
+        try:
+            when = datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=datetime.timezone.utc)
+        return free, when
+    return None
+
+
+def load_average_text():
+    try:
+        return "{:.2f}/{:.2f}/{:.2f}".format(*os.getloadavg())
+    except (OSError, AttributeError):
+        return None
+
+
 def pretty_bytes(value):
     if value is None:
         return "unknown"
@@ -207,6 +265,7 @@ def observe(name, config, command, templates, no_notify, log):
     scan_ok = False
     scan_data = None
     timeout_minutes = float(config.get("scan_timeout_minutes", "45"))
+    scan_started = time.monotonic()
     argv = [sys.executable, DISK_MAP, "scan", config["root"]]
     if config.get("ssh"):
         argv = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
@@ -279,6 +338,16 @@ def observe(name, config, command, templates, no_notify, log):
         os.unlink(temp_scan)
     except FileNotFoundError:
         pass
+    scan_minutes = (time.monotonic() - scan_started) / 60
+    scan_note = "scan {} {:.1f} min".format("took" if scan_ok else "ran", scan_minutes)
+    if not config.get("ssh") and load_average_text():
+        scan_note += ", load average {}".format(load_average_text())
+    # A failed scan must not make a fast drop silent: measure free space directly.
+    df_error = None
+    if not scan_ok:
+        df_free, df_total, df_error = volume_now(config)
+        if df_error:
+            errors.append("free space check failed: {}".format(df_error))
 
     rotate_argv = [sys.executable, DISK_MAP, "rotate", scans, "--keep", config.get("keep", "8")]
     code, out, err, _ = run_command(rotate_argv)
@@ -314,10 +383,42 @@ def observe(name, config, command, templates, no_notify, log):
                 errors.append("trend returned invalid JSON: {}".format(exc))
 
     scan_volume = (scan_data or {}).get("volume") or {}
+    failed_space = None
+    failed_days_to_full = None
+    failed_lines = []
     if not scan_ok:
         pressure = "scan failed"
-        free = None
-        total = None
+        free = None if df_error else df_free
+        total = None if df_error else df_total
+        failed_lines.append("Scan failed: {}. The numbers in this block are measured now.".format(
+            next((item for item in errors if item.startswith(("scan ", "remote scan "))), "see below")))
+        if free is None:
+            failed_lines.append("Free space now: unknown ({})".format(df_error))
+        else:
+            target_bytes = size_bytes(config["target_free"], total)
+            floor_bytes = size_bytes(config["floor_free"], total) if config.get("floor_free") else None
+            if floor_bytes is not None and free < floor_bytes:
+                level = "below the floor ({})".format(config["floor_free"])
+            elif target_bytes is not None and free < target_bytes:
+                level = "below the target ({})".format(config["target_free"])
+            else:
+                level = "above the target ({})".format(config["target_free"])
+            failed_lines.append("Free space now (df): {} of {}, {}".format(pretty_bytes(free), pretty_bytes(total), level))
+            if target_bytes is not None and free < target_bytes:
+                failed_space = "decide"
+            point = last_scan_point(result)
+            if point:
+                days = (datetime.datetime.now(datetime.timezone.utc) - point[1]).total_seconds() / 86400
+                change = free - point[0]
+                line = "Since the last saved scan ({}, {:.1f} days ago): {}{}".format(
+                    point[1].strftime("%Y-%m-%d %H:%M UTC"), days, "+" if change >= 0 else "-", pretty_bytes(abs(change)))
+                if days > 0 and change < 0:
+                    rate = -change / days
+                    failed_days_to_full = free / rate
+                    line += ", {}/day filling; full in {:.1f} days at that rate".format(pretty_bytes(rate), failed_days_to_full)
+                    if failed_days_to_full <= HORIZON_DAYS:
+                        failed_space = "now"
+                failed_lines.append(line)
         if result:
             trend_text = "Trend from earlier scans:\n\n" + trend_text
     elif result:
@@ -356,30 +457,44 @@ def observe(name, config, command, templates, no_notify, log):
         "free_gb": decimal_gb(free), "total_gb": decimal_gb(total),
         "target": config["target_free"], "floor": floor or "unset", "pressure": header_pressure,
         "days_until_full": ("{:.1f} days".format(result["volume"]["days_to_full"])
-                            if scan_ok and result and result["volume"].get("days_to_full") is not None else "unknown"),
+                            if scan_ok and result and result["volume"].get("days_to_full") is not None
+                            else "{:.1f} days".format(failed_days_to_full) if failed_days_to_full is not None
+                            else "unknown"),
         "report_path": report_path,
     }
-    template_key = None
+    # Space alerts and the failing-observer alert are separate signals: a failed
+    # scan still raises floor/now/decide from the free space measured just now.
+    template_keys = []
     if not no_notify:
-        if failed and failure_streak >= 2 and (failure_streak - 2) % 3 == 0:
-            template_key = "scan_failed"
-        elif not failed and below_floor:
-            template_key = "floor"
-        elif not failed and pressure == "now":
-            template_key = "now"
-        elif not failed and pressure == "decide":
+        space = failed_space if failed else pressure
+        if below_floor:
+            template_keys.append("floor")
+        elif space == "now":
+            template_keys.append("now")
+        elif space == "decide":
             day = datetime.date.today().toordinal()
             last = memory.get("last_decide_day")
             if memory.get("previous_pressure") != "decide" or last is None or day - int(last) >= 3:
-                template_key = "decide"
+                template_keys.append("decide")
                 memory["last_decide_day"] = day
+        if failed and failure_streak >= 2 and (failure_streak - 2) % 3 == 0:
+            template_keys.append("scan_failed")
     if scan_ok and pressure in ("quiet", "decide", "now"):
         memory["previous_pressure"] = pressure
+    elif failed and free is not None:
+        # Free space was measured, so the repeat interval of "decide" applies.
+        memory["previous_pressure"] = failed_space or "quiet"
     notify_failed = False
-    if template_key and not notify(command, templates[template_key], message_values, log):
+    for template_key in template_keys:
+        if not notify(command, templates[template_key], message_values, log):
+            notify_failed = True
+    if notify_failed:
         errors.append("notification command failed")
-        notify_failed = True
-    body = "Disk watch: {}, {}. {}.\n\n{}".format(name, today, header_pressure, trend_text or "Trend output unavailable.")
+    body = "Disk watch: {}, {}. {}.\n\n".format(name, today, header_pressure)
+    if failed_lines:
+        body += "\n".join(failed_lines) + "\n\n"
+    body += trend_text or "Trend output unavailable."
+    body += "\n\nObserver: {}".format(scan_note)
     if errors:
         body += "\n\nCould not do\n" + "\n".join("- " + item for item in errors)
     for path in (report_path, os.path.join(reports, "latest.md")):
@@ -391,7 +506,10 @@ def observe(name, config, command, templates, no_notify, log):
     with open(temp_mem, "w", encoding="utf-8") as stream:
         json.dump(memory, stream)
     os.replace(temp_mem, memory_path)
-    log("{}: {}".format(name, "; ".join(errors) if errors else "observed; pressure {}".format(pressure)))
+    summary = "; ".join(errors) if errors else "observed; pressure {}".format(pressure)
+    if failed and free is not None:
+        summary += "; free now {} of {}".format(pretty_bytes(free), pretty_bytes(total))
+    log("{}: {}; {}".format(name, summary, scan_note))
     # A missing stocks file is a documented reduced mode, not a failed observation:
     # neither of the two lines it adds to the report counts as a failure.
     reduced_mode = ("trend unavailable: disk_map.py requires a stocks file",

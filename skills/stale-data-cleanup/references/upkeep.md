@@ -244,13 +244,31 @@ cheapest first:
    interpreter has Full Disk Access. The volume's free-space measurement is
    exact either way.
 
+   The template deliberately sets no `ProcessType`, `LowPriorityIO` or `Nice`.
+   With `ProcessType=Background` and `LowPriorityIO` macOS delays every disk
+   read of the job while other processes do I/O: a scan that takes 6-15 minutes
+   at standard priority did not finish in 45 on four mornings when the user was
+   away, and passed in 13-14 minutes on the two when he was at the keyboard. The
+   observer is a watchdog of one thread that only reads metadata, so it runs at
+   standard priority. If you lower its priority anyway, raise
+   `scan_timeout_minutes` to match and check the next report's `Observer:` line,
+   which records how long the scan took and the load average.
+
+   A failed scan (timeout, unreachable host, invalid output) still writes the
+   report. Its header says `scan failed`, and a block above the old trend gives
+   the free space measured at that moment (statvfs locally, `df -Pk` over ssh),
+   the change since the last saved scan and the days until full at that rate.
+   That measurement drives the same `floor`, `now` and `decide` messages as a
+   good scan, from the first failed run, so a fast drop is never silent; the
+   `scan_failed` message about the observer itself is sent in addition.
+
    `target_free` is the desired minimum free space; below it, pressure is
    `decide` unless the forecast is `now`. `floor_free` is an optional urgent
    threshold: when free space is below it, the runner marks the header and
    sends a message on every run. `now` also messages on every run. `decide`
    messages on the first day it appears, then at most every third day while it
    continues. Failed scans message on failures 2, 5, 8, and each third failure
-   after that. Size suffixes use binary units: `100G` means 100 GiB, or 107.4 GB;
+   after that, besides any space message the free-space check raises. Size suffixes use binary units: `100G` means 100 GiB, or 107.4 GB;
    a 100 GB decimal threshold is written `93.13G`. Percentages are measured
    against the volume size. Example thresholds are in
    [assets/observer.ini](../assets/observer.ini).

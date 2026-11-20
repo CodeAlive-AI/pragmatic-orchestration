@@ -25,12 +25,10 @@
   </dict>
   <key>RunAtLoad</key>
   <false/>
-  <key>ProcessType</key>
-  <string>Background</string>
-  <key>LowPriorityIO</key>
-  <true/>
-  <key>Nice</key>
-  <integer>10</integer>
+  <!-- Deliberately no ProcessType=Background, LowPriorityIO or Nice. The observer is a
+       watchdog: one thread reading metadata once a day. In the background band macOS
+       throttles its I/O so hard that a scan which takes 6-15 minutes at standard
+       priority did not finish in 45 while the user was away (references/upkeep.md). -->
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>

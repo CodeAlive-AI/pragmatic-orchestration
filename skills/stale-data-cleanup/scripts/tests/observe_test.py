@@ -55,8 +55,15 @@ class ObserveTests(unittest.TestCase):
 
         self.state_guard = mock.patch.object(observe, "state_base", guarded_state_base)
         self.state_guard.start()
+        # In-process tests never read the real disk's free space: a failed scan
+        # measures it through volume_now, which each test sets when it matters.
+        self.volume = [(None, None, "not measured in this test")]
+        self.volume_patch = mock.patch.object(observe, "volume_now", side_effect=lambda config: self.volume[0])
+        self.volume_patch.start()
+        self.real_volume_now = self.volume_patch.temp_original
 
     def tearDown(self):
+        self.volume_patch.stop()
         self.state_guard.stop()
         self.environ_patch.stop()
         self.temp.cleanup()
@@ -91,8 +98,10 @@ class ObserveTests(unittest.TestCase):
         self.assertNotEqual(scans[0].name, first_name)
         text = self.report().read_text(encoding="utf-8")
         self.assertIn("Disk watch: laptop, ", text)
-        self.assertIn("Pressure: quiet", text)
+        # The pressure level depends on the real disk the test runs on.
+        self.assertRegex(text, r"Pressure: (quiet|decide)")
         self.assertIn("Volume:", text)
+        self.assertRegex(text, r"Observer: scan took \d+\.\d min")
         self.assertEqual(text, (self.report().parent / "report-{}.md".format(datetime.date.today())).read_text(encoding="utf-8"))
 
     def test_notification_cadence_and_override(self):
@@ -298,6 +307,130 @@ class ObserveTests(unittest.TestCase):
         parsed = plistlib.loads(text.encode("utf-8"))
         self.assertEqual(parsed["ProgramArguments"][:5], ["/opt/homebrew/bin/uv", "run", "--no-project", "python", "/tmp/observe.py"])
         self.assertFalse(parsed["RunAtLoad"])
+        # Background priority starved the scan while the user was away; the
+        # template must not bring it back.
+        for key in ("ProcessType", "LowPriorityIO", "Nice"):
+            self.assertNotIn(key, parsed)
+
+    def failing_scan_commands(self, *, timed_out=True, last_free=None, days_ago=2.0):
+        """Scan fails; trend answers from one earlier scan when last_free is given."""
+        stamp = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_ago)).isoformat()
+        trend = {"pressure": "quiet", "volume": {"free_bytes": last_free, "size_bytes": 100 * 1024**3,
+                 "days_to_full": None}, "stocks": [],
+                 "scans": [{"file": "scan-old.json", "scanned_at": stamp, "free_bytes": last_free}]}
+
+        def call(argv, **kwargs):
+            command = argv[2]
+            if command == "scan":
+                return (-15, b"", b"", True) if timed_out else (1, b"", b"offline", False)
+            if command == "rotate":
+                return 0, b"", b"", False
+            if command == "trend":
+                if last_free is None:
+                    return 1, b"", b"no scans", False
+                if "--json" in argv:
+                    return 0, json.dumps(trend).encode(), b"", False
+                return 0, b"Volume: old trend text\n", b"", False
+            raise AssertionError("unexpected command: {}".format(argv))
+        return call
+
+    def observe_failed(self, config, notices, log=None, **commands):
+        with mock.patch.object(observe, "run_command", side_effect=self.failing_scan_commands(**commands)):
+            with mock.patch.object(observe, "notify", side_effect=lambda *args: notices.append(args[1]) or True):
+                return observe.observe("laptop", dict(config, root=str(self.root), stocks=str(self.stock)),
+                                       [], observe.DEFAULTS, False, log or (lambda _: None))
+
+    def test_timed_out_scan_reports_failure_and_free_space_and_alerts_at_once(self):
+        gib = 1024**3
+        self.volume[0] = (16 * gib, 100 * gib, None)
+        notices, log = [], []
+        failed = self.observe_failed({"target_free": "60G", "floor_free": "30G", "scan_timeout_minutes": "45"},
+                                     notices, log.append, last_free=56 * gib, days_ago=2.0)
+        self.assertTrue(failed)
+        report = self.report().read_text()
+        self.assertIn("scan failed \u2014 BELOW FLOOR.", report.splitlines()[0])
+        self.assertIn("Scan failed: scan timed out after 45.0 minutes.", report)
+        self.assertIn("Free space now (df): 16.0 GiB of 100.0 GiB, below the floor (30G)", report)
+        self.assertRegex(report, r"Since the last saved scan \(.* UTC, 2\.0 days ago\): -40\.0 GiB, "
+                                 r"20\.0 GiB/day filling; full in 0\.8 days at that rate")
+        self.assertIn("Trend from earlier scans:", report)
+        # The very first failed run already raises the floor alert.
+        self.assertEqual(notices, [observe.DEFAULTS["floor"]])
+        self.assertTrue(any("scan timed out after 45.0 minutes" in line and "free now 16.0 GiB of 100.0 GiB" in line
+                            for line in log), log)
+
+    def test_failed_scan_alerts_on_a_fast_drop_that_is_still_above_the_target(self):
+        gib = 1024**3
+        self.volume[0] = (70 * gib, 100 * gib, None)
+        notices = []
+        self.observe_failed({"target_free": "60G"}, notices, last_free=90 * gib, days_ago=1.0)
+        # 20 GiB/day leaves 3.5 days: inside the four-day horizon.
+        self.assertEqual(notices, [observe.DEFAULTS["now"]])
+        self.assertIn("full in 3.5 days at that rate", self.report().read_text())
+
+    def test_failed_scan_below_target_notifies_decide_once_then_only_the_failing_observer(self):
+        gib = 1024**3
+        self.volume[0] = (50 * gib, 100 * gib, None)
+        notices = []
+        config = {"target_free": "60G"}
+        self.observe_failed(config, notices, timed_out=False)
+        self.assertEqual(notices, [observe.DEFAULTS["decide"]])
+        self.observe_failed(config, notices, timed_out=False)
+        self.assertEqual(notices, [observe.DEFAULTS["decide"], observe.DEFAULTS["scan_failed"]])
+        self.assertIn("Free space now (df): 50.0 GiB of 100.0 GiB, below the target (60G)", self.report().read_text())
+
+    def test_failed_scan_with_enough_free_space_sends_no_space_alert(self):
+        gib = 1024**3
+        self.volume[0] = (80 * gib, 100 * gib, None)
+        notices = []
+        self.observe_failed({"target_free": "60G", "floor_free": "30G"}, notices, last_free=81 * gib, days_ago=3.0)
+        self.assertEqual(notices, [])
+        report = self.report().read_text()
+        self.assertIn("scan failed.", report.splitlines()[0])
+        self.assertIn("Free space now (df): 80.0 GiB of 100.0 GiB, above the target (60G)", report)
+
+    def test_failed_scan_says_so_when_free_space_cannot_be_measured(self):
+        self.volume[0] = (None, None, "df failed (ssh exit 255): no route")
+        notices = []
+        self.observe_failed({"target_free": "60G", "floor_free": "30G"}, notices, timed_out=False)
+        report = self.report().read_text()
+        self.assertIn("Free space now: unknown (df failed (ssh exit 255): no route)", report)
+        self.assertIn("- free space check failed: df failed (ssh exit 255): no route", report)
+        self.assertEqual(notices, [])
+
+    def test_real_timeout_writes_a_report_with_the_free_space_statvfs_reports(self):
+        self.write_config(extra="scan_timeout_minutes = 0.00001\nfloor_free = 1K")
+        (self.root / "sample").write_bytes(b"test data")
+        result = self.run_runner("--no-notify")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        report = self.report().read_text()
+        self.assertIn("scan failed.", report.splitlines()[0])
+        self.assertIn("Scan failed: scan timed out after 1e-05 minutes.", report)
+        vfs = os.statvfs(self.root)
+        total = observe.pretty_bytes(vfs.f_blocks * vfs.f_frsize)
+        self.assertRegex(report, r"Free space now \(df\): [0-9.]+ [KMGT]iB of {}, ".format(total.replace(".", r"\.")))
+        self.assertIn("free now ", result.stdout)
+
+    def test_volume_now_reads_the_local_volume_and_parses_remote_df(self):
+        free, total, error = self.real_volume_now({"root": str(self.root)})
+        vfs = os.statvfs(self.root)
+        self.assertIsNone(error)
+        self.assertEqual(total, vfs.f_blocks * vfs.f_frsize)
+        self.assertLess(abs(free - vfs.f_bavail * vfs.f_frsize), 1024**3)
+        df = (b"Filesystem     1024-blocks      Used Available Capacity Mounted on\n"
+              b"/dev/sda1        206292968 150000000  45787560      77% /\n")
+        seen = []
+        with mock.patch.object(observe, "run_command", side_effect=lambda argv, **kw: seen.append(argv) or (0, df, b"", False)):
+            self.assertEqual(self.real_volume_now({"root": "/srv data", "ssh": "build-host"}),
+                             (45787560 * 1024, 206292968 * 1024, None))
+        self.assertEqual(seen[0][-2:], ["build-host", "df -Pk -- '/srv data'"])
+        with mock.patch.object(observe, "run_command", return_value=(255, b"", b"no route", False)):
+            self.assertEqual(self.real_volume_now({"root": "/", "ssh": "h"}),
+                             (None, None, "df failed (ssh exit 255): no route"))
+        with mock.patch.object(observe, "run_command", return_value=(0, b"garbage\n", b"", False)):
+            self.assertIn("unexpected df output", self.real_volume_now({"root": "/", "ssh": "h"})[2])
+        with mock.patch.object(observe, "run_command", return_value=(-9, b"", b"", True)):
+            self.assertIn("df timed out", self.real_volume_now({"root": "/", "ssh": "h"})[2])
 
     def test_notification_timeout_kills_process_group(self):
         stub = self.base / "slow_notify.py"

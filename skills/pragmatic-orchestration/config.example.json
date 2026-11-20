@@ -88,6 +88,13 @@
       "role": "analyst",
       "label": "Devin SWE-2 Flash"
     },
+    "devin-swe-2-flash-max": {
+      "enabled": false,
+      "backend": "devin-cli",
+      "model": "swe-2-flash-max",
+      "role": "analyst",
+      "label": "Devin SWE-2 Flash Max"
+    },
     "devin-swe-2": {
       "enabled": false,
       "backend": "devin-cli",

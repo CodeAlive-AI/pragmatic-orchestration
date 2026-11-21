@@ -1,6 +1,6 @@
 # Pragmatic Orchestration — Development Guide
 
-Multi-skill repo shipped as one plugin. `skills/<name>/` follows the canonical Agent Skills layout, read by both `npx skills add` (the cross-agent CLI) and Claude Code's plugin install (`/plugin marketplace add` + `/plugin install …@pragmatic-orchestration`). The plugin sees the repo root as itself via `source: "./"` in `marketplace.json`. Current skills: `pragmatic-orchestration` (the `porch` orchestration CLI), `coordinator-mode` (the long-lived coordinating role, its journal and compaction recovery), `stale-data-cleanup` (Coordinator Mode applied to a full disk: evidence-based verdicts, a guarded removal step) and `remote-agents` (dedicated remote Linux/Windows agent hosts).
+Multi-skill repo shipped as one plugin. `skills/<name>/` follows the canonical Agent Skills layout, read by both `npx skills add` (the cross-agent CLI) and Claude Code's plugin install (`/plugin marketplace add` + `/plugin install …@pragmatic-orchestration`). The plugin sees the repo root as itself via `source: "./"` in `marketplace.json`. Current skills: `pragmatic-orchestration` (the `porch` orchestration CLI), `coordinator-mode` (the long-lived coordinating role, its journal and compaction recovery), `stale-data-cleanup` (Coordinator Mode applied to a full disk: evidence-based verdicts, a guarded removal step), `architecture-consilium` (Coordinator Mode applied to designing a complex change: researched context, independent designs by several strong models, a checked specification) and `remote-agents` (dedicated remote Linux/Windows agent hosts).
 
 ## Roles in the shipped skills
 
@@ -9,7 +9,7 @@ Two roles run through the skills and must stay distinct in every text and prompt
 - **Coordinator** (orchestrator, parent): the session that works with the user. It owns design, verification strategy and acceptance, and in Coordinator Mode leaves implementation to executors by default. The mode has no hard prohibitions; it relies on the coordinator's judgment.
 - **Executor** (worker, delegate): owns one assignment. `porch delegate` prefixes every new task with `skills/pragmatic-orchestration/prompts/delegate-executor.txt`. A passage in any `AGENTS.md` that grants ownership of the whole codebase is addressed to the coordinator, and the contract says so.
 
-When editing either skill, keep the executor contract short (it is paid for on every delegation) and keep `coordinator-mode/SKILL.md` under 5,000 tokens: Claude Code restores an invoked skill after compaction only up to that size. The same limit applies to `stale-data-cleanup/SKILL.md`, which runs in long coordinated sessions; its detail lives in `references/`.
+When editing either skill, keep the executor contract short (it is paid for on every delegation) and keep `coordinator-mode/SKILL.md` under 5,000 tokens: Claude Code restores an invoked skill after compaction only up to that size. The same limit applies to `stale-data-cleanup/SKILL.md` and `architecture-consilium/SKILL.md`, which run in long coordinated sessions; their detail lives in `references/`. `architecture-consilium/assets/architect-brief.md` carries a condensed copy of the design criteria of the `pragmatic-architecture` skill (repository `ai-driven-development`), because an architect's harness is not certain to have that skill: when its core changes, update the copy.
 
 ## Git publishing defaults
 
@@ -20,10 +20,10 @@ explicitly requests one.
 
 ## Naming
 
-- Skill names: `pragmatic-orchestration`, `coordinator-mode`, `stale-data-cleanup`, `remote-agents` (SKILL.md frontmatter, directory, state dirs).
-- CLI name: `porch` (`scripts/porch`, `scripts/porch.cmd`); remote-agents has no CLI of its own, its entry point is `scripts/host.sh`; coordinator-mode has one helper, `scripts/coordinator_mode.py`; stale-data-cleanup has three: `scripts/disk_map.py` (scan, query, diff, reconcile, trend, rotate) and `scripts/apply_removals.py` (the guarded removal step), both single-file standard-library Python that must keep working when piped over ssh, and `scripts/observe.py` (the scheduled read-only observer; it runs locally and pipes `disk_map.py` to remote machines).
+- Skill names: `pragmatic-orchestration`, `coordinator-mode`, `stale-data-cleanup`, `architecture-consilium`, `remote-agents` (SKILL.md frontmatter, directory, state dirs).
+- CLI name: `porch` (`scripts/porch`, `scripts/porch.cmd`); remote-agents has no CLI of its own, its entry point is `scripts/host.sh`; coordinator-mode has one helper, `scripts/coordinator_mode.py`; stale-data-cleanup has three: `scripts/disk_map.py` (scan, query, diff, reconcile, trend, rotate) and `scripts/apply_removals.py` (the guarded removal step), both single-file standard-library Python that must keep working when piped over ssh, and `scripts/observe.py` (the scheduled read-only observer; it runs locally and pipes `disk_map.py` to remote machines); architecture-consilium has no script: its architects run through `porch delegate` (they may start their own read-only researchers), its checker and the coordinator's researchers through `porch review ask`; its roles are coordinator, researcher, architect and checker.
 - Environment variables: `PORCH_*` for orchestration; `REMOTE_AGENTS_*` for the host skill; `COORDINATOR_MODE_HOME` for the coordinator's state root (default `~/.local/state/coordinator-mode`).
-- Historical name: `agents-consilium` / `consilium` — do not reintroduce.
+- Historical name of the orchestration skill and its CLI: `agents-consilium` / `consilium` — do not reintroduce it for them. `architecture-consilium` is a different skill, named by the owner on 2026-11-21; the bare `consilium` stays unused.
 
 ## Testing
 

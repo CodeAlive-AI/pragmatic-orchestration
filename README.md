@@ -8,7 +8,7 @@
 
 In field use, frontier models such as Astra and Fable cover roughly 2–10× more work with practically no loss of quality when they orchestrate and cheaper executors implement. The best fit is autonomous work lasting hours or days, producing tens to hundreds of thousands of lines of code.
 
-The repo ships four skills in the Agent Skills layout: `pragmatic-orchestration`, `coordinator-mode`, `stale-data-cleanup` and `remote-agents`. `porch` provides five modes:
+The repo ships five skills in the Agent Skills layout: `pragmatic-orchestration`, `coordinator-mode`, `stale-data-cleanup`, `architecture-consilium` and `remote-agents`. `porch` provides five modes:
 
 - **review** — independent opinions or multi-depth code review from several model families at once (read-only).
 - **delegate** — hand a task to one exact agent: steerable by default, detachable, with `wait` / `watch` / `events` / `list` to supervise long-running work (full-access runtime).
@@ -67,6 +67,26 @@ Turn it on explicitly: `/coordinator-mode` in Claude Code, `$coordinator-mode` i
 
 Start it with `/stale-data-cleanup` in Claude Code or `$stale-data-cleanup` in Codex, or just say the disk is full. See [skills/stale-data-cleanup/SKILL.md](skills/stale-data-cleanup/SKILL.md).
 
+## Architecture Consilium
+
+`architecture-consilium` is Coordinator Mode applied to designing a large or risky change before anyone implements it. A consilium is the council that doctors convene on a hard case: independent specialists examine it themselves, and the physician in charge decides. Here the specialists are architect models and the coordinator is in charge. Such a change usually has several workable designs, and the expensive mistakes come from what nobody looked at: a second writer, a hidden consumer, a guarantee that held by accident. The skill ends with a specification and a status, never with code.
+
+- **Research by questions.** Cheap read-only researchers answer bounded questions about the code, its history, the tracker and the documentation; the coordinator rereads the decisive claims at the source and looks for what the list is missing.
+- **Independent designs.** Three of the strongest models from different families (two, if that is what is configured) design the change separately and freely, each in a fresh session, on the same brief and the same frozen research package. An architect reads the code itself and may start its own read-only researchers on cheap models within a stated budget; the coordinator verifies the facts they find and sends them to every architect, and each returns its complete updated design.
+- **A choice by evidence.** Musts first, then a table of consequences on the same scenarios, never a score or a vote. Agreement between models is a signal, not evidence. A synthesis is a new candidate.
+- **A check by a model that did not write the design**, with concrete counterexamples; every objection ends as fixed, tested, accepted or rejected, with a reason.
+- **An honest status:** `READY_FOR_IMPLEMENTATION`, `NEEDS_EVIDENCE`, `NEEDS_USER_DECISION` or `DRAFT`. Running out of budget never raises it.
+- **The route is chosen after the first look,** before any multi-agent work starts. A clear design is sent back to direct design; a clear construction with an uncertain guarantee or a costly mistake gets research and one independent check; only a real choice between constructions gets the full workflow.
+- **The user is asked at the forks that are theirs,** and always at two points: after the research is checked, and after the comparison, before the choice.
+
+The design criteria come from the `pragmatic-architecture` skill in [ai-driven-development](https://github.com/CodeAlive-AI/ai-driven-development); the architect brief carries a condensed copy, because an architect's harness is not certain to have that skill. Install it as well: the coordinator works by the full method.
+
+Architects run through `porch delegate`, because review mode forbids a worker to start other agents. `delegate` is a full-access runtime, so the read-only limit is a contract in the brief, and the coordinator compares the repository status before and after every run. Where a guarantee by mechanism is required, architects run in review mode, work alone and return research requests to the coordinator.
+
+Start it with `/architecture-consilium` in Claude Code or `$architecture-consilium` in Codex. See [skills/architecture-consilium/SKILL.md](skills/architecture-consilium/SKILL.md).
+
+The workflow is an engineering synthesis; no direct comparison shows that it beats one strong architect with access to the sources and one targeted check. Before relying on it widely, compare the two on comparable real tasks: requirements met, material omissions, rework during implementation, cost and time to an accepted result. Plant plausible defects (a missed second writer, an outdated constraint, stored data that a feature flag does not roll back) and see whether the checker finds them.
+
 ## Delegation discipline
 
 [references/delegate.md](skills/pragmatic-orchestration/references/delegate.md) collects the practices that address common subagent delegation failures:
@@ -94,6 +114,8 @@ Start it with `/stale-data-cleanup` in Claude Code or `$stale-data-cleanup` in C
 npx skills add CodeAlive-AI/pragmatic-orchestration@pragmatic-orchestration
 npx skills add CodeAlive-AI/pragmatic-orchestration@coordinator-mode
 npx skills add CodeAlive-AI/pragmatic-orchestration@stale-data-cleanup
+npx skills add CodeAlive-AI/pragmatic-orchestration@architecture-consilium
+npx skills add CodeAlive-AI/ai-driven-development@pragmatic-architecture   # the design method architecture-consilium uses
 claude plugin marketplace add CodeAlive-AI/pragmatic-orchestration && claude plugin install pragmatic-orchestration@pragmatic-orchestration
 ```
 

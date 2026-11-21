@@ -261,20 +261,24 @@ def main() -> int:
         rev.provenance()["layer_order"][-1] == "framework_recap",
         str(rev.provenance()["layer_order"]),
     )
+    prompts_dir = LIB.parent.parent / "prompts"
     ok(
         "canonical framework asset loaded",
         FRAMEWORK_POLICY_REVIEW
-        == (LIB.parent.parent / "prompts" / "review-framework.txt").read_text(
-            encoding="utf-8"
+        == (prompts_dir / "review-framework.txt").read_text(encoding="utf-8").replace(
+            "{{DELEGATION_RULE}}\n",
+            (prompts_dir / "review-delegation-alone.txt").read_text(encoding="utf-8"),
         ),
     )
     ok(
         "canonical recap asset loaded",
         FRAMEWORK_RECAP_REVIEW
-        == (LIB.parent.parent / "prompts" / "review-recap.txt").read_text(
-            encoding="utf-8"
+        == (prompts_dir / "review-recap.txt").read_text(encoding="utf-8").replace(
+            "{{DELEGATION_CLAUSE}}", "no subagents or delegation"
         ),
     )
+    ok("default review contract leaves no template slot",
+       "{{" not in FRAMEWORK_POLICY_REVIEW and "{{" not in FRAMEWORK_RECAP_REVIEW)
     raw = build_prompt(mode="raw", user_input="implement foo", raw=True)
     assert_raw_purity(raw)
     ok("raw is pure", raw.text == "implement foo")
@@ -301,7 +305,12 @@ def main() -> int:
     ok("media readonly without shell or web",
        mcaps.access_class == "readonly" and mcaps.filesystem == "read"
        and not mcaps.shell and not mcaps.web and not mcaps.steer)
-    ok("media keeps subagents for agy image generator", mcaps.subagents is True)
+    ok("media keeps subagents for agy image generator", mcaps.subagents == "any")
+    ok("review works alone", get_mode_capabilities("review").subagents == "none")
+    rrcaps = get_mode_capabilities("review-researchers")
+    ok("researcher review stays read-only",
+       rrcaps.access_class == "readonly" and rrcaps.filesystem == "read"
+       and rrcaps.subagents == "researchers" and not rrcaps.memory)
     rcaps = get_mode_capabilities("review")
     ok("review has diagnostic shell", rcaps.shell is True and rcaps.filesystem == "read")
     ok("review web on", rcaps.web is True)

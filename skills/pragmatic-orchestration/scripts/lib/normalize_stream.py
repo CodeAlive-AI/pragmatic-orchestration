@@ -379,7 +379,19 @@ def normalize_codex(obj: Dict[str, Any]) -> tuple[str, Any]:
 
 
 def normalize_claude(obj: Dict[str, Any]) -> tuple[str, Any]:
+    """Map `claude -p --output-format stream-json --verbose` lines.
+
+    Besides the answer (`assistant` text, `result`) the stream carries
+    `system` lines (init, task and turn summaries), `user` lines (tool
+    results), `rate_limit_event`, and `assistant` messages that hold only a
+    tool call or a thinking block. They are known structure, not protocol
+    drift: tool calls map to the tool lifecycle, the rest to progress.
+    """
     typ = obj.get("type") or "event"
+    # A subagent's lines carry parent_tool_use_id. What it says or runs is its
+    # own work and never part of this run's answer.
+    if obj.get("parent_tool_use_id") and typ in ("assistant", "user"):
+        return "progress", "subagent"
     if typ == "content_block_delta":
         delta = obj.get("delta") or {}
         if delta.get("type") == "text_delta":
@@ -412,6 +424,27 @@ def normalize_claude(obj: Dict[str, Any]) -> tuple[str, Any]:
                 texts.append(p.get("text", ""))
         if texts:
             return "text", "".join(texts)
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "tool_use":
+                return "tool_started", p.get("name") or "tool"
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "thinking":
+                thinking = p.get("thinking")
+                if isinstance(thinking, str) and thinking:
+                    return "thought", thinking
+        return "progress", "assistant"
+    if typ == "user":
+        message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(p, dict) and p.get("type") == "tool_result" for p in content
+        ):
+            return "tool_completed", "tool_result"
+        return "progress", "user"
+    if typ == "system":
+        return "progress", f"system:{obj.get('subtype') or 'event'}"
+    if typ == "rate_limit_event":
+        return "progress", typ
     if typ in ("result", "result_success"):
         is_error = bool(obj.get("is_error") or obj.get("error"))
         result = obj.get("result")
@@ -842,7 +875,12 @@ def main() -> int:
                 # Protocol drift: never persist unknown types (artifact fail-closed
                 # for the record; process continues — see finalize signal).
                 rejected_count += 1
-                key = str(stream_typ or "unknown")[:80]
+                # Name the backend's own type: the placeholder "event" would
+                # hide which line the normalizer does not know.
+                if stream_typ == "event" and data:
+                    key = str(data)[:80]
+                else:
+                    key = str(stream_typ or "unknown")[:80]
                 rejected_types[key] = rejected_types.get(key, 0) + 1
                 tape_record(
                     "PARSED",

@@ -23,7 +23,7 @@ KNOWN_CAPABILITIES = frozenset(
         "shell",  # bool
         "web",  # bool
         "memory",  # bool
-        "subagents",  # bool
+        "subagents",  # none | researchers | any
         "steer",  # bool
         "interrupt",  # bool
         "access_class",  # readonly | yolo  (coarse class for argv builders)
@@ -32,6 +32,9 @@ KNOWN_CAPABILITIES = frozenset(
 
 ACCESS_CLASSES = frozenset({"readonly", "yolo"})
 FILESYSTEM_VALUES = frozenset({"none", "read", "write"})
+# none: the worker works alone. researchers: it may start only read-only
+# researchers (lib/researchers.py says how, per backend). any: no limit.
+SUBAGENT_VALUES = frozenset({"none", "researchers", "any"})
 
 
 @dataclass(frozen=True)
@@ -41,7 +44,7 @@ class ModeCapabilities:
     shell: bool
     web: bool
     memory: bool
-    subagents: bool
+    subagents: str  # none | researchers | any
     steer: bool
     interrupt: bool
     access_class: str  # readonly | yolo
@@ -69,6 +72,10 @@ class ModeCapabilities:
             raise ValueError(
                 f"mode {self.mode!r}: invalid access_class={self.access_class!r}"
             )
+        if self.subagents not in SUBAGENT_VALUES:
+            raise ValueError(
+                f"mode {self.mode!r}: invalid subagents={self.subagents!r}"
+            )
         # Safety invariant: yolo requires write; readonly forbids filesystem
         # write capability. Review may still use a shell for git/rg/tests;
         # backend sandboxing and the trusted prompt define its write posture.
@@ -93,7 +100,21 @@ _MODE_MATRIX: Dict[str, ModeCapabilities] = {
         shell=True,
         web=True,
         memory=False,
-        subagents=False,
+        subagents="none",
+        steer=False,
+        interrupt=False,
+        access_class="readonly",
+    ),
+    # Review whose worker may start read-only researchers and nothing else
+    # (`review ask --researcher PROFILE`). Same read-only posture as review;
+    # a backend that cannot keep it for the researchers is refused.
+    "review-researchers": ModeCapabilities(
+        mode="review-researchers",
+        filesystem="read",
+        shell=True,
+        web=True,
+        memory=False,
+        subagents="researchers",
         steer=False,
         interrupt=False,
         access_class="readonly",
@@ -104,7 +125,7 @@ _MODE_MATRIX: Dict[str, ModeCapabilities] = {
         shell=True,
         web=True,
         memory=True,
-        subagents=True,
+        subagents="any",
         steer=False,
         interrupt=False,
         access_class="yolo",
@@ -121,7 +142,7 @@ _MODE_MATRIX: Dict[str, ModeCapabilities] = {
         shell=False,
         web=False,
         memory=False,
-        subagents=True,
+        subagents="any",
         steer=False,
         interrupt=False,
         access_class="readonly",
@@ -132,7 +153,7 @@ _MODE_MATRIX: Dict[str, ModeCapabilities] = {
         shell=True,
         web=True,
         memory=True,
-        subagents=True,
+        subagents="any",
         steer=True,
         interrupt=True,  # mode exists; backend may still reject interrupt
         access_class="yolo",
@@ -251,6 +272,10 @@ def _main() -> int:
         assert access_policy_for("review") == "readonly"
         assert access_policy_for("delegate") == "yolo"
         assert access_policy_for("media") == "readonly"
+        assert access_policy_for("review-researchers") == "readonly"
+        assert capability("review", "subagents") == "none"
+        assert capability("review-researchers", "subagents") == "researchers"
+        assert_no_yolo_leak("review-researchers")
         print("ok")
         return 0
     if args.list:

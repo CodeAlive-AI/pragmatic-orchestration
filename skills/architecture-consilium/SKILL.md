@@ -58,20 +58,23 @@ line which route you chose and why.
 - **Researchers** are cheap, fast models, read-only, several in parallel, one
   bounded question each.
 - **Architects** are the strongest models available, from different model
-  families, each in a fresh session through
-  `"$PORCH" delegate -a <exact-id> --detach --name <slug> --prompt-file FILE`.
-  Each designs freely on the same brief, reads the code itself and may start
-  its own read-only researchers on cheap models, within the budget the brief
-  states. None sees another's work or your preference before its first
-  proposal. Keep your own design out until theirs are in.
+  families, each in a fresh read-only run: `"$PORCH" review ask -a <exact-id>
+  --researcher <cheap-id> --assignment --prompt-file FILE`. Each designs freely
+  on the same brief, reads the code itself and may start read-only researchers
+  on the named cheap profiles, within the budget the brief states. None sees
+  another's work or your preference before its first proposal. Keep your own
+  design out until theirs are in.
 - **The checker** is a model that neither wrote the chosen design nor made the
   synthesis, working alone through `"$PORCH" review ask`.
 - **Models come from the owner's instructions** and `"$PORCH" --list-agents`,
   never from this file. Only architects start workers, and only researchers.
-- **Why `delegate` for architects.** Review mode forbids a worker to start
-  other agents and switches those tools off, so an architect that researches on
-  its own cannot run there. `delegate` allows it, and is a full-access runtime:
-  the brief forbids writes, and you check the repository after each run. No
+- **Why this mode, and when `delegate`.** `--researcher` keeps review mode
+  read-only and lets the architect start read-only researchers and nothing
+  else; `--assignment` lets the brief set the role and the sections of the
+  answer. `porch` refuses the flag (exit 4) for a backend that cannot keep
+  researchers read-only. For such a profile, or when you need a run id, a
+  steer or a continued session, fall back to `"$PORCH" delegate -a <exact-id>
+  --detach`: a full-access runtime where only the brief forbids writes. No
   worker is certain to have the method's skill, so the architect brief carries
   its core. See [proposals.md](references/proposals.md#launching-architects).
 
@@ -109,12 +112,12 @@ line which route you chose and why.
    lists what it found; what it cannot reach (a closed source, a decision of
    the user, an experiment that writes) comes back as a request to you. Verify
    the new facts the designs rest on, add the material ones to `RESEARCH.md`
-   and send them to **every** architect in one follow-up round. A Codex
-   architect started with `--persist-session` continues its own session
-   (`--continue-run`); any other gets a new run that carries the original brief
-   with the updated package, its own proposal, the new facts and a request for
-   the complete updated design. Skip the round when no new fact could change a
-   design.
+   and send them to **every** architect in one follow-up round: a new run
+   that carries the original brief with the updated package, the architect's
+   own proposal, the new facts and a request for the complete updated design.
+   (A Codex architect run through `delegate --persist-session` continues its
+   own session with `--continue-run` instead.) Skip the round when no new fact
+   could change a design.
 4. **Compare, choose, have it checked.** First the musts: for each proposal and
    each must, the mechanism is justified, violated, or rests on an unverified
    premise. Drop the violators. Compare the rest on the same scenarios in a
@@ -168,14 +171,15 @@ blocked and continue the independent work.
 
 ## Standing limits
 
-- **Nothing in the product changes.** Researchers and the checker run
-  read-only: `review ask` or a built-in read-only subagent. Architects run in
-  `porch delegate`, where only the brief stops a write: record the status of
+- **Nothing in the product changes.** Every worker runs read-only: researchers
+  and the checker through `review ask` or a built-in read-only subagent,
+  architects through `review ask --researcher`. Only Codex and Grok enforce it
+  with a sandbox; elsewhere tool denials and the contract do, and an architect
+  that had to run in `porch delegate` has full access. So record the status of
   each repository before launch, compare it when each run ends, and show the
   user any difference instead of accepting or cleaning it silently. Where the
-  user or the project requires a guarantee by mechanism, run the architects in
-  review mode: they then work alone and return research requests
-  ([proposals.md](references/proposals.md#strict-read-only-architects)).
+  user or the project requires a guarantee by mechanism, see
+  [proposals.md](references/proposals.md#a-guarantee-by-mechanism).
 - **An experiment** runs in an isolated place the user's rules allow, with its
   writes, outside calls, cost and cleanup stated in its brief.
 - **Access is never widened through a worker.** A closed source (tracker, chat)
@@ -223,9 +227,9 @@ such place, keep them in the work folder and give the user the paths.
 Write to the journal at the start and at every change of stage: the path of this
 file, the route, the stage, the package version, the version of the design that
 was last checked, decisions with reasons, and the next action. Write each
-worker **before** launching it: profile, brief, output file, and for an
-architect the run id as soon as `delegate` prints it. A `review ask` call has
-no run id: its state is its run folder and its output file. After a
+worker **before** launching it: profile, brief, run folder and output file,
+and for a `delegate` run the run id as soon as it is printed. A `review ask`
+call has no run id: its state is its run folder and its output file. After a
 compaction, look there and in `"$PORCH" delegate list --active` before starting
 anything again. The capsule points only to `coordinator-mode` and the journal,
 so whatever is not there is lost.

@@ -81,7 +81,7 @@ Start it with `/stale-data-cleanup` in Claude Code or `$stale-data-cleanup` in C
 
 The design criteria come from the `pragmatic-architecture` skill in [ai-driven-development](https://github.com/CodeAlive-AI/ai-driven-development); the architect brief carries a condensed copy, because an architect's harness is not certain to have that skill. Install it as well: the coordinator works by the full method.
 
-Architects run through `porch delegate`, because review mode forbids a worker to start other agents. `delegate` is a full-access runtime, so the read-only limit is a contract in the brief, and the coordinator compares the repository status before and after every run. Where a guarantee by mechanism is required, architects run in review mode, work alone and return research requests to the coordinator.
+Architects run read-only through `porch review ask --researcher <cheap-profile> --assignment`: review mode keeps its read-only means, the architect may start read-only researchers and nothing else, and the brief sets the role and the sections of the answer. `porch` refuses the flag for a backend that cannot keep researchers read-only; such an architect runs through `porch delegate`, a full-access runtime where the read-only limit is a contract in the brief, or works alone and returns research requests. The coordinator compares the repository status before and after every run. Where a guarantee by mechanism is required, architects run on the backends with a read-only sandbox (Codex CLI, Grok Build).
 
 Start it with `/architecture-consilium` in Claude Code or `$architecture-consilium` in Codex. See [skills/architecture-consilium/SKILL.md](skills/architecture-consilium/SKILL.md).
 

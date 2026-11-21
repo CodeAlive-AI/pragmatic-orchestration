@@ -3,12 +3,20 @@
 # Unified backend runner for pragmatic-orchestration v5.
 #
 # Usage:
-#   backend_run.sh --mode review|delegate --agent-id <id> [options] ["prompt"]
+#   backend_run.sh --mode review|review-researchers|delegate --agent-id <id> [options] ["prompt"]
 #   backend_run.sh --mode review --agent-id codex --prompt-file path.txt
 #   echo "prompt" | backend_run.sh --mode review --agent-id codex
 #
 # Options:
 #   --mode review|delegate  Required. review = read-only; delegate = full YOLO.
+#                            review-researchers = review whose worker may start
+#                            read-only researchers; needs --researchers.
+#   --researchers <ids>      Comma-separated researcher profile ids
+#                            (mode review-researchers only).
+#   --style adviser|assignment
+#                            Review prompt style. adviser (default): adviser
+#                            role and five headings. assignment: the caller's
+#                            brief sets the role and the answer structure.
 #   --agent-id <id>          Required. Exact config agent id.
 #   --role <role>            Override role from config.
 #   --prompt-file <path>     Raw prompt from file (implies PORCH_RAW_PROMPT=1).
@@ -55,6 +63,8 @@ PROMPT_FILE=""
 PROMPT_SOURCE=""   # positional | file | stdin — shell-interpolation warn only for positional
 RAW_MODE=0
 DEBUG_EVENTS=""
+RESEARCHERS=""
+REVIEW_STYLE="adviser"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -65,6 +75,12 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --prompt-file requires a path" >&2; exit $EXIT_USAGE; }
             PROMPT_FILE="$2"; PROMPT_SOURCE="file"; shift 2 ;;
         --raw|--no-wrap) RAW_MODE=1; shift ;;
+        --researchers)
+            [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --researchers requires a comma-separated list of profile ids" >&2; exit $EXIT_USAGE; }
+            RESEARCHERS="$2"; shift 2 ;;
+        --style)
+            [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --style requires adviser or assignment" >&2; exit $EXIT_USAGE; }
+            REVIEW_STYLE="$2"; shift 2 ;;
         --debug-events)
             if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
                 DEBUG_EVENTS="$2"; shift 2
@@ -100,8 +116,9 @@ MODE_CAP_WEB="$(
 MODE_CAP_MEMORY="$(
     MODE_CAPS_JSON="$MODE_CAPS_JSON" python3 -c 'import json,os; print("true" if json.loads(os.environ["MODE_CAPS_JSON"]).get("memory") else "false")'
 )"
+# none | researchers | any
 MODE_CAP_SUBAGENTS="$(
-    MODE_CAPS_JSON="$MODE_CAPS_JSON" python3 -c 'import json,os; print("true" if json.loads(os.environ["MODE_CAPS_JSON"]).get("subagents") else "false")'
+    MODE_CAPS_JSON="$MODE_CAPS_JSON" python3 -c 'import json,os; print(json.loads(os.environ["MODE_CAPS_JSON"]).get("subagents") or "none")'
 )"
 MODE_CAP_SHELL="$(
     MODE_CAPS_JSON="$MODE_CAPS_JSON" python3 -c 'import json,os; print("true" if json.loads(os.environ["MODE_CAPS_JSON"]).get("shell") else "false")'
@@ -110,6 +127,26 @@ MODE_CAP_FILESYSTEM="$(
     MODE_CAPS_JSON="$MODE_CAPS_JSON" python3 -c 'import json,os; print(json.loads(os.environ["MODE_CAPS_JSON"]).get("filesystem") or "read")'
 )"
 [[ -n "$AGENT_ID" ]] || { echo "Error: --agent-id required" >&2; exit $EXIT_USAGE; }
+
+# The review family shares the layered prompt and the read-only argv.
+IS_REVIEW=0
+case "$MODE" in review|review-researchers) IS_REVIEW=1 ;; esac
+case "$REVIEW_STYLE" in
+    adviser) ;;
+    assignment)
+        [[ "$IS_REVIEW" -eq 1 ]] || { echo "Error: --style assignment applies to review modes only" >&2; exit $EXIT_USAGE; }
+        ;;
+    *) echo "Error: --style must be adviser or assignment (got: $REVIEW_STYLE)" >&2; exit $EXIT_USAGE ;;
+esac
+# Researcher mode is never entered by accident and never without researchers.
+if [[ "$MODE" == "review-researchers" && -z "$RESEARCHERS" ]]; then
+    echo "Error: --mode review-researchers requires --researchers <profile ids>" >&2
+    exit $EXIT_USAGE
+fi
+if [[ -n "$RESEARCHERS" && "$MODE" != "review-researchers" ]]; then
+    echo "Error: --researchers requires --mode review-researchers" >&2
+    exit $EXIT_USAGE
+fi
 
 config_validate || exit $EXIT_CONFIG_ERROR
 
@@ -145,7 +182,8 @@ PY
     )"
     ROLE_ID="${ROLE_OVERRIDE:-$ROLE_ID}"
     ROLE_ID="${ROLE_ID:-analyst}"
-    if [[ "$MODE" != "review" ]]; then
+    # Profile review instructions are role text; an assignment sets its own role.
+    if [[ "$IS_REVIEW" -ne 1 || "$REVIEW_STYLE" == "assignment" ]]; then
         REVIEW_INSTRUCTIONS=""
     fi
 else
@@ -156,7 +194,7 @@ else
     ROLE_ID="${ROLE_OVERRIDE:-$(config_get_field "$AGENT_ID" role)}"
     ROLE_ID="${ROLE_ID:-analyst}"
     REVIEW_INSTRUCTIONS=""
-    if [[ "$MODE" == "review" ]]; then
+    if [[ "$IS_REVIEW" -eq 1 && "$REVIEW_STYLE" != "assignment" ]]; then
         REVIEW_INSTRUCTIONS="$(config_get_field "$AGENT_ID" review_instructions)"
     fi
     case "$BACKEND" in
@@ -205,6 +243,58 @@ if [[ "$MODE" == "delegate" ]]; then
         echo "Error: agent '$AGENT_ID' has supports_delegate=false" >&2
         exit $EXIT_CONFIG_ERROR
     fi
+fi
+
+# Researcher mode: decide how this backend reaches the named researcher
+# profiles, or refuse. lib/researchers.py is the single source for the routes
+# and for the channel list the worker's contract carries.
+RESEARCH_NATIVE_PROFILE=""
+RESEARCH_NATIVE_MODEL=""
+RESEARCH_NATIVE_EFFORT=""
+RESEARCH_PORCH_PROFILES=""
+RESEARCH_UNREACHABLE=""
+RESEARCH_CHANNELS=""
+RESEARCH_CLAUDE_DENIED=""
+if [[ "$MODE" == "review-researchers" ]]; then
+    if [[ "$RAW_MODE" -eq 1 || -n "$PROMPT_FILE" || -n "${PORCH_RAW_PROMPT:-}" ]]; then
+        echo "Error: researcher mode always carries the review contract; a raw prompt is not allowed" >&2
+        exit $EXIT_USAGE
+    fi
+    PORCH_SELF="$(cd "$LIB_DIR/.." && pwd)/porch"
+    RESEARCH_PLAN_JSON="$(
+        python3 "$LIB_DIR/researchers.py" plan "$AGENT_ID" --researcher "$RESEARCHERS" --porch "$PORCH_SELF"
+    )" || exit $EXIT_CONFIG_ERROR
+    eval "$(
+        RESEARCH_PLAN_JSON="$RESEARCH_PLAN_JSON" PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
+import json, os, shlex, sys
+from researchers import CLAUDE_DENIED_AGENT_TYPES
+sys.stdout.reconfigure(newline='\n')
+d = json.loads(os.environ["RESEARCH_PLAN_JSON"])
+def emit(k, v):
+    print(f"{k}={shlex.quote(str(v))}")
+emit("RESEARCH_NATIVE_PROFILE", d["native_profile"])
+emit("RESEARCH_NATIVE_MODEL", d["native_model"])
+emit("RESEARCH_NATIVE_EFFORT", d["native_effort"])
+emit("RESEARCH_PORCH_PROFILES", ",".join(d["porch_profiles"]))
+emit("RESEARCH_UNREACHABLE", ",".join(d["unreachable"]))
+emit("RESEARCH_CHANNELS", "\n".join(d["channels"]))
+emit("RESEARCH_CLAUDE_DENIED", ",".join(f"Agent({t})" for t in CLAUDE_DENIED_AGENT_TYPES))
+PY
+    )"
+    unset RESEARCH_PLAN_JSON
+    progress_info "researchers" "agent=$AGENT_ID native=${RESEARCH_NATIVE_PROFILE:-none} porch=${RESEARCH_PORCH_PROFILES:-none}"
+    if [[ -n "$RESEARCH_UNREACHABLE" ]]; then
+        # A narrower menu, not a weaker guarantee; still said aloud at any progress style.
+        echo "[porch] note: researcher profiles this backend cannot reach: $RESEARCH_UNREACHABLE (backend=$BACKEND)" >&2
+    fi
+fi
+# Porch started from this worker's shell is limited by this variable: only
+# `review ask -a` a listed profile. A run that itself began in such a shell
+# (a researcher) passes an empty list on: its shell starts no porch at all.
+if [[ "$MODE" == "review-researchers" ]]; then
+    export PORCH_RESEARCHER_PROFILES="$RESEARCH_PORCH_PROFILES"
+elif [[ -n "${PORCH_RESEARCHER_PROFILES+x}" ]]; then
+    export PORCH_RESEARCHER_PROFILES=""
 fi
 
 if [[ -n "$PROMPT_FILE" ]]; then
@@ -265,14 +355,30 @@ else
     if [[ -n "${PORCH_SKIP_OUTPUT_TEMPLATE:-}" && "$MODE" == "review" ]]; then
         PIPE_MODE="review-code"
     fi
+    CONTRACT_ARGS=()
+    if [[ "$IS_REVIEW" -eq 1 ]]; then
+        CONTRACT_ARGS+=(--style "$REVIEW_STYLE")
+    fi
+    if [[ -n "$RESEARCH_CHANNELS" ]]; then
+        printf '%s\n' "$RESEARCH_CHANNELS" > "$_PROMPT_STAGE_DIR/researcher-channels.txt"
+        CONTRACT_ARGS+=(--researcher-channels-file "$_PROMPT_STAGE_DIR/researcher-channels.txt")
+    fi
     FULL_PROMPT="$(
         python3 "$LIB_DIR/prompt_pipeline.py" \
             --mode "$PIPE_MODE" \
             --role-file "$_PROMPT_ROLE_FILE" \
             --user-file "$_PROMPT_USER_FILE" \
             ${SKIP_TPL_ARGS[@]+"${SKIP_TPL_ARGS[@]}"} \
+            ${CONTRACT_ARGS[@]+"${CONTRACT_ARGS[@]}"} \
             2>/dev/null
     )" || FULL_PROMPT=""
+    if [[ -z "$FULL_PROMPT" && ( "$MODE" == "review-researchers" || "$REVIEW_STYLE" != "adviser" ) ]]; then
+        # The shell fallback knows only the default contract (an adviser who
+        # works alone). Sending that instead would change what the worker may do.
+        rm -rf "$_PROMPT_STAGE_DIR"
+        echo "Error: cannot build the review contract for mode=$MODE style=$REVIEW_STYLE" >&2
+        exit $EXIT_CONFIG_ERROR
+    fi
     if [[ -z "$FULL_PROMPT" ]]; then
         if [[ -n "$REVIEW_INSTRUCTIONS" ]]; then
             ROLE_PROMPT+=$'\n\nMODEL-SPECIFIC REVIEW INSTRUCTIONS:\n'
@@ -386,7 +492,28 @@ build_cmd_codex() {
     CMD=("$BIN")
     # Top-level -a is ask-for-approval
     if [[ "$ACCESS_POLICY" == "readonly" ]]; then
-        CMD+=(--disable multi_agent --disable multi_agent_v2)
+        if [[ "$MODE_CAP_SUBAGENTS" == "researchers" ]]; then
+            # Sub-agents inherit the parent turn's sandbox and approval policy,
+            # so each one runs read-only and without network (verified on
+            # 0.170.0). The default sub-agent model is the researcher profile's,
+            # and the spawn tool's own model parameters are hidden, so the
+            # worker cannot pick a costlier one.
+            CMD+=(--disable multi_agent
+                  -c features.multi_agent_v2.enabled=true
+                  -c features.multi_agent_v2.expose_spawn_agent_model_overrides=false
+                  -c "agents.default_subagent_model=\"$RESEARCH_NATIVE_MODEL\"")
+            if [[ -n "$RESEARCH_NATIVE_EFFORT" ]]; then
+                CMD+=(-c "agents.default_subagent_reasoning_effort=\"$RESEARCH_NATIVE_EFFORT\"")
+            fi
+        else
+            CMD+=(--disable multi_agent --disable multi_agent_v2)
+            if [[ "$MODE_CAP_SUBAGENTS" == "none" ]]; then
+                # The two feature flags alone do not switch sub-agents off:
+                # Codex 0.170 then takes the multi-agent version from the model
+                # catalog and still offers the collaboration tools.
+                CMD+=(-c agents.enabled=false)
+            fi
+        fi
         if [[ "${MODE_CAP_WEB:-true}" == "true" || "${MODE_CAP_WEB:-1}" == "1" ]]; then
             CMD+=(--search)
         fi
@@ -440,6 +567,32 @@ build_cmd_claude() {
             # Media mode: the Read tool sees staged files; no shell at all.
             CMD+=(--disallowedTools "Edit,Write,NotebookEdit,Agent,Task,Bash")
             CMD+=(--allowedTools "Read")
+        elif [[ "$MODE_CAP_SUBAGENTS" == "researchers" ]]; then
+            # --tools is an allowlist of built-in tools: it removes Workflow,
+            # the schedulers and every other way to start work elsewhere.
+            # With a Claude researcher profile the Agent tool stays, cut down
+            # to the read-only Explore type by denying the other built-in
+            # types (custom agents do not load under --safe-mode). The
+            # session's Edit/Write denial covers subagents too; their model is
+            # forced, and they cannot spawn further (depth 1).
+            local claude_tools="Bash,Read,Grep,Glob" claude_allowed="Bash"
+            local claude_denied="Edit,Write,NotebookEdit"
+            if [[ "${MODE_CAP_WEB:-true}" == "true" || "${MODE_CAP_WEB:-1}" == "1" ]]; then
+                claude_tools+=",WebSearch,WebFetch"
+                claude_allowed+=",WebSearch,WebFetch"
+            fi
+            if [[ -n "$RESEARCH_NATIVE_PROFILE" ]]; then
+                claude_tools+=",Agent"
+                claude_denied+=",$RESEARCH_CLAUDE_DENIED"
+                export CLAUDE_CODE_SUBAGENT_MODEL="$RESEARCH_NATIVE_MODEL"
+                export CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1
+                export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1
+            else
+                claude_denied+=",Agent,Task"
+            fi
+            CMD+=(--tools "$claude_tools")
+            CMD+=(--disallowedTools "$claude_denied")
+            CMD+=(--allowedTools "$claude_allowed")
         else
             CMD+=(--disallowedTools "Edit,Write,NotebookEdit,Agent,Task")
             if [[ "${MODE_CAP_WEB:-true}" == "true" || "${MODE_CAP_WEB:-1}" == "1" ]]; then
@@ -471,21 +624,60 @@ build_cmd_opencode() {
         # permissions. Review needs the full analysis/tool loop instead. Define
         # a primary review agent at runtime: full shell/search, no edits or task
         # delegation. The trusted prompt carries the report-only contract.
-        OPENCODE_CONFIG_CONTENT="$(python3 -c '
+        # In researcher mode the review agent may start one subagent, the
+        # read-only "porch-researcher" defined here with the researcher
+        # profile's model; a subagent uses its own permissions, not its
+        # parent's, so it carries its own edit and subagent denials.
+        local oc_researcher_model=""
+        if [[ "$MODE_CAP_SUBAGENTS" == "researchers" && -n "$RESEARCH_NATIVE_PROFILE" ]]; then
+            oc_researcher_model="$RESEARCH_NATIVE_MODEL"
+            if [[ -n "$RESEARCH_NATIVE_EFFORT" ]]; then
+                oc_researcher_model+="#$RESEARCH_NATIVE_EFFORT"
+            fi
+        fi
+        OPENCODE_CONFIG_CONTENT="$(
+            PORCH_OC_SUBAGENTS="$MODE_CAP_SUBAGENTS" \
+            PORCH_OC_RESEARCHER_MODEL="$oc_researcher_model" \
+            PORCH_OC_RESEARCHER_PROMPT="$LIB_DIR/../../prompts/review-researcher.txt" \
+            PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
 import json, os, sys
+from researchers import RESEARCHER_AGENT
 try:
     config = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT") or "{}")
     if not isinstance(config, dict) or not isinstance(config.get("agents", {}), dict):
         raise ValueError("configuration and agents must be objects")
-    config.setdefault("agents", {})["porch-review"] = {
+    researchers = os.environ.get("PORCH_OC_SUBAGENTS") == "researchers"
+    researcher_model = os.environ.get("PORCH_OC_RESEARCHER_MODEL") or ""
+    permissions = [{"action": "edit", "resource": "*", "effect": "deny"},
+                   {"action": "subagent", "resource": "*", "effect": "deny"}]
+    if researchers:
+        delegation = ("Start no agent except the read-only researchers your instructions allow; "
+                      "never use other task delegation, other models, or external workers.")
+    else:
+        delegation = "Work alone: never use task delegation, subagents, other models, or external workers."
+    agents = config.setdefault("agents", {})
+    if researcher_model:
+        # The last matching rule wins: only the researcher may be started.
+        permissions.append({"action": "subagent", "resource": RESEARCHER_AGENT, "effect": "allow"})
+        with open(os.environ["PORCH_OC_RESEARCHER_PROMPT"], encoding="utf-8") as handle:
+            researcher_prompt = handle.read()
+        agents[RESEARCHER_AGENT] = {
+            "description": "Read-only researcher for one bounded fact-finding question",
+            "system": researcher_prompt,
+            "mode": "subagent",
+            "model": researcher_model,
+            "permissions": [{"action": "edit", "resource": "*", "effect": "deny"},
+                            {"action": "subagent", "resource": "*", "effect": "deny"},
+                            {"action": "question", "resource": "*", "effect": "deny"}],
+        }
+    agents["porch-review"] = {
         "description": "Independent read-only review performed without delegation",
-        "system": "Review independently and read-only. Work alone: never use task delegation, subagents, other models, or external workers. Use shell, search, and read tools to inspect any repository files needed for the real blast radius. Return only the report; never modify files or external state.",
+        "system": "Review independently and read-only. " + delegation + " Use shell, search, and read tools to inspect any repository files needed for the real blast radius. Return only the report; never modify files or external state.",
         "mode": "primary",
-        "permissions": [{"action": "edit", "resource": "*", "effect": "deny"},
-                        {"action": "subagent", "resource": "*", "effect": "deny"}],
+        "permissions": permissions,
     }
     print(json.dumps(config))
-except (ValueError, TypeError):
+except (ValueError, TypeError, OSError):
     print("Invalid OPENCODE_CONFIG_CONTENT: expected a JSON object with an agents object", file=sys.stderr)
     sys.exit(1)
 ')" || return 1
@@ -534,17 +726,51 @@ build_cmd_grok() {
         # verified against Grok Build 0.2.112: without them the model reports it
         # has no web tool, with them it retrieves and cites live sources.
         CMD+=(--sandbox read-only --no-plan)
+        local grok_tools="read_file,grep,list_dir,run_terminal_cmd"
         if [[ "${MODE_CAP_WEB:-true}" == "true" ]]; then
-            CMD+=(--tools "read_file,grep,list_dir,run_terminal_cmd,web_search,web_fetch")
+            grok_tools+=",web_search,web_fetch"
+        fi
+        if [[ "$MODE_CAP_SUBAGENTS" == "researchers" ]]; then
+            # One subagent type is defined and allowed: a read-only researcher
+            # on the researcher profile's model. `Agent(name)` in --tools is
+            # an allowlist of types; the sandbox is applied to the whole grok
+            # process, so it holds for the subagent's shell as well, and a
+            # subagent cannot spawn its own (verified on 1.0.89).
+            local grok_agents
+            grok_agents="$(
+                PORCH_GROK_TOOLS="$grok_tools" \
+                PORCH_GROK_MODEL="$RESEARCH_NATIVE_MODEL" \
+                PORCH_GROK_EFFORT="$RESEARCH_NATIVE_EFFORT" \
+                PORCH_GROK_PROMPT="$LIB_DIR/../../prompts/review-researcher.txt" \
+                PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
+import json, os
+from researchers import RESEARCHER_AGENT
+with open(os.environ["PORCH_GROK_PROMPT"], encoding="utf-8") as handle:
+    prompt = handle.read()
+agent = {
+    "description": "Read-only researcher for one bounded fact-finding question",
+    "prompt": prompt,
+    "tools": os.environ["PORCH_GROK_TOOLS"].split(","),
+}
+if os.environ.get("PORCH_GROK_MODEL"):
+    agent["model"] = os.environ["PORCH_GROK_MODEL"]
+if os.environ.get("PORCH_GROK_EFFORT"):
+    agent["effort"] = os.environ["PORCH_GROK_EFFORT"]
+print(json.dumps({RESEARCHER_AGENT: agent}))
+')" || return 1
+            CMD+=(--agents "$grok_agents")
+            CMD+=(--tools "$grok_tools,Agent(porch-researcher)")
+            CMD+=(--disallowed-tools "search_replace,write")
         else
-            CMD+=(--tools "read_file,grep,list_dir,run_terminal_cmd")
+            CMD+=(--tools "$grok_tools")
+            CMD+=(--disallowed-tools "search_replace,write,Agent")
+            # mode_policy review: subagents=none — enforce it (Grok Build has
+            # the flag). Media keeps subagents, as before.
+            if [[ "$MODE_CAP_SUBAGENTS" == "none" ]]; then
+                CMD+=(--no-subagents)
+            fi
         fi
-        CMD+=(--disallowed-tools "search_replace,write,Agent")
-        # mode_policy review: memory=false, subagents=false — enforce when
-        # flags exist (Grok Build supports both).
-        if [[ "${MODE_CAP_SUBAGENTS:-false}" != "true" ]]; then
-            CMD+=(--no-subagents)
-        fi
+        # mode_policy review: memory=false — enforce when the flag exists.
         if [[ "${MODE_CAP_MEMORY:-false}" != "true" ]]; then
             CMD+=(--no-memory)
         fi
@@ -682,8 +908,18 @@ obj = {
     "model": os.environ["MODEL"],
     "argv": argv,
 }
+env = {}
 if os.environ.get("CURSOR_CONFIG_DIR"):
-    obj["env"] = {"CURSOR_CONFIG_DIR": os.environ["CURSOR_CONFIG_DIR"]}
+    env["CURSOR_CONFIG_DIR"] = os.environ["CURSOR_CONFIG_DIR"]
+# What researcher mode hands the backend through its environment.
+for name in ("PORCH_RESEARCHER_PROFILES", "CLAUDE_CODE_SUBAGENT_MODEL",
+             "CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH"):
+    if name in os.environ:
+        env[name] = os.environ[name]
+if os.environ.get("BACKEND") == "opencode" and os.environ.get("OPENCODE_CONFIG_CONTENT"):
+    env["OPENCODE_CONFIG_CONTENT"] = os.environ["OPENCODE_CONFIG_CONTENT"]
+if env:
+    obj["env"] = env
 with open(os.environ["DUMP_ARGV_PATH"], "w") as f:
     json.dump(obj, f)
     f.write("\n")

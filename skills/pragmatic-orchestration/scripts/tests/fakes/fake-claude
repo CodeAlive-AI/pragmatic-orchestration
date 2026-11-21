@@ -8,6 +8,10 @@ print(json.dumps({
     "argv": sys.argv[1:],
     "stdin": sys.stdin.read(),
     "cwd": os.getcwd(),
+    "env": {k: os.environ[k] for k in (
+        "PORCH_RESEARCHER_PROFILES", "PORCH_RUN_DIR", "CLAUDE_CODE_SUBAGENT_MODEL",
+        "CLAUDE_CODE_SUBAGENT_MODEL_FORCE", "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+    ) if k in os.environ},
     "has_FULL_PROMPT": "FULL_PROMPT" in os.environ,
     "has_JUDGE_INPUT_BODY": "JUDGE_INPUT_BODY" in os.environ,
     "has_JR_INPUT_BODY": "JR_INPUT_BODY" in os.environ,

@@ -333,6 +333,8 @@ assert_contains "codex review has read-only sandbox" "$argv" "--sandbox read-onl
 assert_not_contains "codex review no full bypass" "$argv" "--dangerously-bypass-approvals-and-sandbox"
 assert_contains "codex review disables multi-agent" "$argv" "--disable multi_agent"
 assert_contains "codex review disables multi-agent v2" "$argv" "--disable multi_agent_v2"
+# The two feature flags alone leave the collaboration tools on in Codex 0.170.
+assert_contains "codex review switches sub-agents off" "$argv" "-c agents.enabled=false"
 assert_contains "codex review enables web search" "$argv" "--search"
 
 # Codex delegate: YOLO bypass, no read-only sandbox
@@ -1538,6 +1540,13 @@ assert_le "backend stderr banner not duplicated" "$banner_count" "1"
 
 echo "=== Review ask input transport (offline) ==="
 if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/review_input_test.py" -v; then
+  PASS=$((PASS + 1))
+else
+  FAIL=$((FAIL + 1))
+fi
+
+echo "=== Review with researchers and the assignment style (offline) ==="
+if PYTHONDONTWRITEBYTECODE=1 python3 "$TESTS_DIR/review_researchers_test.py" -v; then
   PASS=$((PASS + 1))
 else
   FAIL=$((FAIL + 1))

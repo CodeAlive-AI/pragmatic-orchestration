@@ -10,8 +10,12 @@ import json, os, sys
 try:
     inline = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT", "{}"))
     review_agent = inline.get("agents", {}).get("porch-review", {})
-    perms = {rule["action"]: rule["effect"] for rule in review_agent.get("permissions", [])}
+    # The first rule per action is the blanket one; later rules refine it.
+    perms = {}
+    for rule in review_agent.get("permissions", []):
+        perms.setdefault(rule["action"], rule["effect"])
 except Exception:
+    inline = {}
     review_agent = {}
     perms = {}
 print(json.dumps({
@@ -25,6 +29,8 @@ print(json.dumps({
     "has_JR_FINDINGS_BODY": "JR_FINDINGS_BODY" in os.environ,
     "review_policy": {k: perms.get(k) for k in ("edit", "subagent")},
     "review_agent_prompt": review_agent.get("system", ""),
+    "review_permissions": review_agent.get("permissions", []),
+    "researcher_agent": inline.get("agents", {}).get("porch-researcher"),
 }))
 ' -- "$@" >> "$LOG"
 

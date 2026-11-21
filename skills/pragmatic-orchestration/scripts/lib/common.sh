@@ -50,6 +50,28 @@ EXIT_ALL_FAILED=3          # consensus: every queried agent failed
 EXIT_CONFIG_ERROR=4        # missing CLI, missing/invalid config, unknown role/id
 EXIT_USAGE=5               # bad CLI args: missing prompt, unknown flag
 
+# A shell that carries PORCH_RESEARCHER_PROFILES belongs to the worker of a
+# read-only review that may start researchers (`review ask --researcher`).
+# Porch started from it runs one thing: `review ask -a` a listed profile. An
+# empty list is a researcher's own shell, where porch starts nothing. The
+# variable is a guard against a worker's mistake, not a boundary: a harness
+# with an unsandboxed shell can unset it, and there the review contract is
+# what forbids other delegation.
+# Usage: porch_nested_guard <command> [<subcommand>]   (non-zero = refused)
+porch_nested_guard() {
+    [[ -n "${PORCH_RESEARCHER_PROFILES+x}" ]] || return 0
+    case "${1:-}" in
+        -h|--help|help|--list-agents) return 0 ;;
+        review) [[ "${2:-}" != "ask" ]] || return 0 ;;
+    esac
+    if [[ -n "$PORCH_RESEARCHER_PROFILES" ]]; then
+        echo "Error: this shell belongs to a read-only porch review worker. The only porch command available here is \`review ask -a PROFILE\`, with PROFILE one of: $PORCH_RESEARCHER_PROFILES" >&2
+    else
+        echo "Error: this shell belongs to a read-only porch review worker that may not start other agents; no porch command is available here" >&2
+    fi
+    return 1
+}
+
 # XML-escape stdin → stdout (&, <, >, ", ').
 xml_escape() {
     python3 -c '
@@ -79,6 +101,16 @@ cdata_wrap() {
 _PORCH_COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORCH_PRINCIPLES="$(cat "$_PORCH_COMMON_DIR/../../prompts/review-framework.txt")"
 PORCH_RECAP="$(cat "$_PORCH_COMMON_DIR/../../prompts/review-recap.txt")"
+# The assets are templates: prompt_pipeline.py fills the delegation slots per
+# contract variant. The shell fallback knows only the default one, a reviewer
+# that works alone, so it fills them the same way here.
+_porch_slot='{{DELEGATION_RULE}}'
+_porch_fill="$(cat "$_PORCH_COMMON_DIR/../../prompts/review-delegation-alone.txt")"
+PORCH_PRINCIPLES="${PORCH_PRINCIPLES/$_porch_slot/$_porch_fill}"
+_porch_slot='{{DELEGATION_CLAUSE}}'
+_porch_fill='no subagents or delegation'
+PORCH_RECAP="${PORCH_RECAP/$_porch_slot/$_porch_fill}"
+unset _porch_slot _porch_fill
 
 # Render the caller's known file paths as a deliberately non-exhaustive review
 # seed. Paths are source material, so keep them inside CDATA and split any CDATA

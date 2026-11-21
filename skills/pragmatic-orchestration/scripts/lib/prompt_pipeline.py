@@ -16,6 +16,13 @@ Prompt purity:
   - review --prompt-file changes transport only; review policy remains layered
   - code-review skips the default Assessment template (uses its own schema)
 
+Review contract variants (prompts/review-*.txt), chosen by two switches:
+  - delegation: the worker works alone (default), or may start read-only
+    researchers through the channels the caller passes in (researchers.py)
+  - style: an independent adviser under five headings (default), or the
+    executor of a read-only assignment who answers in the structure of its
+    brief: no adviser role, no profile role text, no answer template
+
 Trust boundary: layers 1–5 and 7 are trusted orchestrator content; layer 6 is
 untrusted user/repo content. The final recap keeps the operational contract
 salient without treating repository or caller text as instructions.
@@ -79,12 +86,66 @@ CODE_REVIEW_MODES = frozenset(
 RAW_MODES = frozenset({"delegate", "delegate-steerable", "raw", "steerable"})
 
 
-FRAMEWORK_POLICY_REVIEW = (
-    Path(__file__).resolve().parents[2] / "prompts" / "review-framework.txt"
-).read_text(encoding="utf-8")
-FRAMEWORK_RECAP_REVIEW = (
-    Path(__file__).resolve().parents[2] / "prompts" / "review-recap.txt"
-).read_text(encoding="utf-8")
+_PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+
+STYLE_ADVISER = "adviser"
+STYLE_ASSIGNMENT = "assignment"
+REVIEW_STYLES = (STYLE_ADVISER, STYLE_ASSIGNMENT)
+
+_DELEGATION_RULE_SLOT = "{{DELEGATION_RULE}}\n"
+_DELEGATION_CLAUSE_SLOT = "{{DELEGATION_CLAUSE}}"
+_RESEARCHER_CHANNELS_SLOT = "{{RESEARCHER_CHANNELS}}\n"
+_CLAUSE_ALONE = "no subagents or delegation"
+_CLAUSE_RESEARCHERS = (
+    "no agents other than the read-only researchers this contract allows, and "
+    "no other delegation"
+)
+_CONTRACT_FILES = {
+    STYLE_ADVISER: ("review-framework.txt", "review-recap.txt"),
+    STYLE_ASSIGNMENT: ("review-assignment-framework.txt", "review-assignment-recap.txt"),
+}
+
+
+def _prompt_asset(name: str) -> str:
+    return (_PROMPTS_DIR / name).read_text(encoding="utf-8")
+
+
+def _fill(template: str, slot: str, value: str) -> str:
+    if template.count(slot) != 1:
+        raise ValueError(f"review contract template must hold {slot.strip()} exactly once")
+    return template.replace(slot, value)
+
+
+def review_contract(
+    style: str = STYLE_ADVISER, researcher_channels: str = ""
+) -> Tuple[str, str]:
+    """Return (framework policy, final recap) for one review contract variant.
+
+    `researcher_channels` is the list of ways the worker may start read-only
+    researchers, one "- ..." line each. Empty means the worker works alone.
+    """
+    if style not in REVIEW_STYLES:
+        raise ValueError(f"unknown review style: {style!r}")
+    framework_name, recap_name = _CONTRACT_FILES[style]
+    channels = researcher_channels.strip("\n")
+    if channels.strip():
+        indented = "".join(f"  {line}\n" for line in channels.splitlines())
+        rule = _fill(
+            _prompt_asset("review-delegation-researchers.txt"),
+            _RESEARCHER_CHANNELS_SLOT,
+            indented,
+        )
+        clause = _CLAUSE_RESEARCHERS
+    else:
+        rule = _prompt_asset("review-delegation-alone.txt")
+        clause = _CLAUSE_ALONE
+    framework = _fill(_prompt_asset(framework_name), _DELEGATION_RULE_SLOT, rule)
+    recap = _fill(_prompt_asset(recap_name), _DELEGATION_CLAUSE_SLOT, clause)
+    return framework, recap
+
+
+# The default contract: an independent adviser who works alone.
+FRAMEWORK_POLICY_REVIEW, FRAMEWORK_RECAP_REVIEW = review_contract()
 
 OUTPUT_TEMPLATE_REVIEW = """
 RESPOND USING THIS STRUCTURE (adapt section depth to the question complexity):
@@ -166,7 +227,15 @@ class PromptBuilder:
         raw: bool = False,
         include_review_template: Optional[bool] = None,
         trusted_metadata: str = "",
+        style: str = STYLE_ADVISER,
+        researcher_channels: str = "",
     ):
+        if style not in REVIEW_STYLES:
+            raise ValueError(f"unknown review style: {style!r}")
+        if mode == "review-researchers" and not researcher_channels.strip():
+            raise ValueError("mode review-researchers needs the researcher channels")
+        self.style = style
+        self.researcher_channels = researcher_channels
         self.mode = mode
         self.role_text = role_text
         self.user_input = user_input
@@ -195,21 +264,41 @@ class PromptBuilder:
             # Raw delegate may carry minimal trusted metadata only when requested.
             return layers
 
+        is_review = (
+            mode in CODE_REVIEW_MODES
+            or mode in REVIEW_WRAP_MODES
+            or mode.startswith("review")
+        )
+        if is_review:
+            framework, recap = review_contract(self.style, self.researcher_channels)
+        if is_review and self.style == STYLE_ASSIGNMENT:
+            # The assignment sets the role and the structure of the answer:
+            # no adviser role, no profile role text, no answer template.
+            return {
+                "framework_policy": self.framework_policy or framework,
+                "mode_contract": self.mode_contract,
+                "role": "",
+                "output_schema": self.output_schema,
+                "repository_facts": self.repository_facts,
+                "user_input": self.user_input,
+                "framework_recap": recap,
+            }
+
         if mode in CODE_REVIEW_MODES or (
             self.include_review_template is False
         ):
             # Role + framework + caller-provided schema; no Assessment template.
             return {
-                "framework_policy": self.framework_policy or FRAMEWORK_POLICY_REVIEW,
+                "framework_policy": self.framework_policy or framework,
                 "mode_contract": self.mode_contract,
                 "role": self.role_text,
                 "output_schema": self.output_schema,
                 "repository_facts": self.repository_facts,
                 "user_input": self.user_input,
-                "framework_recap": FRAMEWORK_RECAP_REVIEW,
+                "framework_recap": recap,
             }
 
-        if mode in REVIEW_WRAP_MODES or mode.startswith("review"):
+        if is_review:
             use_template = (
                 OUTPUT_TEMPLATE_REVIEW
                 if self.include_review_template is not False
@@ -219,13 +308,13 @@ class PromptBuilder:
             if self.include_review_template is False:
                 schema = self.output_schema
             return {
-                "framework_policy": self.framework_policy or FRAMEWORK_POLICY_REVIEW,
+                "framework_policy": self.framework_policy or framework,
                 "mode_contract": self.mode_contract,
                 "role": self.role_text,
                 "output_schema": schema,
                 "repository_facts": self.repository_facts,
                 "user_input": self.user_input,
-                "framework_recap": FRAMEWORK_RECAP_REVIEW,
+                "framework_recap": recap,
             }
 
         if mode in ("delegate", "delegate-steerable"):
@@ -346,6 +435,8 @@ def build_prompt(
     trusted_metadata: str = "",
     review_instructions: str = "",
     honor_env: bool = False,
+    style: str = STYLE_ADVISER,
+    researcher_channels: str = "",
 ) -> BuiltPrompt:
     """Public entry used by shell and tests.
 
@@ -377,6 +468,8 @@ def build_prompt(
         raw=raw,
         include_review_template=include_template,
         trusted_metadata=trusted_metadata,
+        style=style,
+        researcher_channels=researcher_channels,
     )
     return builder.build()
 
@@ -416,6 +509,12 @@ def _main() -> int:
     ap.add_argument("--schema-file", default="")
     ap.add_argument("--raw", action="store_true")
     ap.add_argument("--skip-output-template", action="store_true")
+    ap.add_argument("--style", default=STYLE_ADVISER, choices=REVIEW_STYLES,
+                    help="adviser: role and five headings (default). assignment: "
+                         "the caller's brief sets the role and the answer structure.")
+    ap.add_argument("--researcher-channels-file", default="",
+                    help="Ways the worker may start read-only researchers, one "
+                         "'- ...' line each; without it the worker works alone.")
     ap.add_argument("--provenance", action="store_true")
     ap.add_argument("--check", action="store_true", help="Run isolation assertions")
     args = ap.parse_args()
@@ -439,17 +538,23 @@ def _main() -> int:
     role = _read(args.role_file, args.role_text)
     facts = _read(args.facts_file, "")
     schema = _read(args.schema_file, "")
-
-    built = build_prompt(
-        mode=args.mode,
-        user_input=user,
-        role_text=role,
-        repository_facts=facts,
-        output_schema=schema,
-        raw=args.raw,
-        skip_output_template=args.skip_output_template,
-        honor_env=True,
-    )
+    try:
+        channels = _read(args.researcher_channels_file, "")
+        built = build_prompt(
+            mode=args.mode,
+            user_input=user,
+            role_text=role,
+            repository_facts=facts,
+            output_schema=schema,
+            raw=args.raw,
+            skip_output_template=args.skip_output_template,
+            honor_env=True,
+            style=args.style,
+            researcher_channels=channels,
+        )
+    except (OSError, UnicodeError, ValueError) as error:
+        print(f"Error: cannot build review prompt: {error}", file=sys.stderr)
+        return 5
     if args.check:
         assert_layer_order(built)
         assert_raw_purity(built)

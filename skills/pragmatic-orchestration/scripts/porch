@@ -34,6 +34,7 @@ porch — independent review and single-agent YOLO delegation
 
 Usage:
   porch review ask [options] ["question"]
+  porch review ask -a <agent-id> --researcher <agent-id> [--researcher ...] [--assignment] ["task"]
   porch review code -a <agent-id> [options] <file|--diff>
   porch delegate -a <exact-agent-id> ["task"]
   porch delegate -a <exact-agent-id> --one-shot ["task"]
@@ -80,7 +81,20 @@ Usage:
 review ask
   Ask exactly one explicitly selected profile for an independent review.
   Options: --xml, --list-agents, --prompt-file, --context-stdin, -a/--agent,
-           --progress full|compact|none
+           --progress full|compact|none, --researcher ID, --assignment
+  --researcher ID (repeatable)
+      The worker stays read-only but may start read-only researchers on the
+      named profiles, and nothing else: its own subagent limited to a
+      researcher on the model of a named profile of the same backend, and,
+      where its shell is not sandboxed, a nested `porch review ask -a ID`.
+      Supported: Codex CLI, Claude Code, OpenCode, Grok Build, Antigravity
+      CLI. Any other backend, or a profile list the backend cannot reach, is
+      refused with exit 4; nothing is downgraded silently. Without the flag
+      the worker works alone.
+  --assignment
+      Treat the prompt as a read-only assignment: no adviser role, no profile
+      role text and no five fixed headings. The worker answers in the
+      structure its brief asks for. The read-only contract still applies.
 
 review code
   One independent code review. Options: -a ID, --xml, --diff,
@@ -183,6 +197,9 @@ if [[ $# -eq 0 ]]; then
     usage
     exit $EXIT_USAGE
 fi
+
+# Inside a read-only review worker's shell only `review ask` is available.
+porch_nested_guard "$1" "${2:-}" || exit $EXIT_CONFIG_ERROR
 
 case "$1" in
     -h|--help|help)

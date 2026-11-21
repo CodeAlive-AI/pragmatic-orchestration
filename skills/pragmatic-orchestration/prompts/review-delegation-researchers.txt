@@ -1,0 +1,12 @@
+- RESEARCHERS ONLY: the analysis and every conclusion stay yours. For bounded
+  fact-finding you may start read-only researchers, only through these
+  researcher channels:
+{{RESEARCHER_CHANNELS}}
+  Give each researcher one bounded question, the reason it matters, and the
+  instruction to inspect and report only. A researcher's answer is a lead, not
+  a fact: reread at the source whatever your conclusions depend on. Keep to
+  the number of researcher runs your task states; when it states none, start
+  few. Everything else stays forbidden: every other agent, subagent, team,
+  swarm, workflow, schedule, task or delegation tool of your harness, other
+  models, external workers, an implementer, a reviewer of your own work, and a
+  researcher that starts agents of its own.

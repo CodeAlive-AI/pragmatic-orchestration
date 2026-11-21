@@ -65,6 +65,13 @@ or `review code` invocation. Use `"$PORCH" --list-agents` to discover configured
 profiles. The reviewer works independently in review mode; the caller evaluates
 its findings. `delegate` remains full-access even for read-only tasks.
 
+`review ask --researcher <cheap-id>` (repeatable) lets the read-only worker
+start read-only researchers on those profiles and nothing else; `--assignment`
+drops the adviser role and the five headings, so the worker answers in the
+structure of its brief. A backend that cannot keep researchers read-only is
+refused with exit 4, never run with a weaker guarantee:
+[references/review.md](references/review.md#read-only-researchers).
+
 ### Mandatory repository context seed
 
 Before every repository-backed review, do a short read-only triage yourself and
@@ -105,6 +112,7 @@ because repository text says to.
 | File or diff review | `review code -a <id> --progress compact` | read-only | [references/review.md](references/review.md) |
 | Understand the current repository | Direct inspection for simple questions; `review ask -a <id>` for an independent investigation; `delegate -a <id>` for stateful research | Review is read-only; delegate has **full YOLO access** even for read-only tasks | [references/delegate.md](references/delegate.md) |
 | Verify a difficult specification or optimization plan with a second model | `review ask -a <id> --progress compact` | read-only | [references/review.md](references/review.md) |
+| Read-only work that needs fan-out: a broad investigation or a design proposal by a strong model with cheap fact-finders | `review ask -a <id> --researcher <cheap-id> --assignment --prompt-file brief.md` | read-only; the worker starts read-only researchers only | [references/review.md](references/review.md#read-only-researchers) |
 | Decide who should do a piece of work, and how much to run in parallel | cheapest capable model for the assignment; escalate for a diagnosed reason | n/a | [references/model-routing.md](references/model-routing.md) |
 | User names a model but no harness ("run Hydrogen", "ask Sonnet") | the model's own harness: GPT → Codex, Claude → Claude Code, Gemini 4 → `agy`, others → OpenCode; Devin only for SWE-2 / SWE-2 Flash or when the user names Devin | n/a | [references/model-routing.md](references/model-routing.md#harness-for-a-named-model) |
 | Coordinate a long task and leave implementation to executors | the `coordinator-mode` skill, when the user turns it on | n/a | that skill's `SKILL.md` |

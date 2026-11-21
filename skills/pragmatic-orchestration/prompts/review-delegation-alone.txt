@@ -1,0 +1,3 @@
+- WORK ALONE: perform the entire review yourself. Do not spawn or invoke
+  subagents, child agents, agent teams, task/delegation tools, other models, or
+  external workers, and do not delegate any part of the analysis.

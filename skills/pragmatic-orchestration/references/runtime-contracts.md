@@ -41,6 +41,16 @@ One-shot architecture remains `backend_cmd | normalize_stream.py --raw-out --pro
 
 Live stderr keeps the human vocabulary `thought`, `text`, `end`, and `error`. Final-text assembly prefers `result` over concatenated answer deltas. Thinking and tool events never contribute.
 
+A backend line the normalizer has no mapping for is rejected and counted; the
+run ends with one stderr line `protocol-drift rejected_unknown=N types=...`,
+keyed by the backend's own line type. Claude Code's `stream-json --verbose`
+lines are all mapped: `system` (init, task and summary notices) and
+`rate_limit_event` become `progress`; an `assistant` message that holds only
+tool calls becomes `tool_started`, one that holds only thinking a thought; a
+`user` line with tool results becomes `tool_completed`; any line with
+`parent_tool_use_id` is a subagent's and becomes `progress`, so a subagent's
+text never enters the worker's answer.
+
 ## Debug event tape
 
 The opt-in tape records bounded, sequence-numbered JSONL across RAW → PARSED → NORMALIZED → RENDERED → FINAL without leaking event bodies onto normal stderr.
@@ -62,15 +72,41 @@ One-shot normalization records all stages; the steerable supervisor records norm
 
 `scripts/lib/mode_policy.py` derives access from an explicit capability matrix covering filesystem, shell, web, memory, subagents, steering, and interrupt. Review is read-only; delegate/delegate-steerable are YOLO. Unknown modes fail closed. Backend safety flags layer on top.
 
+`subagents` has three values: `none` (review, media), `researchers` (mode
+`review-researchers`, entered by `review ask --researcher`) and `any` (delegate).
+`review-researchers` equals review in every other capability.
+`scripts/lib/researchers.py` decides per backend how the worker reaches its
+researchers and refuses a backend that cannot keep them read-only;
+[review.md](review.md#read-only-researchers) has the routes and the evidence.
+
 | Backend | Review | Delegate |
 |---|---|---|
-| Codex CLI | `--search`, `exec --sandbox read-only`, ask-for-approval never, multi-agent disabled | `--dangerously-bypass-approvals-and-sandbox` |
+| Codex CLI | `--search`, `exec --sandbox read-only`, ask-for-approval never, multi-agent disabled (`--disable multi_agent --disable multi_agent_v2 -c agents.enabled=false`) | `--dangerously-bypass-approvals-and-sandbox` |
 | Claude Code | `dontAsk`, safe mode, no session/Chrome, Edit/Write/Agent/Task denied, Bash + web enabled | `--dangerously-skip-permissions` |
 | OpenCode | runtime `porch-review` primary agent with its own work-alone prompt: full diagnostics, edit/subagent denied | `--agent build --auto` |
 | Grok Build | `--no-plan`, read-only sandbox, terminal enabled, subagents disabled | `--always-approve`, no sandbox |
 | Gemini CLI | `--approval-mode yolo`, extensions/MCP/subagents disabled; report-only prompt contract | unsupported |
 
-Web research is available in review mode. No review backend uses a planning workflow. Claude pre-approves `Bash,WebSearch,WebFetch`; OpenCode uses a dedicated primary review agent with Bash/search enabled; Grok enables its terminal inside the read-only sandbox; and Gemini uses its normal full tool loop. The trusted review policy explicitly forbids file or external-state changes, saving plans/reports, subagents, agent teams, other models, and delegation. Where supported, subagent tools are also disabled mechanically.
+Codex 0.170.0 keeps its collaboration tools when only the two feature flags are
+disabled; `-c agents.enabled=false` is what removes them.
+
+With researchers the review column changes as follows; everything else stays.
+
+| Backend | Review with researchers |
+|---|---|
+| Codex CLI | `--disable multi_agent -c features.multi_agent_v2.enabled=true -c features.multi_agent_v2.expose_spawn_agent_model_overrides=false -c agents.default_subagent_model="M" [-c agents.default_subagent_reasoning_effort="E"]`; no `agents.enabled=false` |
+| Claude Code | `--tools "Bash,Read,Grep,Glob,WebSearch,WebFetch,Agent"`; `--disallowedTools` holds Edit, Write, NotebookEdit and `Agent(<type>)` for every built-in type except `Explore`; environment `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`. Without a Claude researcher profile: no Agent tool |
+| OpenCode | `porch-review` denies every subagent and then allows `porch-researcher`, a run-time subagent on the researcher model with edit, subagent and question denied |
+| Grok Build | `--agents` with the `porch-researcher` definition (model, effort, read-only tools), `Agent(porch-researcher)` appended to `--tools`, no `--no-subagents`; the read-only sandbox is unchanged |
+| Antigravity CLI | argv unchanged; researchers run through the nested porch only |
+| Gemini CLI, Devin CLI, Cursor CLI | refused with exit `4` |
+
+The worker's environment carries `PORCH_RESEARCHER_PROFILES`: the profiles a
+porch started from its shell may ask through `review ask -a`, and nothing else
+(`porch_nested_guard` in `scripts/lib/common.sh`). A nested run exports an empty
+list. `PORCH_DUMP_ARGV` output includes these environment values.
+
+Web research is available in review mode. No review backend uses a planning workflow. Claude pre-approves `Bash,WebSearch,WebFetch`; OpenCode uses a dedicated primary review agent with Bash/search enabled; Grok enables its terminal inside the read-only sandbox; and Gemini uses its normal full tool loop. The trusted review policy explicitly forbids file or external-state changes, saving plans/reports, subagents, agent teams, other models, and delegation. Where supported, subagent tools are also disabled mechanically. In researcher mode the same policy allows the listed researcher channels and keeps every other form of delegation forbidden.
 
 Grok `tool_call` / `tool_call_update` events normalize to tool lifecycle and
 content-free compact heartbeats. Long terminal commands therefore remain visibly
@@ -108,7 +144,24 @@ file is a configuration error; there is no fallback to the raw task.
 Delegate carries no review policy and no output template. In review mode,
 `--prompt-file` is only an input transport: the read-only, work-alone, and
 blast-radius policies are still layered around its contents. The shell
-`build_prompt` path remains a fallback.
+`build_prompt` path remains a fallback for the default contract only.
+
+The review contract is assembled from templates by `review_contract()`:
+
+| Choice | Framework and recap | Role and output layers |
+|---|---|---|
+| adviser (default) | `prompts/review-framework.txt`, `prompts/review-recap.txt` | profile role text, five-heading template |
+| assignment (`--assignment`) | `prompts/review-assignment-framework.txt`, `prompts/review-assignment-recap.txt` | none: the brief sets role and structure |
+
+Both frameworks have one slot for the delegation rule:
+`prompts/review-delegation-alone.txt` in mode `review`, and
+`prompts/review-delegation-researchers.txt` with the channel list of this run
+in mode `review-researchers`. The recap repeats the rule in one clause. The
+default adviser contract in mode `review` is byte-identical to the contract
+before the templates were split. Researcher mode and the assignment style have
+no shell fallback and no raw-prompt path: a failed prompt pipeline is a
+configuration error (exit `4`). `prompts/review-researcher.txt` is the system
+prompt of the run-time researcher agents on OpenCode and Grok Build.
 
 Prompt builders consume only their explicit user input and context files.
 The CLI pipeline reads stdin only when neither `--user-file` nor `--user-text`

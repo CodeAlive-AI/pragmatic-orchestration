@@ -131,6 +131,15 @@ scripts/porch review ask -a claude-fable \
   "Create a step-by-step implementation plan for DESIGN.md. Do not edit files."
 ```
 
+### Give a read-only worker cheap researchers
+
+```bash
+scripts/porch review ask -a claude-fable --researcher claude-haiku --assignment \
+  --prompt-file brief.md
+```
+
+The worker stays read-only and may start only read-only researchers on the named profiles: its harness's own read-only subagent on the researcher's model, or a nested `porch review ask` where its shell is not sandboxed. `--assignment` drops the adviser role and the five answer headings, so the worker answers in the structure of the brief. A backend that cannot keep researchers read-only is refused, not run with a weaker guarantee. Routes and limits per backend: [references/review.md](references/review.md#read-only-researchers).
+
 ### Delegate real work to another agent
 
 ```bash

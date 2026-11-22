@@ -27,7 +27,7 @@ models and enabled profiles may differ from the defaults described below.
 | `label` | Human-readable output label |
 | `review_instructions` | Optional profile-specific instructions for non-raw review prompts |
 | `supports_delegate` | Optional; set false for review-only profiles |
-| `web_search` | Optional, OpenCode profiles only: `"decline"` (default) or `"allow"`; see [Web search in OpenCode delegate runs](#web-search-in-opencode-delegate-runs) |
+| `web_search` | Optional, OpenCode profiles only: `"allow"` (default) or `"decline"`; see [Web search in OpenCode delegate runs](#web-search-in-opencode-delegate-runs) |
 
 ### Web search in OpenCode delegate runs
 
@@ -36,27 +36,30 @@ a worker searches. A delegate run has nobody to answer, so Porch settles it
 before launch, by profile, through the private server's inline configuration
 (`OPENCODE_CONFIG_CONTENT`). That configuration lives only in the run's server
 process: Porch never writes to your OpenCode settings and never answers the
-consent form, because the answer is stored in OpenCode's own state.
+consent form, because the answer is stored in OpenCode's own state. Review runs
+(`review ask`, `review code`) settle it the same way from the mode: web search is
+on, and a `websearch` key already in your `OPENCODE_CONFIG_CONTENT` wins.
 
-- Default (`"web_search": "decline"`, or the key absent): the server starts
-  with `websearch: false`, so the worker continues without web search. The run
-  emits the progress event `websearch_consent_declined via=config` at the start.
-- Opt-in (`"web_search": "allow"`): the server starts with
-  `websearch: {"provider": "random"}`, the same value the consent form's "allow"
-  stores, so a provider is used for this run only. The run emits
-  `websearch_consent_allowed via=config`. This accepts a third-party search
-  provider on your behalf, so no shipped profile sets it; add it only to a
-  profile in your own `config.json`:
+- Default (`"web_search": "allow"`, or the key absent): the server starts
+  with `websearch: {"provider": "random"}`, the same value the consent form's
+  "allow" stores, so a provider is used for this run only. The run emits the
+  progress event `websearch_consent_allowed via=config` at the start. Workers
+  are expected to check current primary sources, so web search is on by
+  default.
+- Opt-out (`"web_search": "decline"`): the server starts with
+  `websearch: false`, so the worker continues without web search, and the run
+  emits `websearch_consent_declined via=config`. Set it on a profile in your
+  own `config.json` when its searches must not reach a third-party provider:
 
 ```json
-"opencode-go-deepseek-v4-pro-search": {
+"opencode-go-deepseek-v4-pro-offline": {
   "enabled": false,
   "backend": "opencode",
   "model": "opencode-go/deepseek-v4-pro",
   "effort": "max",
   "role": "analyst",
-  "web_search": "allow",
-  "label": "DeepSeek V4 Pro with web search"
+  "web_search": "decline",
+  "label": "DeepSeek V4 Pro without web search"
 }
 ```
 

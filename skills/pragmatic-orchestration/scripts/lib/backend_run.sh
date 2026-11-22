@@ -493,9 +493,10 @@ build_cmd_codex() {
     # Top-level -a is ask-for-approval
     if [[ "$ACCESS_POLICY" == "readonly" ]]; then
         if [[ "$MODE_CAP_SUBAGENTS" == "researchers" ]]; then
-            # Sub-agents inherit the parent turn's sandbox and approval policy,
-            # so each one runs read-only and without network (verified on
-            # 0.170.0). The default sub-agent model is the researcher profile's,
+            # Sub-agents inherit the parent turn's sandbox and approval policy
+            # (verified on 0.170.0), so they share the reviewer's workspace
+            # sandbox and report-only contract. The default sub-agent model is
+            # the researcher profile's,
             # and the spawn tool's own model parameters are hidden, so the
             # worker cannot pick a costlier one.
             CMD+=(--disable multi_agent
@@ -521,7 +522,18 @@ build_cmd_codex() {
         if [[ -n "$EFFORT" ]]; then
             CMD+=(-c "model_reasoning_effort=\"$EFFORT\"")
         fi
-        CMD+=(exec --model "$MODEL" --sandbox read-only --skip-git-repo-check --ephemeral)
+        # A review shell is a working shell: tests, builds and package or
+        # documentation lookups need temp, the working folder and the network.
+        # workspace-write keeps writes to the working folder and temp, and
+        # the report-only prompt contract keeps the reviewer from changing
+        # them, as on the backends without a kernel sandbox. Media has no
+        # shell and stays read-only.
+        local codex_sandbox="read-only"
+        if [[ "${MODE_CAP_SHELL:-true}" == "true" ]]; then
+            codex_sandbox="workspace-write"
+            CMD+=(-c sandbox_workspace_write.network_access=true)
+        fi
+        CMD+=(exec --model "$MODEL" --sandbox "$codex_sandbox" --skip-git-repo-check --ephemeral)
         if [[ -n "${PORCH_CODEX_NO_MCP:-}" ]]; then
             CMD+=(--ignore-user-config)
         fi
@@ -637,6 +649,7 @@ build_cmd_opencode() {
         fi
         OPENCODE_CONFIG_CONTENT="$(
             PORCH_OC_SUBAGENTS="$MODE_CAP_SUBAGENTS" \
+            PORCH_OC_WEB="${MODE_CAP_WEB:-true}" \
             PORCH_OC_RESEARCHER_MODEL="$oc_researcher_model" \
             PORCH_OC_RESEARCHER_PROMPT="$LIB_DIR/../../prompts/review-researcher.txt" \
             PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
@@ -655,6 +668,12 @@ try:
                       "never use other task delegation, other models, or external workers.")
     else:
         delegation = "Work alone: never use task delegation, subagents, other models, or external workers."
+    # OpenCode 2 asks for consent to a web-search provider on the first
+    # search, and `opencode run` cancels that form and fails the run. Settle
+    # it in this run-only configuration: the provider OpenCode picks when
+    # the mode allows web, search off otherwise. A caller setting wins.
+    if "websearch" not in config:
+        config["websearch"] = {"provider": "random"} if os.environ.get("PORCH_OC_WEB") == "true" else False
     agents = config.setdefault("agents", {})
     if researcher_model:
         # The last matching rule wins: only the researcher may be started.
@@ -725,7 +744,15 @@ build_cmd_grok() {
         # The allowlist is exhaustive, so web tools must be named explicitly —
         # verified against Grok Build 0.2.112: without them the model reports it
         # has no web tool, with them it retrieves and cites live sources.
-        CMD+=(--sandbox read-only --no-plan)
+        # Review gets the `workspace` profile (writes to the working folder,
+        # temp and ~/.grok, child network allowed) so its terminal can run
+        # tests and lookups; the report-only prompt contract keeps it from
+        # changing files. Without a shell the profile stays read-only.
+        local grok_sandbox="read-only"
+        if [[ "${MODE_CAP_SHELL:-true}" == "true" ]]; then
+            grok_sandbox="workspace"
+        fi
+        CMD+=(--sandbox "$grok_sandbox" --no-plan)
         local grok_tools="read_file,grep,list_dir,run_terminal_cmd"
         if [[ "${MODE_CAP_WEB:-true}" == "true" ]]; then
             grok_tools+=",web_search,web_fetch"

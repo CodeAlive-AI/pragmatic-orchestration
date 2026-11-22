@@ -784,13 +784,13 @@ def main() -> int:
             argv = " ".join(json.load(open(dump_path))["argv"])
             ok("review grok has --no-subagents", "--no-subagents" in argv, argv)
             ok("review grok has --no-memory", "--no-memory" in argv, argv)
-            ok("review grok sandbox read-only", "read-only" in argv, argv)
+            ok("review grok workspace sandbox", "--sandbox workspace" in argv, argv)
             ok("review grok avoids plan mode", "--no-plan" in argv, argv)
             ok("review grok keeps terminal", "run_terminal_cmd" in argv, argv)
         else:
             ok("review grok has --no-subagents", False, "no dump")
             ok("review grok has --no-memory", False, "no dump")
-            ok("review grok sandbox read-only", False, "no dump")
+            ok("review grok workspace sandbox", False, "no dump")
             ok("review grok avoids plan mode", False, "no dump")
             ok("review grok keeps terminal", False, "no dump")
 

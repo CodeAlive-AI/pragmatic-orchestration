@@ -257,8 +257,8 @@ class Supervisor:
         try:
             adapter_options: Dict[str, Any] = {}
             if backend == "opencode":
-                # Privacy default: web-search consent is declined unless the profile opts in.
-                adapter_options["web_search"] = agent.get("web_search") or "decline"
+                # Web search is on unless the profile sets "web_search": "decline" (owner, 2026-11-22).
+                adapter_options["web_search"] = agent.get("web_search") or "allow"
             self.adapter = make_adapter(
                 backend,
                 binary=binary,

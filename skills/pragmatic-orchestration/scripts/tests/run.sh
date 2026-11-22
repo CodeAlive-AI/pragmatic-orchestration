@@ -326,10 +326,11 @@ for spec in 'devin-gemini-4-argon gemini-4-argon-high FAKE_DEVIN_OK' 'codex-gpt-
   done
 done
 
-# Codex review: sandbox read-only, never full-bypass
+# Codex review: workspace sandbox with network (tests, lookups), never full-bypass
 dump_review codex "$TMP/codex-review.json"
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/codex-review.json"'"))["argv"]))')
-assert_contains "codex review has read-only sandbox" "$argv" "--sandbox read-only"
+assert_contains "codex review has workspace sandbox" "$argv" "--sandbox workspace-write"
+assert_contains "codex review shell reaches the network" "$argv" "-c sandbox_workspace_write.network_access=true"
 assert_not_contains "codex review no full bypass" "$argv" "--dangerously-bypass-approvals-and-sandbox"
 assert_contains "codex review disables multi-agent" "$argv" "--disable multi_agent"
 assert_contains "codex review disables multi-agent v2" "$argv" "--disable multi_agent_v2"
@@ -390,6 +391,10 @@ argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/oc-review.
 assert_contains "opencode review uses dedicated review agent" "$argv" "--agent porch-review"
 assert_contains "opencode review auto-approves allowed diagnostics" "$argv" "--auto"
 assert_not_contains "opencode review avoids plan agent" "$argv" "--agent plan"
+# OpenCode 2 asks for web-search provider consent on the first search and
+# `opencode run` fails the run on it: review settles it in its run-only config.
+oc_web=$(python3 -c 'import json; print(json.dumps(json.loads(json.load(open("'"$TMP/oc-review.json"'"))["env"]["OPENCODE_CONFIG_CONTENT"]).get("websearch")))')
+assert_contains "opencode review enables web search" "$oc_web" '{"provider": "random"}'
 
 # OpenCode delegate: build + auto
 dump_delegate opencode "$TMP/oc-del.json"
@@ -438,10 +443,10 @@ OPENCODE_EFFORT="none" PORCH_DUMP_ARGV="$TMP/opencode-none.json" \
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/opencode-none.json"'"))["argv"]))')
 assert_not_contains "opencode shell runner treats none as no variant" "$argv" "#none"
 
-# Grok review: sandbox read-only + tool allow/deny
+# Grok review: workspace sandbox + tool allow/deny
 dump_review grok "$TMP/grok-review.json"
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/grok-review.json"'"))["argv"]))')
-assert_contains "grok review sandbox read-only" "$argv" "--sandbox read-only"
+assert_contains "grok review workspace sandbox" "$argv" "--sandbox workspace"
 assert_contains "grok review tools allowlist" "$argv" "--tools"
 # The Grok allowlist is exhaustive: omitting the web tools silently removes web
 # research from every review, which is exactly how it was lost before.

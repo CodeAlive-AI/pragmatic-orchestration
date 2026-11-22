@@ -315,13 +315,13 @@ class ArgvTests(Sandbox):
         argv = self.argv(data)
         # The feature flags alone leave the collaboration tools on (0.170).
         self.assertIn("agents.enabled=false", argv)
-        self.assertEqual(self.flag(argv, "--sandbox"), "read-only")
+        self.assertEqual(self.flag(argv, "--sandbox"), "workspace-write")
         self.assertNotIn("env", data)
 
-    def test_codex_researchers_inherit_the_read_only_sandbox(self):
+    def test_codex_researchers_inherit_the_review_sandbox(self):
         data, proc = self.dump("codex", researchers="codex-gpt-6.1-terra")
         argv = self.argv(data)
-        self.assertEqual(self.flag(argv, "--sandbox"), "read-only")
+        self.assertEqual(self.flag(argv, "--sandbox"), "workspace-write")
         self.assertIn("features.multi_agent_v2.enabled=true", argv)
         self.assertIn("features.multi_agent_v2.expose_spawn_agent_model_overrides=false", argv)
         self.assertIn('agents.default_subagent_model="gpt-6.1-terra"', argv)
@@ -404,11 +404,13 @@ class ArgvTests(Sandbox):
         self.assertNotIn("porch-researcher", config["agents"])
         self.assertIn("Work alone", config["agents"]["porch-review"]["system"])
         self.assertNotIn("PORCH_RESEARCHER_PROFILES", data["env"])
+        # The web-search consent form would fail `opencode run`; review settles it.
+        self.assertEqual(config["websearch"], {"provider": "random"})
 
     def test_grok_allows_one_researcher_type_inside_the_sandbox(self):
         data, _ = self.dump("grok", researchers="grok-fast")
         argv = self.argv(data)
-        self.assertEqual(self.flag(argv, "--sandbox"), "read-only")
+        self.assertEqual(self.flag(argv, "--sandbox"), "workspace")
         self.assertNotIn("--no-subagents", argv)
         self.assertIn("--no-memory", argv)
         self.assertEqual(

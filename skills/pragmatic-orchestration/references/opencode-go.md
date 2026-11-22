@@ -66,8 +66,8 @@ HTTP payloads and representative end-to-end CLI calls with fake backends.
 
 ## Web search
 
-Steerable delegate runs decline OpenCode's web-search provider consent by
-default, so a worker never stalls on the prompt; the parent sees
-`websearch_consent_declined`. A profile opts in with `"web_search": "allow"`
-(no shipped profile does). See
+Review and steerable delegate runs settle OpenCode's web-search provider
+consent before launch, so a worker never stalls on the prompt: web search is on
+by default and the parent of a delegate sees `websearch_consent_allowed`. A
+profile opts out with `"web_search": "decline"`. See
 [Web search in OpenCode delegate runs](configuration.md#web-search-in-opencode-delegate-runs).

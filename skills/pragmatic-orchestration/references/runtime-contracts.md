@@ -81,10 +81,10 @@ researchers and refuses a backend that cannot keep them read-only;
 
 | Backend | Review | Delegate |
 |---|---|---|
-| Codex CLI | `--search`, `exec --sandbox read-only`, ask-for-approval never, multi-agent disabled (`--disable multi_agent --disable multi_agent_v2 -c agents.enabled=false`) | `--dangerously-bypass-approvals-and-sandbox` |
+| Codex CLI | `--search`, `-c sandbox_workspace_write.network_access=true`, `exec --sandbox workspace-write` (media: `read-only`), ask-for-approval never, multi-agent disabled (`--disable multi_agent --disable multi_agent_v2 -c agents.enabled=false`) | `--dangerously-bypass-approvals-and-sandbox` |
 | Claude Code | `dontAsk`, safe mode, no session/Chrome, Edit/Write/Agent/Task denied, Bash + web enabled | `--dangerously-skip-permissions` |
-| OpenCode | runtime `porch-review` primary agent with its own work-alone prompt: full diagnostics, edit/subagent denied | `--agent build --auto` |
-| Grok Build | `--no-plan`, read-only sandbox, terminal enabled, subagents disabled | `--always-approve`, no sandbox |
+| OpenCode | runtime `porch-review` primary agent with its own work-alone prompt: full diagnostics, edit/subagent denied; `websearch: {"provider": "random"}` in the run-only config unless the caller's config sets `websearch` | `--agent build --auto` |
+| Grok Build | `--no-plan`, `workspace` sandbox (media: `read-only`), terminal and web tools enabled, subagents disabled | `--always-approve`, no sandbox |
 | Gemini CLI | `--approval-mode yolo`, extensions/MCP/subagents disabled; report-only prompt contract | unsupported |
 
 Codex 0.170.0 keeps its collaboration tools when only the two feature flags are
@@ -97,7 +97,7 @@ With researchers the review column changes as follows; everything else stays.
 | Codex CLI | `--disable multi_agent -c features.multi_agent_v2.enabled=true -c features.multi_agent_v2.expose_spawn_agent_model_overrides=false -c agents.default_subagent_model="M" [-c agents.default_subagent_reasoning_effort="E"]`; no `agents.enabled=false` |
 | Claude Code | `--tools "Bash,Read,Grep,Glob,WebSearch,WebFetch,Agent"`; `--disallowedTools` holds Edit, Write, NotebookEdit and `Agent(<type>)` for every built-in type except `Explore`; environment `CLAUDE_CODE_SUBAGENT_MODEL`, `CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1`, `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1`. Without a Claude researcher profile: no Agent tool |
 | OpenCode | `porch-review` denies every subagent and then allows `porch-researcher`, a run-time subagent on the researcher model with edit, subagent and question denied |
-| Grok Build | `--agents` with the `porch-researcher` definition (model, effort, read-only tools), `Agent(porch-researcher)` appended to `--tools`, no `--no-subagents`; the read-only sandbox is unchanged |
+| Grok Build | `--agents` with the `porch-researcher` definition (model, effort, read-only tools), `Agent(porch-researcher)` appended to `--tools`, no `--no-subagents`; the `workspace` sandbox is unchanged |
 | Antigravity CLI | argv unchanged; researchers run through the nested porch only |
 | Gemini CLI, Devin CLI, Cursor CLI | refused with exit `4` |
 
@@ -106,7 +106,7 @@ porch started from its shell may ask through `review ask -a`, and nothing else
 (`porch_nested_guard` in `scripts/lib/common.sh`). A nested run exports an empty
 list. `PORCH_DUMP_ARGV` output includes these environment values.
 
-Web research is available in review mode. No review backend uses a planning workflow. Claude pre-approves `Bash,WebSearch,WebFetch`; OpenCode uses a dedicated primary review agent with Bash/search enabled; Grok enables its terminal inside the read-only sandbox; and Gemini uses its normal full tool loop. The trusted review policy explicitly forbids file or external-state changes, saving plans/reports, subagents, agent teams, other models, and delegation. Where supported, subagent tools are also disabled mechanically. In researcher mode the same policy allows the listed researcher channels and keeps every other form of delegation forbidden.
+Web research is available in review mode. No review backend uses a planning workflow. Claude pre-approves `Bash,WebSearch,WebFetch`; OpenCode uses a dedicated primary review agent with Bash/search enabled; Codex and Grok run their shell in the workspace sandbox with network, so tests and lookups work; OpenCode settles its web-search consent in the run-only config; and Gemini uses its normal full tool loop. The trusted review policy explicitly forbids file or external-state changes, saving plans/reports, subagents, agent teams, other models, and delegation. Where supported, subagent tools are also disabled mechanically. In researcher mode the same policy allows the listed researcher channels and keeps every other form of delegation forbidden.
 
 Grok `tool_call` / `tool_call_update` events normalize to tool lifecycle and
 content-free compact heartbeats. Long terminal commands therefore remain visibly

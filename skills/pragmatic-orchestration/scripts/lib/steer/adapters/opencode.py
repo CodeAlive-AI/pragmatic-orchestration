@@ -89,7 +89,7 @@ class OpenCodeAdapter(BackendAdapter):
     # OpenCode 2 marks the web-search consent form with this metadata kind.
     _WEBSEARCH_FORM_KIND = "websearch.provider"
 
-    def __init__(self, *, web_search: str = "decline", **kwargs):
+    def __init__(self, *, web_search: str = "allow", **kwargs):
         super().__init__(**kwargs)
         if web_search not in ("decline", "allow"):
             raise ValueError(f"web_search must be 'decline' or 'allow', got {web_search!r}")

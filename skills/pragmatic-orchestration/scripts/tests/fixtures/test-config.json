@@ -65,6 +65,15 @@
       "role": "analyst",
       "label": "OC-Go DeepSeek V4.1 Flash Test"
     },
+    "opencode-web-search-decline": {
+      "enabled": false,
+      "backend": "opencode",
+      "model": "opencode-go/glm-5.2",
+      "effort": "max",
+      "role": "lateral",
+      "web_search": "decline",
+      "label": "OpenCode Web Search Declined Test"
+    },
     "opencode-web-search-allow": {
       "enabled": false,
       "backend": "opencode",

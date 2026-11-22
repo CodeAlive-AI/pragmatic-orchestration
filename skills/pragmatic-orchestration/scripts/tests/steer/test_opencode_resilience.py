@@ -127,8 +127,15 @@ class OpenCodeResilienceTests(unittest.TestCase):
     def config_log(self):
         return [json.loads(x)["config_websearch"] for x in self.form_log.read_text().splitlines() if "config_websearch" in x]
 
-    def test_d_default_declines_web_search_through_server_config(self):
+    def test_d_default_allows_web_search_through_server_config(self):
         proc, events = self.delegate(PORCH_FAKE_OC_FORM="websearch")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.progress(events)[0], "websearch_consent_allowed via=config")
+        self.assertEqual(self.config_log(), [{"provider": "random"}])
+        self.assertEqual(self.answers(), [])  # the server never asked, and Porch never answers
+
+    def test_d_decline_profile_turns_web_search_off_through_server_config(self):
+        proc, events = self.delegate(agent="opencode-web-search-decline", PORCH_FAKE_OC_FORM="websearch")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self.progress(events)[0], "websearch_consent_declined via=config")
         self.assertEqual(self.config_log(), [False])
@@ -140,13 +147,13 @@ class OpenCodeResilienceTests(unittest.TestCase):
         failed = [e for e in events if e["type"] == "run_failed"]
         self.assertEqual(len(failed), 1, events)
         self.assertTrue(failed[0]["data"].startswith("input_required: OpenCode asked for web-search provider consent"), failed[0]["data"])
-        self.assertIn("web_search='decline'", failed[0]["data"])
+        self.assertIn("web_search='allow'", failed[0]["data"])
         self.assertEqual(self.answers(), [])
 
     def test_d_existing_config_content_is_kept_and_extended(self):
         proc, _ = self.delegate(PORCH_FAKE_OC_FORM="websearch", OPENCODE_CONFIG_CONTENT='{"theme": "x"}')
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(self.config_log(), [False])
+        self.assertEqual(self.config_log(), [{"provider": "random"}])
 
     def test_d_caller_websearch_setting_wins_and_is_not_overwritten(self):
         proc, events = self.delegate(PORCH_FAKE_OC_FORM="websearch", OPENCODE_CONFIG_CONTENT='{"websearch": {"provider": "exa"}}')

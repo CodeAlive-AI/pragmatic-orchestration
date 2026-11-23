@@ -90,6 +90,24 @@ def _reap_dead(reg: Registry, run_id: str) -> Snapshot:
     return snap
 
 
+def observe_once(reg: Registry, run_id: str) -> Snapshot:
+    """One observation with the verdict `wait` would reach on a dead supervisor.
+
+    A live or terminal run is returned as read. A non-terminal run whose pid is
+    gone gets the same grace as wait_for_any and then the same reap, so
+    `status` cannot report `running` for a corpse; a run whose lock is held
+    (a _finalize in flight) is left alone, as wait leaves it.
+    """
+    snap = poll_once(reg, run_id)
+    if snap.terminal or pid_alive(snap.pid):
+        return snap
+    time.sleep(DEAD_PID_GRACE_SECONDS)
+    snap = poll_once(reg, run_id)
+    if snap.terminal or pid_alive(snap.pid):
+        return snap
+    return _reap_dead(reg, run_id)
+
+
 def wait_for_any(
     reg: Registry,
     run_ids: list[str],

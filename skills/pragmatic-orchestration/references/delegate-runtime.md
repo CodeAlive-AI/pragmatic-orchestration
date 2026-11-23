@@ -24,7 +24,11 @@ exit non-zero with the reason; its id stays on stderr for `status`. The
 supervisor becomes its own session leader; caller `SIGINT`/`SIGHUP` cannot reach
 it. Supervisor stdio is stored in a private `supervisor.log`, but `wait` is the
 authoritative result interface; `status` and `wait` of a failed run print its
-reason. `--detach` and `--one-shot` are mutually exclusive.
+reason. A supervisor that died without finishing its run is reported by
+`status` as `wait` reports it: after the same 0.75 s grace the run is marked
+`failed` with `error=supervisor_dead` and the last line of its log, unless its
+run lock is held by a finishing supervisor. `--detach` and `--one-shot` are
+mutually exclusive.
 
 ## Bounded and group waiting
 

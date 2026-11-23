@@ -20,6 +20,7 @@ from .waiter import (
     EXIT_NO_FINAL_TEXT,
     EXIT_WAIT_TIMEOUT,
     failure_reason,
+    observe_once,
     wait_for_any,
     derive_exit_code,
     poll_once,
@@ -108,7 +109,7 @@ def cmd_steer(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     reg = Registry(Path(args.registry_root) if args.registry_root else None)
     try:
-        meta = reg.load_meta(args.run_id)
+        meta = observe_once(reg, args.run_id).meta
     except RegistryError as e:
         sys.stderr.write(f"Error: {e}\n")
         return e.exit_code

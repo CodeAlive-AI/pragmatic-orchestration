@@ -1259,6 +1259,51 @@ class OrchestrationTests(unittest.TestCase):
         status = self.cli("status", rid)
         self.assertIn("RegistryError: something broke", status.stdout)
 
+    def test_status_of_dead_unreaped_run_reports_it_failed(self):
+        # Nobody waited on it or listed with --reap: meta still says running.
+        rid = self.run_record(pid=999999)
+        log = self.reg.run_path(rid) / "supervisor.log"
+        log.write_text("Traceback (most recent call last):\nRegistryError: something broke\n")
+        self.reg.update_meta(rid, detach_log=str(log))
+        status = self.cli("status", rid)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn("status=failed", status.stdout)
+        self.assertNotIn("status=running", status.stdout)
+        self.assertIn("error=supervisor died; last log line: RegistryError: something broke", status.stdout)
+        data = json.loads(self.cli("status", rid, "--json").stdout)
+        self.assertEqual((data["status"], data["error"]), ("failed", "supervisor_dead"))
+        self.assertIn("RegistryError: something broke", data["failure_reason"])
+        # The same repair wait and list --reap make, and nothing more.
+        meta = self.reg.load_meta(rid)
+        self.assertEqual((meta["status"], meta["error"]), ("failed", "supervisor_dead"))
+
+    def test_status_does_not_reap_a_run_whose_lock_is_held(self):
+        # A supervisor finishing under the run lock must keep its own verdict.
+        rid = self.run_record(pid=999999)
+        locked, release = threading.Event(), threading.Event()
+        def holder():
+            with self.reg.with_run_lock(rid):
+                locked.set()
+                release.wait(5)
+        thread = threading.Thread(target=holder)
+        thread.start()
+        self.assertTrue(locked.wait(2))
+        try:
+            status = self.cli("status", rid, "--json")
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertEqual(json.loads(status.stdout)["status"], "running")
+            self.assertEqual(self.reg.load_meta(rid)["status"], "running")
+        finally:
+            release.set()
+            thread.join(6)
+
+    def test_status_of_live_run_is_untouched(self):
+        rid = self.run_record(pid=os.getpid())
+        before = self.reg.load_meta(rid)
+        data = json.loads(self.cli("status", rid, "--json").stdout)
+        self.assertEqual(data["status"], "running")
+        self.assertEqual(self.reg.load_meta(rid), before)
+
 
 if __name__ == "__main__":
     unittest.main()

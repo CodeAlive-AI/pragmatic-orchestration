@@ -19,6 +19,7 @@ from .util import preview_text, progress, utc_now_iso
 from .waiter import (
     EXIT_NO_FINAL_TEXT,
     EXIT_WAIT_TIMEOUT,
+    failure_reason,
     wait_for_any,
     derive_exit_code,
     poll_once,
@@ -143,6 +144,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 }
             )
 
+    reason = failure_reason(reg, args.run_id, meta) if meta.get("status") == "failed" else None
     payload: Dict[str, Any] = {
         "run_id": args.run_id,
         "status": meta.get("status"),
@@ -156,6 +158,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "child_pid": meta.get("child_pid"),
         "exit_code": meta.get("exit_code"),
         "error": meta.get("error"),
+        "failure_reason": reason,
         "started_at": meta.get("started_at"),
         "updated_at": meta.get("updated_at"),
         "finished_at": meta.get("finished_at"),
@@ -190,8 +193,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             f"model={meta.get('model')} effort={meta.get('effort')}"
         )
         print(f"agent={meta.get('agent_id')} pid={meta.get('pid')} child={meta.get('child_pid')}")
-        if meta.get("error"):
-            print(f"error={meta.get('error')}")
+        if reason or meta.get("error"):
+            print(f"error={reason or meta.get('error')}")
         print(
             "note=lifecycle state is not work progress; inspect bounded progress with "
             f"delegate events {args.run_id} --max-events 50 before diagnosing a stall"
@@ -338,6 +341,9 @@ def cmd_wait(args: argparse.Namespace) -> int:
 
     meta = snap.meta
     code = derive_exit_code(meta)
+    reason = failure_reason(reg, args.run_id, meta) if meta.get("status") == "failed" else None
+    if reason and not args.quiet and not args.json:
+        sys.stderr.write(f"Error: run {args.run_id} failed: {reason}\n")
     found = read_final_text(reg, args.run_id, meta)
     progress(
         "done",
@@ -370,6 +376,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
             "exit_code": code,
             "run_exit_code": meta.get("exit_code"),
             "error": meta.get("error"),
+            "failure_reason": reason,
             "agent_id": meta.get("agent_id"),
             "backend": meta.get("backend"),
             "model": meta.get("model"),

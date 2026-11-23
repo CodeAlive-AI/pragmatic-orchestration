@@ -108,7 +108,8 @@ first; it is your contract."
   permission failures remain explicit blockers.
 - Steerable is the default (`--steerable` is a compatibility alias). Use
   `--one-shot` only when explicitly choosing direct execution without steering.
-- Use `--detach` to return immediately with a run id on stdout, or keep a
+- Use `--detach` to get a run id on stdout once the run has started (a startup
+  failure exits non-zero with its reason), or keep a
   foreground call resumable through the harness; either must permit supervision.
   `--detach` excludes `--one-shot`.
 - When later Codex follow-ups are likely, read

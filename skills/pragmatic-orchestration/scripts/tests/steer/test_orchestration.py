@@ -725,8 +725,14 @@ class OrchestrationTests(unittest.TestCase):
             for binary, delay in (("/bin/false", "0.02"), (self.env["PORCH_BIN_CODEX"], "1")):
                 p = self.cli("-a", "codex", "--detach", "STARTUP_TEST", env=dict(
                     self.env, PORCH_BIN_CODEX=binary, PORCH_FAKE_STEER_SLOW=delay))
-                self.assertEqual(p.returncode, 0, p.stderr)
-                pending.append(p.stdout.strip())
+                # The launch itself reports a run that died before its first turn.
+                if binary == "/bin/false":
+                    self.assertNotEqual(p.returncode, 0, p.stderr)
+                    self.assertIn("failed at startup", p.stderr)
+                    pending.append(extract_run_id(p.stderr))
+                else:
+                    self.assertEqual(p.returncode, 0, p.stderr)
+                    pending.append(p.stdout.strip())
             failed, healthy = pending
             p = self.cli("wait-any", *pending, "--timeout", "5")
             self.assertEqual(p.returncode, 0, p.stderr)
@@ -1082,7 +1088,8 @@ class OrchestrationTests(unittest.TestCase):
         rid = self.start_durable()
         self.reg.update_meta(rid, status="failed", exit_code=1)
         before = self.reg.load_meta(rid)
-        for field in ("agent_id", "backend", "model", "effort", "backend_binary", "cwd"):
+        # Model and effort are inherited from the source; these cannot be.
+        for field in ("agent_id", "backend", "backend_binary", "cwd"):
             with self.subTest(field=field):
                 self.reg.update_meta(rid, **{field: "changed"})
                 count = len(self.rpc_calls())
@@ -1113,13 +1120,6 @@ class OrchestrationTests(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("original working directory", p.stderr)
         self.assertEqual(len(self.rpc_calls()), count)
-
-    def test_changed_model_rejected(self):
-        rid = self.start_durable()
-        self.reg.update_meta(rid, model="different")
-        p = self.cli("-a", "codex", "--continue-run", rid, "new")
-        self.assertNotEqual(p.returncode, 0)
-        self.assertIn("unchanged model", p.stderr)
 
     def test_concurrent_continuation_and_stale_source_rejected(self):
         source = self.start_durable()
@@ -1160,6 +1160,104 @@ class OrchestrationTests(unittest.TestCase):
         while self.reg.load_meta(rid).get("cleanup_status") == "pending" and time.monotonic() < deadline:
             time.sleep(.02)
         self.assertEqual(self.reg.load_meta(rid).get("cleanup_status"), "completed")
+
+    # --- Continuations: inherit what cannot change, refuse before detaching ---
+
+    def run_ids(self):
+        return sorted(d.name for d in self.reg.runs_dir.iterdir()) if self.reg.runs_dir.is_dir() else []
+
+    def settle(self, rid):
+        # A terminal answer precedes detached supervisor cleanup; keep the
+        # temporary registry until that supervisor has finished writing it.
+        deadline = time.monotonic() + 10
+        while self.reg.load_meta(rid).get("cleanup_status") == "pending" and time.monotonic() < deadline:
+            time.sleep(.02)
+
+    def test_continue_inherits_source_effort_and_model(self):
+        # The incident: the source ran with effort xhigh, the caller's shell
+        # had CODEX_EFFORT=high. The session can only resume as it was built.
+        started = self.cli("-a", "codex", "--persist-session", "INITIAL_ONLY",
+                           env=dict(self.env, CODEX_EFFORT="xhigh", CODEX_MODEL="source-model"))
+        self.assertEqual(started.returncode, 0, started.stderr)
+        source = extract_run_id(started.stderr)
+        p = self.cli("-a", "codex", "--continue-run", source, "--detach", "FOLLOWUP",
+                     env=dict(self.env, CODEX_EFFORT="high"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("keeps the source run's effort xhigh", p.stderr)
+        self.assertIn("CODEX_EFFORT=high", p.stderr)
+        rid = p.stdout.strip()
+        result = self.cli("wait", rid, "--timeout", "10", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.settle(rid)
+        third = self.cli("-a", "codex", "--continue-run", rid, "THIRD")
+        self.assertEqual(third.returncode, 0, third.stderr)
+        turns = [c["params"] for c in self.rpc_calls() if c["method"] == "turn/start"]
+        self.assertEqual([(t["effort"], t["model"]) for t in turns], [("xhigh", "source-model")] * 3)
+        meta = self.reg.load_meta(extract_run_id(third.stderr))
+        self.assertEqual((meta["effort"], meta["model"]), ("xhigh", "source-model"))
+
+    def test_detached_continue_refuses_changed_binary_at_launch(self):
+        source = self.start_durable()
+        old_binary = self.reg.load_meta(source)["backend_binary"]
+        other = self.root / "other-codex"
+        shutil.copy2(self.env["PORCH_BIN_CODEX"], other)
+        before, calls = self.run_ids(), len(self.rpc_calls())
+        p = self.cli("-a", "codex", "--continue-run", source, "--detach", "FOLLOWUP",
+                     env=dict(self.env, PORCH_BIN_CODEX=str(other)))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(p.stdout, "")
+        errors = [line for line in p.stderr.splitlines() if line.startswith("Error:")]
+        self.assertEqual(len(errors), 1, p.stderr)
+        self.assertIn(old_binary, errors[0])
+        self.assertIn(str(other), errors[0])
+        self.assertIn(f"PORCH_BIN_CODEX={old_binary}", errors[0])
+        self.assertEqual(self.run_ids(), before)
+        self.assertEqual(len(self.rpc_calls()), calls)
+
+    def test_detached_continue_from_older_run_names_successor_at_launch(self):
+        source = self.start_durable()
+        p = self.cli("-a", "codex", "--continue-run", source, "SECOND")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        successor = extract_run_id(p.stderr)
+        before, calls = self.run_ids(), len(self.rpc_calls())
+        p = self.cli("-a", "codex", "--continue-run", source, "--detach", "STALE")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(p.stdout, "")
+        errors = [line for line in p.stderr.splitlines() if line.startswith("Error:")]
+        self.assertEqual(len(errors), 1, p.stderr)
+        self.assertIn("not the latest", errors[0])
+        self.assertIn(f"--continue-run {successor}", errors[0])
+        self.assertEqual(self.run_ids(), before)
+        self.assertEqual(len(self.rpc_calls()), calls)
+
+    def test_detached_run_failing_at_startup_is_reported(self):
+        source = self.start_durable()
+        broken = dict(self.env, PORCH_FAKE_CODEX_STEER_MODE="resume-error")
+        p = self.cli("-a", "codex", "--continue-run", source, "--detach", "FOLLOWUP", env=broken)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("failed at startup", p.stderr)
+        self.assertIn("resume unavailable", p.stderr)
+        rid = extract_run_id(p.stderr)
+        self.assertEqual(self.reg.load_meta(rid)["status"], "failed")
+        status = self.cli("status", rid)
+        self.assertIn("resume unavailable", status.stdout)
+        waited = self.cli("wait", rid, "--timeout", "5")
+        self.assertNotEqual(waited.returncode, 0)
+        self.assertIn("resume unavailable", waited.stderr)
+        waited = self.cli("wait", rid, "--timeout", "5", "--json")
+        self.assertIn("resume unavailable", json.loads(waited.stdout)["failure_reason"])
+        self.settle(rid)
+
+    def test_dead_supervisor_reason_comes_from_its_log(self):
+        rid = self.run_record(pid=999999)
+        log = self.reg.run_path(rid) / "supervisor.log"
+        log.write_text("Traceback (most recent call last):\nRegistryError: something broke\n")
+        self.reg.update_meta(rid, detach_log=str(log))
+        waited = self.cli("wait", rid, "--timeout", "5")
+        self.assertEqual(waited.returncode, 70, waited.stderr)
+        self.assertIn("RegistryError: something broke", waited.stderr)
+        status = self.cli("status", rid)
+        self.assertIn("RegistryError: something broke", status.stdout)
 
 
 if __name__ == "__main__":

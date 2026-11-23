@@ -16,7 +16,7 @@ from .delivery import record_delivery
 from .launcher import BACKEND_LAUNCHERS, launcher_metadata
 from .mailbox import Mailbox, MailboxError
 from .registry import Registry, RegistryError, TERMINAL_STATUSES
-from .session import SessionLease
+from .session import SessionLease, plan_continuation
 from .tally import STREAM_KINDS, StreamTally
 from .util import (
     DIR_MODE,
@@ -161,6 +161,16 @@ class Supervisor:
         effort = agent.get("effort") or ""
         if self.persist_session and backend != "codex-cli":
             raise RegistryError("durable sessions currently require the Codex backend")
+        if self.continue_run:
+            # Refuse before create_run, so an impossible continuation leaves no
+            # run behind; the session resumes only with the source's model/effort.
+            try:
+                inherited = plan_continuation(self.registry, self.continue_run, agent_id=self.agent_id,
+                                              cwd=self.cwd, recover_session=self.recover_session)
+            except RegistryError as e:
+                sys.stderr.write(f"Error: cannot continue {self.continue_run}: {e}\n")
+                return e.exit_code
+            model, effort = inherited["model"], inherited["effort"]
 
         # Resolve protocol artifacts dir before create_run so meta is honest.
         # Never use project cwd when archival is disabled / path is empty/".".

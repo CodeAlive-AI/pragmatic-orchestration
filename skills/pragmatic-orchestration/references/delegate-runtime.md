@@ -17,10 +17,14 @@ supervision policy live in [delegate.md](delegate.md).
 ## Detached process lifetime
 
 `--detach` uses the default steerable path, creates the registry entry required
-for reattachment, prints the run id on stdout, and returns immediately. The
+for reattachment, prints the run id on stdout, and returns once the backend has
+taken the first turn, or after at most 10 seconds (`PORCH_DETACH_STARTUP_WAIT`,
+`0` returns at once). A run that fails before its first turn makes the launch
+exit non-zero with the reason; its id stays on stderr for `status`. The
 supervisor becomes its own session leader; caller `SIGINT`/`SIGHUP` cannot reach
 it. Supervisor stdio is stored in a private `supervisor.log`, but `wait` is the
-authoritative result interface. `--detach` and `--one-shot` are mutually exclusive.
+authoritative result interface; `status` and `wait` of a failed run print its
+reason. `--detach` and `--one-shot` are mutually exclusive.
 
 ## Bounded and group waiting
 
@@ -110,8 +114,19 @@ NEXT_ID=$("$PORCH" delegate -a codex --continue-run "$RUN_ID" --detach --name fi
 Persistence is opt-in, steerable Codex only. `--continue-run` implies persistence,
 uses native `thread/resume`, and creates a new run linked by `continued_from`;
 it does not reopen or change the old terminal run. Use `steer` for active work,
-`--continue-run` for the latest successfully completed durable turn. The exact
-agent profile, resolved model, effort, binary, and working root must match.
+`--continue-run` for the latest successfully completed durable turn.
+
+A continuation takes its model and effort from the source run: the native thread
+resumes only with them. The profile's values and `CODEX_MODEL`/`CODEX_EFFORT`
+are defaults for new runs and are not explicit for a continuation (Porch cannot
+tell a variable set for one call from one exported in the shell); when they
+differ, the launch prints one `porch: continuation keeps …` line. To change
+model or effort, start a new run. The agent id (`-a`), its backend, the resolved
+binary and the working root must match the source. Every check that needs no
+backend (these, the source's outcome, the session handle, the latest run of the
+chain, the session state) runs before the launch creates a run or detaches: a
+refusal exits non-zero with one `Error:` line naming both values and what to pass
+instead, for an older run of the chain the successor's id and flag.
 Native conversation history persists in Codex storage beyond supervisor exit;
 private registry metadata holds its handle. Do not delete either while expecting
 to continue. If registry recovery lost session coordination state, continuation
@@ -131,7 +146,7 @@ NEXT_ID=$("$PORCH" delegate -a codex --continue-run "$RUN_ID" --recover-session 
 
 `--recover-session` permits failed/cancelled runs and completed runs with a
 nonzero exit code. It requires `cleanup_status: completed`, the latest-run claim,
-the original profile/model/effort/binary/CWD, and exclusive session access.
+the original profile/binary/CWD, and exclusive session access.
 Active or stale runs and missing/failed/pending cleanup are rejected: reconcile
 the old writer before recovery. The old prompt and queued steers are never
 redelivered; only the new instruction is sent to the resumed native thread.

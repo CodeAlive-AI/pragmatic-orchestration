@@ -137,7 +137,9 @@ Every new task is prefixed with the executor contract from prompts/delegate-exec
 Delegate starts a long-lived steerable supervisor by default, with a filesystem
 mailbox for steer / status / cancel. --one-shot selects the legacy direct run.
 
---detach keeps the default steerable mode, prints run_id on stdout, and returns immediately.
+--detach keeps the default steerable mode, prints run_id on stdout, and returns
+once the backend took the first turn (at most PORCH_DETACH_STARTUP_WAIT=10 s).
+A run that fails at startup exits non-zero with its reason.
 The supervisor becomes its own session leader, so the run survives the caller
 exiting. Collect the answer later with `delegate wait RUN_ID`.
 
@@ -152,9 +154,10 @@ its observation deadline. Collect finals with wait; acknowledge consumed ids
 before waiting again. Neither observer cancels workers.
 
 --persist-session opts into durable Codex context. --continue-run RUN_ID sends
-only a new instruction in that session, as a new linked run. It requires the
-latest successful run, the same CWD/profile/model/effort/binary, and exclusive
-session access. Failed or unknown outcomes are never replayed automatically.
+only a new instruction in that session, as a new linked run, with the source's
+model and effort (CODEX_MODEL/CODEX_EFFORT apply to new runs only). It requires
+the latest successful run, the same CWD/profile/binary, and exclusive session
+access; these are checked before launching or detaching. Failed or unknown outcomes are never replayed automatically.
 After inspecting effects, add --recover-session to continue a failed/cancelled
 durable run with a new instruction. Backend cleanup must be completed first.
 Exit: 0 completed, 130 cancelled, 70 supervisor died, 74 completed but no
@@ -283,6 +286,16 @@ if [[ "$PERSIST_SESSION" -eq 1 && ( "$STEERABLE" -ne 1 || "$BACKEND" != "codex-c
     exit $EXIT_USAGE
 fi
 
+# Every continuation check that needs no backend runs here, in the launching
+# process: a refusal exits non-zero with one line, before any run or detach.
+# It also prints which launch defaults the continuation does not apply.
+if [[ -n "$CONTINUE_RUN" ]]; then
+    PRE_ARGS=(--agent-id "$AGENT_ID" --continue-run "$CONTINUE_RUN" --cwd "$(pwd)")
+    if [[ "$RECOVER_SESSION" -eq 1 ]]; then PRE_ARGS+=(--recover-session); fi
+    if [[ -n "${PORCH_STEER_DIR:-}" ]]; then PRE_ARGS+=(--registry-root "$PORCH_STEER_DIR"); fi
+    python3 -m steer.session preflight "${PRE_ARGS[@]}" || exit $?
+fi
+
 export PORCH_MODE="delegate"
 export PORCH_SINGLE_AGENT=1
 artifacts_init_run "delegate"
@@ -378,6 +391,13 @@ if [[ "$STEERABLE" -eq 1 ]]; then
 
         progress_stage "delegate" "detached run_id=$_det_run_id"
         echo "run_id=$_det_run_id" >&2
+        # A run that dies before its first turn must fail here, where the caller
+        # looks, not only in supervisor.log. Bounded: a slow start returns.
+        _det_wait_args=(startup "$_det_run_id" --timeout "${PORCH_DETACH_STARTUP_WAIT:-10}")
+        if [[ -n "${PORCH_STEER_DIR:-}" ]]; then _det_wait_args+=(--registry-root "$PORCH_STEER_DIR"); fi
+        _det_rc=0
+        python3 -m steer.waiter "${_det_wait_args[@]}" || _det_rc=$?
+        [[ "$_det_rc" -eq 0 ]] || exit "$_det_rc"
         # stdout carries the run id alone so `RUN_ID=$(… --detach …)` works.
         echo "$_det_run_id"
         exit $EXIT_OK

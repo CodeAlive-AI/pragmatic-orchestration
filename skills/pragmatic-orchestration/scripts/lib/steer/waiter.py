@@ -13,6 +13,9 @@ makes rests on two properties of the producer side:
 """
 from __future__ import annotations
 
+import argparse
+import json
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -213,3 +216,89 @@ def derive_exit_code(meta: Dict[str, Any]) -> int:
         return code or 1
     # Non-terminal should never reach here; treat as a generic failure.
     return 1
+
+
+def failure_reason(reg: Registry, run_id: str, meta: Dict[str, Any]) -> str:
+    """Why a run failed, from its own records: meta, then audit, then its log."""
+    error = str(meta.get("error") or "")
+    if error and error != "supervisor_dead":
+        return error
+    try:
+        run_dir = reg.run_path(run_id)
+    except RegistryError:
+        return error
+    try:
+        lines = (run_dir / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in reversed(lines):
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record.get("event") == "supervisor_error" and record.get("error"):
+            return str(record["error"])
+    last = ""
+    log = Path(str(meta.get("detach_log") or run_dir / "supervisor.log"))
+    try:
+        with open(log, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 8192))
+            tail = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        tail = []
+    # Progress lines say what happened; the last other line is usually the exception.
+    for line in reversed(tail):
+        if line.strip() and not line.startswith("[porch]"):
+            last = line.strip()
+            break
+    if error == "supervisor_dead":
+        return "supervisor died" + (f"; last log line: {last}" if last else f"; see {log}")
+    return error or last
+
+
+def wait_for_start(reg: Registry, run_id: str, timeout: float) -> Snapshot:
+    """Until the backend took the first turn, the run ended, or the deadline."""
+    deadline = time.monotonic() + max(timeout, 0.0)
+    dead_since = None
+    while True:
+        snap = poll_once(reg, run_id)
+        now = time.monotonic()
+        if snap.terminal or int(snap.meta.get("turn_count") or 0) >= 1:
+            return snap
+        if not pid_alive(snap.pid):
+            dead_since = dead_since or now
+            if now - dead_since >= DEAD_PID_GRACE_SECONDS:
+                return _reap_dead(reg, run_id)
+        if now >= deadline:
+            return snap
+        time.sleep(0.05)
+
+
+def main(argv: Optional[list] = None) -> int:
+    """`startup RUN_ID`: the detached launcher's bounded wait for a live first turn."""
+    p = argparse.ArgumentParser(prog="steer-waiter")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    start = sub.add_parser("startup")
+    start.add_argument("run_id")
+    start.add_argument("--timeout", type=float, default=10.0)
+    start.add_argument("--registry-root", default="")
+    args = p.parse_args(argv)
+    reg = Registry(Path(args.registry_root) if args.registry_root else None)
+    try:
+        snap = wait_for_start(reg, args.run_id, args.timeout)
+    except RegistryError as e:
+        sys.stderr.write(f"Error: cannot observe detached run {args.run_id}: {e}\n")
+        return e.exit_code
+    if snap.status == "failed":
+        sys.stderr.write(f"Error: detached run {args.run_id} failed at startup: "
+                         f"{failure_reason(reg, args.run_id, snap.meta)} (porch delegate status {args.run_id})\n")
+        return derive_exit_code(snap.meta)
+    if not snap.terminal and int(snap.meta.get("turn_count") or 0) < 1:
+        sys.stderr.write(f"porch: run {args.run_id} is still starting after {args.timeout:g}s; "
+                         f"check it with: porch delegate status {args.run_id}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

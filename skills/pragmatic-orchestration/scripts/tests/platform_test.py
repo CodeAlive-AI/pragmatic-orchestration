@@ -121,8 +121,13 @@ class PlatformTests(unittest.TestCase):
                     self.assertIsNotNone(binary_path)
                 else:
                     binary_path = str(binary).replace("/", "\\")
+                # Feed the script via stdin instead of `-c`: native Windows
+                # Python formats `-c` with MSVCRT rules while MSYS2 bash
+                # unescapes `\\` inside quoted argv, turning `*[/\\]*` and
+                # `${_bin_fallback//\\//}` into broken single-backslash syntax.
                 result = subprocess.run(
-                    [bash, "--noprofile", "--norc", "-c", script],
+                    [bash, "--noprofile", "--norc", "-s"],
+                    input=script.encode("utf-8"),
                     env=dict(env, BIN=binary_path), capture_output=True, timeout=15,
                 )
                 self.assertEqual(result.returncode, expected_rc, result.stderr)

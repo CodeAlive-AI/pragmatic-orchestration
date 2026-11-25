@@ -84,9 +84,16 @@
     "devin": {
       "enabled": false,
       "backend": "devin-cli",
-      "model": "swe-2-flash-high",
+      "model": "swe-2-1-xhigh",
       "role": "analyst",
-      "label": "Devin SWE-2 Flash"
+      "label": "Devin SWE-2.1 XHigh"
+    },
+    "devin-swe-2-1-ultrafast": {
+      "enabled": false,
+      "backend": "devin-cli",
+      "model": "swe-2-1-xhigh-lightning",
+      "role": "analyst",
+      "label": "Devin SWE-2.1 Ultrafast XHigh (only when Ultrafast is named)"
     },
     "devin-swe-2-flash-max": {
       "enabled": false,

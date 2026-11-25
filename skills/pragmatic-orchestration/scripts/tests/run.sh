@@ -148,6 +148,10 @@ assert_contains "Codex GPT-6.2 Sol is explicitly selectable" "$out" \
   'id="codex-gpt-6.2-sol" label="Codex GPT-6.2 Sol" backend="codex-cli" model="gpt-6.2-sol" role="analyst" enabled="false"'
 assert_contains "Codex GPT-6.2 Astra is selectable but disabled by default" "$out" \
   'id="codex-gpt-6.2-astra" label="Codex GPT-6.2 Astra" backend="codex-cli" model="gpt-6.2-astra" role="analyst" enabled="false"'
+assert_contains "Devin SWE-2.1 XHigh is the default Devin profile" "$out" \
+  'id="devin" label="Devin SWE-2.1 XHigh" backend="devin-cli" model="swe-2-1-xhigh" role="analyst" enabled="false"'
+assert_contains "Devin SWE-2.1 Ultrafast is selectable but disabled by default" "$out" \
+  'id="devin-swe-2-1-ultrafast" label="Devin SWE-2.1 Ultrafast XHigh (only when Ultrafast is named)" backend="devin-cli" model="swe-2-1-xhigh-lightning" role="analyst" enabled="false"'
 assert_contains "Devin SWE-2 is selectable but disabled by default" "$out" \
   'id="devin-swe-2" label="Devin SWE-2" backend="devin-cli" model="swe-2-high" role="analyst" enabled="false"'
 assert_contains "Devin Gemini 4 Argon is selectable but disabled by default" "$out" \
@@ -533,7 +537,7 @@ dump_review devin "$TMP/devin-review.json"
 argv=$(python3 -c 'import json; print(" ".join(json.load(open("'"$TMP/devin-review.json"'"))["argv"]))')
 assert_contains "devin review uses ACP one-shot driver" "$argv" "devin_acp_oneshot.py"
 assert_contains "devin review passes readonly access" "$argv" "--access readonly"
-assert_contains "devin review selects SWE-2 Flash" "$argv" "--model swe-2-flash-high"
+assert_contains "devin review selects SWE-2.1 XHigh" "$argv" "--model swe-2-1-xhigh"
 assert_contains "devin review prompt-file placeholder" "$argv" "--prompt-file __PROMPT_FILE__"
 assert_not_contains "devin review no print-mode permission flag" "$argv" "--permission-mode"
 assert_not_contains "devin review no runtime config" "$argv" "--config"
@@ -580,7 +584,7 @@ rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 main = [r for r in rows if "argv" in r][-1]
 assert main["agent_type"] == "review", main
 assert main["has_ACP_BACKEND"] is False, main
-assert main["model"] == "swe-2-flash-high", main
+assert main["model"] == "swe-2-1-xhigh", main
 assert "acp" in main["argv"], main
 assert any(r.get("event") == "prompt" for r in rows), rows
 print("ok")

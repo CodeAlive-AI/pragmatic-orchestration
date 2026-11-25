@@ -69,10 +69,11 @@ model's own harness. Pick the profile from `"$PORCH" --list-agents` whose
 | Gemini 4 (Argon, Hydrogen, Neon, Carbon), Gemini 3.x | Antigravity (`antigravity-cli`, `agy-*`) |
 | Grok | Grok Build (`grok-build`) |
 | Kimi, GLM, DeepSeek, Qwen, MiniMax, Muse Spark and other open or third-party models | OpenCode (`opencode-go-*`) |
-| SWE-2, SWE-2 Flash | Devin (`devin-cli`): `devin`, `devin-swe-2` |
+| SWE-2.1, SWE-2, SWE-2 Flash | Devin (`devin-cli`): `devin`, `devin-swe-2-1-ultrafast`, `devin-swe-2` |
 
-Devin is the default harness only for SWE-2 and SWE-2 Flash, which are free on
-the owner's plan. Its other models (`devin-gemini-4-*`, or any model chosen with
+Devin is the default harness only for the SWE family: SWE-2.1 (free on the
+owner's paid plan through 2026-12-08, then discounted) and SWE-2 / SWE-2 Flash
+(free on the owner's plan). Its other models (`devin-gemini-4-*`, or any model chosen with
 `DEVIN_MODEL`) are billed or limited and run only when the user names Devin
 for them, for example "run Argon through Devin". "Run Hydrogen" means
 `agy-gemini-4-hydrogen`, not Devin. If the native harness has no profile for the

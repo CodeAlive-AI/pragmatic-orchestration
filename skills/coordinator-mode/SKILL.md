@@ -1,6 +1,7 @@
 ---
 name: coordinator-mode
 description: "Switch this session into Coordinator Mode: a long-lived role that plans, designs verification, delegates implementation to cheaper executors, accepts results on evidence, and keeps a journal that survives context compaction. Use only when the user explicitly turns Coordinator Mode on or asks to resume it (\"coordinator mode\", \"orchestrator mode\", \"режим координации\"). Not for one-off delegation or reviews (use pragmatic-orchestration), and never for a delegated worker."
+disable-model-invocation: true
 ---
 
 # Coordinator Mode

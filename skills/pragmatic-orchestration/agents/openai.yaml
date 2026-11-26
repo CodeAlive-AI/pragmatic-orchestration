@@ -1,0 +1,6 @@
+interface:
+  display_name: "Pragmatic Orchestration"
+  short_description: "Delegate coding, review, research, and media work across external agent CLIs via porch, or manage Claude Desktop and Codex app sessions"
+  default_prompt: "Use $pragmatic-orchestration to delegate implementation, run independent reviews or research, process media, or manage desktop sessions via porch."
+policy:
+  allow_implicit_invocation: true

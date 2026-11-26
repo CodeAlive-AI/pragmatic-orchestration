@@ -10,7 +10,7 @@
 #
 set -euo pipefail
 
-LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
 # shellcheck source=common.sh
 source "$LIB_DIR/common.sh"
 # shellcheck source=config.sh
@@ -290,7 +290,7 @@ fi
 # process: a refusal exits non-zero with one line, before any run or detach.
 # It also prints which launch defaults the continuation does not apply.
 if [[ -n "$CONTINUE_RUN" ]]; then
-    PRE_ARGS=(--agent-id "$AGENT_ID" --continue-run "$CONTINUE_RUN" --cwd "$(pwd)")
+    PRE_ARGS=(--agent-id "$AGENT_ID" --continue-run "$CONTINUE_RUN" --cwd "$(pwd -W 2>/dev/null || pwd)")
     if [[ "$RECOVER_SESSION" -eq 1 ]]; then PRE_ARGS+=(--recover-session); fi
     if [[ -n "${PORCH_STEER_DIR:-}" ]]; then PRE_ARGS+=(--registry-root "$PORCH_STEER_DIR"); fi
     python3 -m steer.session preflight "${PRE_ARGS[@]}" || exit $?
@@ -353,7 +353,7 @@ if [[ "$STEERABLE" -eq 1 ]]; then
         python3 -m steer.supervisor \
             --agent-id "$AGENT_ID" \
             --task-file "$_del_prompt_tmp" \
-            --cwd "$(pwd)" \
+            --cwd "$(pwd -W 2>/dev/null || pwd)" \
             --artifacts-dir "$ART" \
             --log-file "$_det_log" \
             --run-id-file "$_det_idf" \
@@ -408,7 +408,7 @@ if [[ "$STEERABLE" -eq 1 ]]; then
     python3 -m steer.supervisor \
         --agent-id "$AGENT_ID" \
         --task-file "$_del_prompt_tmp" \
-        --cwd "$(pwd)" \
+        --cwd "$(pwd -W 2>/dev/null || pwd)" \
         --artifacts-dir "$ART" \
         "${REG_ARGS[@]+"${REG_ARGS[@]}"}"
     exit $?

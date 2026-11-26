@@ -212,6 +212,36 @@ rc=$?
 set -e
 assert_eq "quota unknown provider exit 5" "$rc" "5"
 
+echo "=== MSYS path conversion off (Git Bash with MSYS_NO_PATHCONV=1) ==="
+# Git Bash rewrites /c/... arguments and environment values into C:/... for
+# native programs, unless MSYS_NO_PATHCONV=1 turns that off (Claude Code users
+# set it to keep slash-prefixed arguments intact). Native Windows Python then
+# reads /c/Users/... as a path on the current drive, so every python3 call
+# that porch makes with a script or config path failed. On other platforms
+# the variable means nothing and these checks pass as plain smoke tests.
+set +e
+out=$(MSYS_NO_PATHCONV=1 "$PORCH" --list-agents 2>&1)
+rc=$?
+set -e
+assert_eq "list-agents works with MSYS_NO_PATHCONV=1" "$rc" "0"
+assert_contains "list-agents reads the config with MSYS_NO_PATHCONV=1" "$out" '<porch-plan>'
+NOCONV_TMP=$(mktemp -d)
+export PORCH_RUN_DIR="$NOCONV_TMP/run-ask-noconv"
+mkdir -p "$PORCH_RUN_DIR"
+# The fake backend is a python3 script started through its shebang, so it
+# needs the C:/... spelling too; real backends are native executables.
+noconv_codex="$FAKES/fake-codex"
+if command -v cygpath >/dev/null 2>&1; then noconv_codex="$(cygpath -m -- "$noconv_codex")"; fi
+set +e
+out=$(MSYS_NO_PATHCONV=1 PORCH_BIN_CODEX="$noconv_codex" \
+  "$PORCH" review ask --progress none -a codex "review this" 2>"$NOCONV_TMP/ask-noconv.err")
+rc=$?
+set -e
+assert_eq "review ask works with MSYS_NO_PATHCONV=1" "$rc" "0"
+assert_contains "review ask reaches the backend with MSYS_NO_PATHCONV=1" "$out" "FAKE_CODEX_OK"
+unset PORCH_RUN_DIR
+rm -rf "$NOCONV_TMP"
+
 echo "=== Argv safety (PORCH_DUMP_ARGV) ==="
 dump_review() {
   local agent="$1" outfile="$2"

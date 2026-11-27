@@ -5,6 +5,35 @@
 
 export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 
+# Git Bash rewrites /c/... paths into C:/... for native programs unless
+# MSYS_NO_PATHCONV=1 turns that off, and native Windows Python opens only the
+# latter. So porch spells every path it hands to python3 as C:/... itself:
+# script directories through `pwd -W` (it fails elsewhere, and plain `pwd`
+# runs), the temp folder and the path overrides through porch_native_path.
+porch_native_path() {
+    case "${OSTYPE:-}" in
+        msys*|cygwin*)
+            if command -v cygpath >/dev/null 2>&1; then
+                cygpath -m -- "$1"
+                return
+            fi
+            ;;
+    esac
+    printf '%s' "$1"
+}
+case "${OSTYPE:-}" in
+    msys*|cygwin*)
+        TMPDIR="$(porch_native_path "${TMPDIR:-/tmp}")"
+        export TMPDIR
+        for _porch_path_var in PORCH_CONFIG PORCH_RUN_DIR PORCH_OUTPUT_DIR PORCH_STEER_DIR; do
+            if [[ -n "${!_porch_path_var:-}" ]]; then
+                printf -v "$_porch_path_var" '%s' "$(porch_native_path "${!_porch_path_var}")"
+            fi
+        done
+        unset _porch_path_var
+        ;;
+esac
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'

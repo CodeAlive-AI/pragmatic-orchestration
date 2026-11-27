@@ -67,7 +67,7 @@ artifacts_init_run() {
         # collision check — it fails if the name is taken, and we retry.
         PORCH_RUN_DIR=""
         local _lib_dir _candidate _try
-        _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
         for _try in 1 2 3; do
             _candidate="$(python3 "$_lib_dir/human_id.py" "${parent%/}/run-${mode}-" 2>/dev/null)" || _candidate=""
             [[ -n "$_candidate" ]] || break

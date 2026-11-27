@@ -45,7 +45,7 @@
 #
 set -euo pipefail
 
-LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
 # shellcheck source=common.sh
 source "$LIB_DIR/common.sh"
 # shellcheck source=config.sh
@@ -260,7 +260,7 @@ if [[ "$MODE" == "review-researchers" ]]; then
         echo "Error: researcher mode always carries the review contract; a raw prompt is not allowed" >&2
         exit $EXIT_USAGE
     fi
-    PORCH_SELF="$(cd "$LIB_DIR/.." && pwd)/porch"
+    PORCH_SELF="$(cd "$LIB_DIR/.." && { pwd -W 2>/dev/null || pwd; })/porch"
     RESEARCH_PLAN_JSON="$(
         python3 "$LIB_DIR/researchers.py" plan "$AGENT_ID" --researcher "$RESEARCHERS" --porch "$PORCH_SELF"
     )" || exit $EXIT_CONFIG_ERROR

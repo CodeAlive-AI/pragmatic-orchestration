@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build a code review request for one explicitly selected review profile.
 set -euo pipefail
-LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
 source "$LIB_DIR/common.sh"
 if [[ -n "${PORCH_REVIEW_MODE:-}" ]]; then
     echo 'Error: PORCH_REVIEW_MODE was removed; unset it and select one profile with -a ID' >&2

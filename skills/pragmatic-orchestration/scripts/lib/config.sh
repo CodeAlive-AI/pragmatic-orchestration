@@ -14,7 +14,7 @@
 #
 # Overrides: PORCH_CONFIG env var can point to a custom JSON file.
 
-SKILL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SKILL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && { pwd -W 2>/dev/null || pwd; })"
 # config.json is user-local (gitignored); the shipped example is the default.
 # An explicit PORCH_CONFIG override is used verbatim — a missing file there
 # must surface as an error, not silently fall back.

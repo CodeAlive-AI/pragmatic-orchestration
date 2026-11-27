@@ -1,7 +1,7 @@
 #!/bin/bash
 # Independent review with exactly one explicitly selected profile.
 set -euo pipefail
-LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
 source "$LIB_DIR/common.sh"
 source "$LIB_DIR/config.sh"
 source "$LIB_DIR/progress.sh"
